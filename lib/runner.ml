@@ -24,6 +24,27 @@ struct
           | Handoff.Escalate -> (Run.Escalate, Some handoff, None))
       | Error message -> (Run.Invalid_handoff, None, Some message)
 
+  (* Retry blocks and on_fail handlers validate but do not execute yet;
+     refusing up front beats silently ignoring declared semantics. *)
+  let executable_steps workflow =
+    let rec collect entries =
+      match entries with
+      | [] -> Ok []
+      | Workflow.Retry _ :: _ ->
+          Error
+            "workflow uses a retry block, which is not executable yet \
+             (retry lifecycle is not implemented); jig validate accepts it"
+      | Workflow.Step step :: rest ->
+          if step.Workflow.on_fail <> None then
+            Error
+              "workflow uses on_fail, which is not executable yet (escalation \
+               lifecycle is not implemented); jig validate accepts it"
+          else
+            let* remaining = collect rest in
+            Ok (step :: remaining)
+    in
+    collect workflow.Workflow.entries
+
   let execute_step ~config ~run_id ~task ~jig_dir ~previous_handoff
       (step : Workflow.step) =
     let* skill_body = Skill.load ~jig_dir ~name:step.Workflow.skill in
@@ -90,6 +111,8 @@ struct
         (workflow_name ^ ".yaml")
     in
     let* workflow = Workflow.load ~path:workflow_path in
+    let* () = Validate.workflow ~jig_dir workflow in
+    let* plain_steps = executable_steps workflow in
     let* config = Config.load ~jig_dir in
     let started = Unix.gettimeofday () in
     let run_id =
@@ -97,7 +120,7 @@ struct
         ~pid:(Unix.getpid ())
     in
     let steps, step_error =
-      execute_steps ~config ~run_id ~task ~jig_dir workflow.Workflow.steps
+      execute_steps ~config ~run_id ~task ~jig_dir plain_steps
     in
     let run =
       {

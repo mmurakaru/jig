@@ -451,6 +451,28 @@ let test_handoffs_thread_between_steps () =
           Alcotest.fail
             (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
 
+let test_prompt_carries_handoff_protocol () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+      ~isolated:false
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ prompt ] ->
+          Alcotest.(check bool) "protocol present" true
+            (contains ~affix:"end your reply with a fenced handoff block"
+               prompt);
+          Alcotest.(check bool)
+            "example status cannot parse as a real handoff" true
+            (contains ~affix:"status: <pass | fail | escalate>" prompt)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
+
 let test_fail_handoff_short_circuits () =
   let root = make_temp_root () in
   setup_three_step_project root;
@@ -1082,6 +1104,8 @@ let () =
             test_step_output_is_recorded;
           Alcotest.test_case "executor port is swappable" `Quick
             test_executor_is_swappable;
+          Alcotest.test_case "prompt carries the handoff protocol" `Quick
+            test_prompt_carries_handoff_protocol;
           Alcotest.test_case "handoffs thread between steps" `Quick
             test_handoffs_thread_between_steps;
           Alcotest.test_case "fail handoff short-circuits" `Quick

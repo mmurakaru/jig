@@ -23,6 +23,7 @@ jobs:
           cd /tmp/init-check
           "$GITHUB_WORKSPACE/_build/default/bin/main.exe" init
           "$GITHUB_WORKSPACE/_build/default/bin/main.exe" validate bugfix
+          "$GITHUB_WORKSPACE/_build/default/bin/main.exe" validate feature-development
           "$GITHUB_WORKSPACE/_build/default/bin/main.exe" list workflows
           # The embedded set must match the template tree exactly.
           mkdir /tmp/tree-check && cp -R "$GITHUB_WORKSPACE"/template/* /tmp/tree-check/

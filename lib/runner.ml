@@ -1,5 +1,22 @@
 open Result_syntax
 
+(* The handoff contract is the runner's protocol, so the runner states it -
+   skill files carry pure instructions and are passed byte-for-byte. *)
+let handoff_protocol =
+  "Protocol: end your reply with a fenced handoff block - it is how the run \
+   continues, and a reply without one fails the step.\n\n\
+   ```handoff\n\
+   status: <pass | fail | escalate>\n\
+   artifacts:\n\
+  \  - paths/you/produced\n\
+   summary: |\n\
+  \  Written for the next agent: what happened, what to look at, what to\n\
+  \  do differently.\n\
+   ```\n\n\
+   status: pass only when this step's goal is verifiably met; fail when it \
+   is not (a retry reads your summary to do better); escalate when a human \
+   must decide. Reference artifacts by path; never paste their contents."
+
 let build_prompt ~task ~skill_body ~previous_handoff ~guidance =
   let guidance_section =
     match guidance with
@@ -12,8 +29,8 @@ let build_prompt ~task ~skill_body ~previous_handoff ~guidance =
         Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
-  Printf.sprintf "Task: %s\n\n%s%s%s" task guidance_section handoff_section
-    skill_body
+  Printf.sprintf "Task: %s\n\n%s%s%s\n\n%s" task guidance_section
+    handoff_section skill_body handoff_protocol
 
 module Make
     (Executor_port : Executor.S)

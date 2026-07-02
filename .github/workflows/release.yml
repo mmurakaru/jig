@@ -30,5 +30,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
+          prerelease_flag=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease_flag="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" $prerelease_flag --generate-notes 2>/dev/null || true
           gh release upload "$GITHUB_REF_NAME" "${{ matrix.artifact }}" --clobber

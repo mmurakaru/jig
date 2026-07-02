@@ -1,7 +1,11 @@
 open Result_syntax
 
-let build_prompt ~task ~skill_body =
-  Printf.sprintf "Task: %s\n\n%s" task skill_body
+let build_prompt ~task ~skill_body ~previous_handoff =
+  match previous_handoff with
+  | None -> Printf.sprintf "Task: %s\n\n%s" task skill_body
+  | Some handoff ->
+      Printf.sprintf "Task: %s\n\nPrevious handoff:\n%s\n\n%s" task
+        (Handoff.render handoff) skill_body
 
 module Make
     (Executor_port : Executor.S)
@@ -9,19 +13,30 @@ module Make
     (Metering_port : Metering.S)
     (Store_port : Store.S) =
 struct
-  let execute_step ~config ~run_id ~task ~jig_dir (step : Workflow.step) =
+  let outcome_of_exec exec_result =
+    if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
+    else
+      match Handoff.parse exec_result.Executor.stdout with
+      | Ok handoff -> (
+          match handoff.Handoff.status with
+          | Handoff.Pass -> (Run.Pass, Some handoff, None)
+          | Handoff.Fail -> (Run.Fail, Some handoff, None)
+          | Handoff.Escalate -> (Run.Escalate, Some handoff, None))
+      | Error message -> (Run.Invalid_handoff, None, Some message)
+
+  let execute_step ~config ~run_id ~task ~jig_dir ~previous_handoff
+      (step : Workflow.step) =
     let* skill_body = Skill.load ~jig_dir ~name:step.Workflow.skill in
     let* command =
       Model_provider_port.resolve ~config ~skill:step.Workflow.skill
     in
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* exec_result =
-      Executor_port.execute ~command ~prompt:(build_prompt ~task ~skill_body)
+      Executor_port.execute ~command
+        ~prompt:(build_prompt ~task ~skill_body ~previous_handoff)
     in
     Metering_port.record ~run_id ~skill:step.Workflow.skill ~exec_result;
-    let outcome =
-      if exec_result.Executor.exit_code = 0 then Run.Pass else Run.Fail
-    in
+    let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     Ok
       {
         Run.skill = step.Workflow.skill;
@@ -29,25 +44,43 @@ struct
         exit_code = exec_result.Executor.exit_code;
         stdout = exec_result.Executor.stdout;
         stderr = exec_result.Executor.stderr;
+        handoff;
+        handoff_error;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
 
   (* Always returns the step records that actually executed, so a run record
-     can be persisted even when a step errors out mid-run. *)
+     can be persisted even when a step errors out mid-run. Threads each step's
+     handoff into the next step's prompt; only Pass continues the run. *)
   let execute_steps ~config ~run_id ~task ~jig_dir steps =
-    let rec loop completed remaining =
+    let rec loop completed previous_handoff remaining =
       match remaining with
       | [] -> (List.rev completed, None)
       | step :: rest -> (
-          match execute_step ~config ~run_id ~task ~jig_dir step with
+          match
+            execute_step ~config ~run_id ~task ~jig_dir ~previous_handoff step
+          with
           | Error message -> (List.rev completed, Some message)
           | Ok step_record -> (
               match step_record.Run.outcome with
-              | Run.Fail -> (List.rev (step_record :: completed), None)
-              | Run.Pass -> loop (step_record :: completed) rest))
+              | Run.Pass ->
+                  loop (step_record :: completed) step_record.Run.handoff rest
+              | Run.Fail | Run.Escalate | Run.Invalid_handoff ->
+                  (List.rev (step_record :: completed), None)))
     in
-    loop [] steps
+    loop [] None steps
+
+  let status_of ~step_error steps =
+    if step_error <> None then Run.Failed
+    else
+      match List.rev steps with
+      | [] -> Run.Failed
+      | last :: _ -> (
+          match last.Run.outcome with
+          | Run.Escalate -> Run.Escalated
+          | Run.Pass -> Run.Completed
+          | Run.Fail | Run.Invalid_handoff -> Run.Failed)
 
   let execute_run ~root ~workflow_name ~task =
     let jig_dir = Filename.concat root ".jig" in
@@ -66,19 +99,12 @@ struct
     let steps, step_error =
       execute_steps ~config ~run_id ~task ~jig_dir workflow.Workflow.steps
     in
-    let status =
-      if
-        step_error = None
-        && List.for_all (fun step -> step.Run.outcome = Run.Pass) steps
-      then Run.Completed
-      else Run.Failed
-    in
     let run =
       {
         Run.id = run_id;
         workflow = workflow.Workflow.name;
         task;
-        status;
+        status = status_of ~step_error steps;
         error = step_error;
         steps;
         started_at = Run.iso8601 started;

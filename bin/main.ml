@@ -17,6 +17,10 @@ let run_workflow workflow task =
             (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome))
         run.Jig_core.Run.steps;
       Printf.printf "run record: %s\n" path;
+      (match run.Jig_core.Run.status with
+      | Jig_core.Run.Escalated ->
+          Printf.printf "escalated: a human needs to look at the last handoff\n"
+      | _ -> ());
       if run.Jig_core.Run.status <> Jig_core.Run.Completed then exit 1
 
 let workflow_arg =

@@ -1,0 +1,34 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: jig-macos-arm64
+          - os: ubuntu-latest
+            artifact: jig-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+      - run: opam install . --deps-only
+      - run: opam exec -- dune build --profile release
+      - run: cp _build/default/bin/main.exe ${{ matrix.artifact }}
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.artifact }}" --clobber

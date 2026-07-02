@@ -1,0 +1,13 @@
+name: bugfix
+steps:
+  - skill: reproduce-issue
+    on_fail: escalate
+  - skill: write-failing-test
+  - retry:
+      max_iterations: 3
+      on_exhausted: escalate
+      steps:
+        - skill: implement-fix
+        - skill: run-tests
+          until: pass
+  - skill: open-pr

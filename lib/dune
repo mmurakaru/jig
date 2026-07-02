@@ -1,0 +1,3 @@
+(library
+ (name jig_core)
+ (libraries yaml yojson unix))

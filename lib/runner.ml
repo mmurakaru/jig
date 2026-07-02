@@ -84,14 +84,26 @@ struct
              ~previous_handoff:progress.last_handoff
              ~guidance:progress.guidance)
     in
-    Metering_port.record ~run_id:progress.run.Run.id
-      ~skill:step.Workflow.skill ~exec_result;
+    let cost, usage = Metering.parse_cost exec_result.Executor.stdout in
+    let* () =
+      Metering_port.record ~runs_dir:(runs_dir engine)
+        ~event:
+          {
+            Metering.run_id = progress.run.Run.id;
+            skill = step.Workflow.skill;
+            command;
+            cost;
+            usage;
+            recorded_at = Run.iso8601 (Unix.gettimeofday ());
+          }
+    in
     let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     let step_record =
       {
         Run.skill = step.Workflow.skill;
         outcome;
         exit_code = exec_result.Executor.exit_code;
+        cost;
         stdout = exec_result.Executor.stdout;
         stderr = exec_result.Executor.stderr;
         handoff;
@@ -344,5 +356,5 @@ struct
 end
 
 module Default =
-  Make (Executor.Local) (Model_provider.Default) (Metering.Noop)
+  Make (Executor.Local) (Model_provider.Default) (Metering.Jsonl)
     (Store.Filesystem)

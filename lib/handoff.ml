@@ -70,8 +70,22 @@ let of_yaml yaml =
       Ok { status; artifacts; summary }
   | _ -> Error "handoff: expected a mapping inside the handoff block"
 
-let parse output =
+(* Structured harnesses (e.g. claude -p --output-format json) wrap the
+   agent's text in a JSON envelope; the handoff block then lives inside the
+   "result" string. Raw output is tried first. *)
+let agent_text output =
   match extract_block output with
+  | Some _ -> output
+  | None -> (
+      match Yojson.Safe.from_string output with
+      | exception _ -> output
+      | json -> (
+          match Yojson.Safe.Util.member "result" json with
+          | `String result -> result
+          | _ -> output))
+
+let parse output =
+  match extract_block (agent_text output) with
   | None -> Error "handoff: no ```handoff block found in step output"
   | Some block -> (
       match Yaml.of_string block with

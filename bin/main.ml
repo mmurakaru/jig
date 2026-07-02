@@ -1,13 +1,29 @@
 open Cmdliner
 
+let cost_suffix step =
+  match step.Jig_core.Run.cost with
+  | Jig_core.Metering.Cost_usd value -> Printf.sprintf " ($%.4f)" value
+  | Jig_core.Metering.Unknown_cost -> " (cost unknown)"
+
+let print_steps_with_costs (run : Jig_core.Run.t) =
+  List.iter
+    (fun step ->
+      Printf.printf "  %s: %s%s\n" step.Jig_core.Run.skill
+        (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
+        (cost_suffix step))
+    run.Jig_core.Run.steps;
+  let total, unknown = Jig_core.Run.cost_summary run in
+  if total > 0.0 || unknown > 0 then
+    Printf.printf "total cost: $%.4f%s\n" total
+      (if unknown > 0 then
+         Printf.sprintf " (+%d step%s with unknown cost)" unknown
+           (if unknown = 1 then "" else "s")
+       else "")
+
 let report_run (run : Jig_core.Run.t) path =
   Printf.printf "run %s: %s\n" run.Jig_core.Run.id
     (Jig_core.Run.string_of_status run.Jig_core.Run.status);
-  List.iter
-    (fun step ->
-      Printf.printf "  %s: %s\n" step.Jig_core.Run.skill
-        (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome))
-    run.Jig_core.Run.steps;
+  print_steps_with_costs run;
   Printf.printf "run record: %s\n" path;
   match run.Jig_core.Run.status with
   | Jig_core.Run.Completed -> ()
@@ -81,11 +97,7 @@ let show_status run_id json_output =
       | Some message -> Printf.printf "error: %s\n" message
       | None -> ());
       Printf.printf "steps:\n";
-      List.iter
-        (fun step ->
-          Printf.printf "  %s: %s\n" step.Jig_core.Run.skill
-            (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome))
-        run.Jig_core.Run.steps;
+      print_steps_with_costs run;
       (match Jig_core.Run.last_handoff run with
       | Some handoff ->
           Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)

@@ -727,6 +727,7 @@ let test_last_handoff_picks_latest () =
       Run.skill = name;
       outcome = Run.Pass;
       exit_code = 0;
+      cost = Metering.Unknown_cost;
       stdout = "";
       stderr = "";
       handoff = h;
@@ -852,6 +853,100 @@ let test_concurrent_isolated_runs_do_not_interfere () =
   Alcotest.(check bool) "both worktrees alive while paused" true
     (Sys.file_exists (workspace first) && Sys.file_exists (workspace second))
 
+(* Metering *)
+
+let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) () =
+  Yojson.Safe.to_string
+    (`Assoc
+       [
+         ("type", `String "result");
+         ("result", `String ("all done\n\n" ^ handoff));
+         ("total_cost_usd", `Float cost);
+         ( "usage",
+           `Assoc [ ("input_tokens", `Int 900); ("output_tokens", `Int 120) ] );
+       ])
+
+let test_parse_cost_known_and_unknown () =
+  let known, usage = Metering.parse_cost (claude_style_output ()) in
+  Alcotest.(check bool) "cost extracted" true (known = Metering.Cost_usd 0.05);
+  Alcotest.(check bool) "usage extracted" true (usage <> None);
+  let unknown, no_usage = Metering.parse_cost "plain text with no json" in
+  Alcotest.(check bool) "plain text is unknown" true
+    (unknown = Metering.Unknown_cost);
+  Alcotest.(check bool) "no usage" true (no_usage = None)
+
+let test_handoff_inside_json_envelope () =
+  match Handoff.parse (claude_style_output ()) with
+  | Error message -> Alcotest.fail message
+  | Ok handoff ->
+      Alcotest.(check string) "status" "pass"
+        (Handoff.string_of_status handoff.Handoff.status)
+
+module Metered_runner =
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Metering.Jsonl)
+    (Store.Filesystem)
+
+let test_metering_end_to_end () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:
+      [
+        claude_style_output ~cost:0.05 ();
+        handoff_block () (* no structured output: unknown, not zero *);
+        claude_style_output ~cost:0.02 ();
+      ];
+  match
+    Metered_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+      ~isolated:false
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      let costs = List.map (fun step -> step.Run.cost) run.Run.steps in
+      Alcotest.(check bool) "per-step costs recorded" true
+        (costs
+        = [ Metering.Cost_usd 0.05; Metering.Unknown_cost; Metering.Cost_usd 0.02 ]);
+      let total, unknown = Run.cost_summary run in
+      Alcotest.(check bool) "total sums known costs" true
+        (abs_float (total -. 0.07) < 1e-9);
+      Alcotest.(check int) "one step unknown" 1 unknown;
+      let metering_lines =
+        In_channel.with_open_text
+          (Filename.concat root "runs/metering.jsonl")
+          In_channel.input_all
+        |> String.split_on_char '\n'
+        |> List.filter (fun line -> String.trim line <> "")
+      in
+      Alcotest.(check int) "one jsonl record per step" 3
+        (List.length metering_lines);
+      let second = Yojson.Safe.from_string (List.nth metering_lines 1) in
+      Alcotest.(check string) "unknown is explicit in the log" "unknown"
+        Yojson.Safe.Util.(second |> member "cost_usd" |> to_string)
+
+let test_cost_roundtrips_through_store () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset ~outputs:[ claude_style_output ~cost:0.31 () ];
+  match
+    Metered_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+      ~isolated:false
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      match
+        Store.Filesystem.load ~runs_dir:(Filename.concat root "runs")
+          ~id:run.Run.id
+      with
+      | Error message -> Alcotest.fail message
+      | Ok loaded -> (
+          match loaded.Run.steps with
+          | [ step ] ->
+              Alcotest.(check bool) "cost survives the roundtrip" true
+                (step.Run.cost = Metering.Cost_usd 0.31)
+          | _ -> Alcotest.fail "expected one step"))
+
 let test_run_record_contains_handoffs_in_order () =
   let root = make_temp_root () in
   setup_three_step_project root;
@@ -968,6 +1063,17 @@ let () =
             test_store_load_hints_version_on_garbage;
           Alcotest.test_case "last handoff picks the latest" `Quick
             test_last_handoff_picks_latest;
+        ] );
+      ( "metering",
+        [
+          Alcotest.test_case "parses known and unknown costs" `Quick
+            test_parse_cost_known_and_unknown;
+          Alcotest.test_case "handoff found inside a json envelope" `Quick
+            test_handoff_inside_json_envelope;
+          Alcotest.test_case "costs recorded per step and in jsonl" `Quick
+            test_metering_end_to_end;
+          Alcotest.test_case "cost roundtrips through the store" `Quick
+            test_cost_roundtrips_through_store;
         ] );
       ( "isolation",
         [

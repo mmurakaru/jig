@@ -1,0 +1,19 @@
+# The harness jig spawns for every step. Any headless agent CLI works -
+# jig appends the step prompt as the final argument. Structured JSON
+# output (like claude -p --output-format json) enables cost metering.
+# Pick a permission strategy that allows the tools your skills need
+# (editing files, running tests) without interactive prompts.
+# jig appends the step prompt as the FINAL argument: never end the list
+# with a flag that takes multiple values (e.g. --allowedTools), or it
+# will swallow the prompt.
+harness:
+  - claude
+  - -p
+  - --output-format
+  - json
+  - --permission-mode
+  - acceptEdits
+
+# Optional: wrap every harness invocation in an OS-level sandbox.
+# wrapper:
+#   - srt

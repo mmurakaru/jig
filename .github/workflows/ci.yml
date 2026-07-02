@@ -17,3 +17,9 @@ jobs:
       - run: opam install . --deps-only --with-test
       - run: opam exec -- dune build
       - run: opam exec -- dune test
+      - name: Template validates against the shipped binary
+        run: |
+          cp -R template /tmp/template-check
+          cd /tmp/template-check
+          "$GITHUB_WORKSPACE/_build/default/bin/main.exe" validate bugfix
+          "$GITHUB_WORKSPACE/_build/default/bin/main.exe" list workflows

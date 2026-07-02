@@ -179,6 +179,7 @@ let test_store_saves_run () =
       status = Run.Paused;
       error = None;
       position = { Run.entry_index = 2; iterations_used = 1 };
+      workspace = Some "/somewhere/worktree";
       steps = [];
       started_at = "2026-07-02T12:00:00Z";
       finished_at = None;
@@ -199,6 +200,8 @@ let test_store_saves_run () =
             loaded.Run.position.Run.entry_index;
           Alcotest.(check int) "iterations roundtrip" 1
             loaded.Run.position.Run.iterations_used;
+          Alcotest.(check bool) "workspace roundtrips" true
+            (loaded.Run.workspace = Some "/somewhere/worktree");
           Alcotest.(check bool) "no finished_at while paused" true
             (loaded.Run.finished_at = None))
 
@@ -267,7 +270,7 @@ let test_end_to_end_pass () =
   let root = make_temp_root () in
   setup_project root ~harness:passing_harness;
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, path) ->
@@ -280,7 +283,7 @@ let test_missing_handoff_is_distinct () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "echo" ];
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
@@ -298,7 +301,7 @@ let test_end_to_end_fail () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "false" ];
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -312,7 +315,7 @@ let test_missing_skill_fails_validation () =
     (Filename.concat root ".jig/workflows/broken.yaml")
     "name: broken\nsteps:\n  - skill: does-not-exist\n";
   match
-    Runner.Default.execute_run ~root ~workflow_name:"broken" ~task:"x"
+    Runner.Default.execute_run ~root ~workflow_name:"broken" ~task:"x" ~isolated:false
   with
   | Ok _ -> Alcotest.fail "expected an error for a missing skill"
   | Error message ->
@@ -351,7 +354,7 @@ let test_step_output_is_recorded () =
   let root = make_temp_root () in
   setup_project root ~harness:passing_harness;
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
@@ -381,7 +384,7 @@ end = struct
 
   let prompts () = !recorded_prompts
 
-  let execute ~command:_ ~prompt =
+  let execute ~command:_ ~cwd:_ ~prompt =
     recorded_prompts := !recorded_prompts @ [ prompt ];
     let stdout =
       match !queued_outputs with
@@ -409,7 +412,7 @@ let test_executor_is_swappable () =
   setup_project root ~harness:[ "irrelevant" ];
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -427,7 +430,7 @@ let test_handoffs_thread_between_steps () =
         handoff_block ~summary:"third step done" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
@@ -454,7 +457,7 @@ let test_fail_handoff_short_circuits () =
   Scripted_executor.reset
     ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot reproduce" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -470,7 +473,7 @@ let test_escalate_handoff_pauses_run () =
   Scripted_executor.reset
     ~outputs:[ handoff_block ~status:"escalate" ~summary:"need a human" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -512,7 +515,7 @@ let test_retry_until_pass () =
         handoff_block ~summary:"tests green" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -537,7 +540,7 @@ let test_retry_exhausted_escalates () =
         handoff_block ~status:"fail" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -554,7 +557,7 @@ let test_retry_exhausted_aborts () =
   Scripted_executor.reset
     ~outputs:[ handoff_block (); handoff_block ~status:"fail" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -575,7 +578,7 @@ let test_on_fail_escalate_pauses () =
   Scripted_executor.reset
     ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot proceed" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x"
+    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -587,7 +590,7 @@ let test_on_fail_abort_aborts () =
   setup_on_fail_project root ~on_fail:"abort";
   Scripted_executor.reset ~outputs:[ handoff_block ~status:"fail" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x"
+    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -604,7 +607,7 @@ let test_resume_continues_from_paused_step () =
         handoff_block ~status:"escalate" ~summary:"stuck on two" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (paused_run, _) -> (
@@ -644,7 +647,7 @@ let test_resume_refuses_completed_runs () =
   setup_project root ~harness:[ "irrelevant" ];
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
@@ -662,7 +665,7 @@ let test_record_persisted_incrementally () =
   Scripted_executor.reset
     ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
@@ -740,6 +743,7 @@ let test_last_handoff_picks_latest () =
       status = Run.Completed;
       error = None;
       position = { Run.entry_index = 0; iterations_used = 0 };
+      workspace = None;
       steps =
         [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
       started_at = "";
@@ -749,6 +753,104 @@ let test_last_handoff_picks_latest () =
   match Run.last_handoff run with
   | Some found -> Alcotest.(check string) "latest wins" "last" found.Handoff.summary
   | None -> Alcotest.fail "expected a handoff"
+
+(* Isolation: worktree per run + config wrapper *)
+
+let run_shell root command =
+  let full = Printf.sprintf "cd %s && %s" (Filename.quote root) command in
+  Alcotest.(check int) (Printf.sprintf "shell ok: %s" command) 0 (Sys.command full)
+
+let setup_git_project root ~harness =
+  setup_project root ~harness;
+  run_shell root
+    "git init -q && git config user.email jig@test && git config user.name \
+     jig && git add -A && git commit -qm fixture"
+
+let escalate_then_touch_harness =
+  (* Touches a marker in its cwd, then escalates - proves where steps run
+     and leaves the run paused so the worktree must survive. *)
+  [
+    "sh";
+    "-c";
+    "touch marker-from-step; printf '```handoff\\nstatus: escalate\\nsummary: \
+     checkpoint\\n```\\n'";
+  ]
+
+let test_config_wrapper_prepends () =
+  match
+    Config.of_string "harness:\n  - claude\n  - -p\nwrapper:\n  - srt\n"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok config -> (
+      match Model_provider.Default.resolve ~config ~skill:"any" with
+      | Error message -> Alcotest.fail message
+      | Ok command ->
+          Alcotest.(check (list string))
+            "wrapper prepended"
+            [ "srt"; "claude"; "-p" ]
+            command)
+
+let test_isolated_run_uses_worktree_and_resume_reuses_it () =
+  let root = make_temp_root () in
+  setup_git_project root ~harness:escalate_then_touch_harness;
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"iso"
+      ~isolated:true
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (paused_run, _) -> (
+      Alcotest.(check string) "paused" "paused"
+        (Run.string_of_status paused_run.Run.status);
+      let workspace =
+        match paused_run.Run.workspace with
+        | Some path -> path
+        | None -> Alcotest.fail "expected an isolated workspace"
+      in
+      Alcotest.(check bool) "worktree survives the pause" true
+        (Sys.file_exists workspace);
+      Alcotest.(check bool) "marker written in the worktree" true
+        (Sys.file_exists (Filename.concat workspace "marker-from-step"));
+      Alcotest.(check bool) "original checkout untouched" false
+        (Sys.file_exists (Filename.concat root "marker-from-step"));
+      (* Make the harness pass now, then resume: same worktree, then cleanup. *)
+      write_file
+        (Filename.concat root ".jig/config.yaml")
+        "harness:\n  - sh\n  - -c\n  - \"printf \
+         '```handoff\\\\nstatus: pass\\\\n```\\\\n'\"\n";
+      match
+        Runner.Default.resume_run ~root ~run_id:paused_run.Run.id
+          ~guidance:None
+      with
+      | Error message -> Alcotest.fail message
+      | Ok (finished, _) ->
+          Alcotest.(check string) "completed" "completed"
+            (Run.string_of_status finished.Run.status);
+          Alcotest.(check bool) "worktree cleaned up after completion" false
+            (Sys.file_exists workspace))
+
+let test_concurrent_isolated_runs_do_not_interfere () =
+  let root = make_temp_root () in
+  setup_git_project root ~harness:escalate_then_touch_harness;
+  let start () =
+    match
+      Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"iso"
+        ~isolated:true
+    with
+    | Error message -> Alcotest.fail message
+    | Ok (run, _) -> run
+  in
+  let first = start () in
+  let second = start () in
+  Alcotest.(check bool) "distinct run ids" true (first.Run.id <> second.Run.id);
+  let workspace run =
+    match run.Run.workspace with
+    | Some path -> path
+    | None -> Alcotest.fail "expected a workspace"
+  in
+  Alcotest.(check bool) "distinct worktrees" true
+    (workspace first <> workspace second);
+  Alcotest.(check bool) "both worktrees alive while paused" true
+    (Sys.file_exists (workspace first) && Sys.file_exists (workspace second))
 
 let test_run_record_contains_handoffs_in_order () =
   let root = make_temp_root () in
@@ -761,7 +863,7 @@ let test_run_record_contains_handoffs_in_order () =
         handoff_block ~summary:"gamma" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -866,6 +968,15 @@ let () =
             test_store_load_hints_version_on_garbage;
           Alcotest.test_case "last handoff picks the latest" `Quick
             test_last_handoff_picks_latest;
+        ] );
+      ( "isolation",
+        [
+          Alcotest.test_case "config wrapper prepends to the harness" `Quick
+            test_config_wrapper_prepends;
+          Alcotest.test_case "isolated run uses a worktree, resume reuses it"
+            `Quick test_isolated_run_uses_worktree_and_resume_reuses_it;
+          Alcotest.test_case "concurrent isolated runs do not interfere"
+            `Quick test_concurrent_isolated_runs_do_not_interfere;
         ] );
       ( "lifecycle",
         [

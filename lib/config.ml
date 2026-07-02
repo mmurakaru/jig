@@ -1,23 +1,31 @@
 open Result_syntax
 
-type t = { harness : string list }
+type t = { harness : string list; wrapper : string list }
+
+let string_list_field fields ~key =
+  match List.assoc_opt key fields with
+  | None -> Ok None
+  | Some (`A entries) ->
+      let strings =
+        List.filter_map
+          (function `String value -> Some value | _ -> None)
+          entries
+      in
+      if List.length strings <> List.length entries then
+        Error (Printf.sprintf "config: %s must be a list of strings" key)
+      else Ok (Some strings)
+  | Some _ -> Error (Printf.sprintf "config: %s must be a list of strings" key)
 
 let of_yaml yaml =
   match yaml with
   | `O fields -> (
-      match List.assoc_opt "harness" fields with
-      | Some (`A entries) ->
-          let strings =
-            List.filter_map
-              (function `String value -> Some value | _ -> None)
-              entries
-          in
-          if List.length strings <> List.length entries then
-            Error "config: harness must be a list of strings"
-          else if strings = [] then Error "config: harness must not be empty"
-          else Ok { harness = strings }
-      | Some _ -> Error "config: harness must be a list of strings"
-      | None -> Error "config: missing required key: harness")
+      let* harness = string_list_field fields ~key:"harness" in
+      let* wrapper = string_list_field fields ~key:"wrapper" in
+      match harness with
+      | None -> Error "config: missing required key: harness"
+      | Some [] -> Error "config: harness must not be empty"
+      | Some harness ->
+          Ok { harness; wrapper = Option.value wrapper ~default:[] })
   | _ -> Error "config: expected a mapping at the top level"
 
 let of_string content =

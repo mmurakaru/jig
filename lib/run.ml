@@ -27,6 +27,7 @@ type t = {
   status : status;
   error : string option;
   position : position;
+  workspace : string option;
   steps : step_record list;
   started_at : string;
   finished_at : string option;
@@ -38,11 +39,16 @@ let iso8601 time =
     (utc.Unix.tm_mon + 1) utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min
     utc.Unix.tm_sec
 
+(* pid separates concurrent jig processes; the sequence separates runs
+   started by one process within the same second. *)
+let sequence = ref 0
+
 let make_id ~workflow ~time ~pid =
+  incr sequence;
   let utc = Unix.gmtime time in
-  Printf.sprintf "%04d-%02d-%02d-%s-%02d%02d%02d-%d" (utc.Unix.tm_year + 1900)
-    (utc.Unix.tm_mon + 1) utc.Unix.tm_mday workflow utc.Unix.tm_hour
-    utc.Unix.tm_min utc.Unix.tm_sec pid
+  Printf.sprintf "%04d-%02d-%02d-%s-%02d%02d%02d-%d-%d"
+    (utc.Unix.tm_year + 1900) (utc.Unix.tm_mon + 1) utc.Unix.tm_mday workflow
+    utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec pid !sequence
 
 let string_of_outcome = function
   | Pass -> "pass"
@@ -108,6 +114,11 @@ let to_json run =
     | Some finished_at -> [ ("finished_at", `String finished_at) ]
     | None -> []
   in
+  let workspace_field =
+    match run.workspace with
+    | Some workspace -> [ ("workspace", `String workspace) ]
+    | None -> []
+  in
   `Assoc
     ([
        ("id", `String run.id);
@@ -115,7 +126,7 @@ let to_json run =
        ("task", `String run.task);
        ("status", `String (string_of_status run.status));
      ]
-    @ error_field
+    @ error_field @ workspace_field
     @ [
         ( "position",
           `Assoc
@@ -207,6 +218,7 @@ let of_json json =
       status;
       error = optional_string json "error";
       position = { entry_index; iterations_used };
+      workspace = optional_string json "workspace";
       steps;
       started_at;
       finished_at = optional_string json "finished_at";

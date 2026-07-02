@@ -312,12 +312,7 @@ struct
         entries = workflow.Workflow.entries;
       }
     in
-    let last_handoff =
-      List.fold_left
-        (fun previous step ->
-          match step.Run.handoff with Some _ as h -> h | None -> previous)
-        None existing.Run.steps
-    in
+    let last_handoff = Run.last_handoff existing in
     let run = { existing with Run.status = Run.Running; finished_at = None } in
     drive engine { run; last_handoff; guidance }
 end

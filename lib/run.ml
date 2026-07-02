@@ -128,6 +128,12 @@ let to_json run =
       ]
     @ finished_field)
 
+let last_handoff run =
+  List.fold_left
+    (fun previous step ->
+      match step.handoff with Some _ as found -> found | None -> previous)
+    None run.steps
+
 let member_string json key =
   match Yojson.Safe.Util.member key json with
   | `String value -> Ok value

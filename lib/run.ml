@@ -6,6 +6,7 @@ type step_record = {
   skill : string;
   outcome : outcome;
   exit_code : int;
+  cost : Metering.cost;
   stdout : string;
   stderr : string;
   handoff : Handoff.t option;
@@ -94,6 +95,7 @@ let step_to_json step =
        ("skill", `String step.skill);
        ("outcome", `String (string_of_outcome step.outcome));
        ("exit_code", `Int step.exit_code);
+       ("cost_usd", Metering.cost_to_json step.cost);
      ]
     @ handoff_field @ handoff_error_field
     @ [
@@ -139,6 +141,16 @@ let to_json run =
       ]
     @ finished_field)
 
+(* Total of the known step costs, plus how many steps reported nothing -
+   callers must not present a partial total as the whole truth. *)
+let cost_summary run =
+  List.fold_left
+    (fun (total, unknown) step ->
+      match step.cost with
+      | Metering.Cost_usd value -> (total +. value, unknown)
+      | Metering.Unknown_cost -> (total, unknown + 1))
+    (0.0, 0) run.steps
+
 let last_handoff run =
   List.fold_left
     (fun previous step ->
@@ -165,6 +177,7 @@ let step_of_json json =
   let* outcome_string = member_string json "outcome" in
   let* outcome = outcome_of_string outcome_string in
   let* exit_code = member_int json "exit_code" in
+  let* cost = Metering.cost_of_json (Yojson.Safe.Util.member "cost_usd" json) in
   let* stdout = member_string json "stdout" in
   let* stderr = member_string json "stderr" in
   let* started_at = member_string json "started_at" in
@@ -181,6 +194,7 @@ let step_of_json json =
       skill;
       outcome;
       exit_code;
+      cost;
       stdout;
       stderr;
       handoff;

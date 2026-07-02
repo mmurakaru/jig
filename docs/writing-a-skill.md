@@ -1,17 +1,14 @@
 # Writing a skill
 
-A skill is an atomic capability: a folder under `.jig/skills/<name>/`
-containing a `SKILL.md`. It knows nothing about workflows, models, or
-sandboxes - it is instructions for one step of work.
+A skill is one step's instructions: a plain markdown `SKILL.md` in a folder
+named for the skill. jig resolves the name repo-first - `.jig/skills/<name>/`
+- then through each directory in the config's `skill_paths`, in order. A repo
+shadows an external skill by defining one with the same name. The file's
+content reaches the harness byte-for-byte.
 
-```
-.jig/skills/run-tests/SKILL.md
-```
+## The prompt
 
-## What jig does with it
-
-For each step, jig builds a prompt and hands it to your configured harness
-as the final command argument:
+For each step, jig composes one prompt for the harness:
 
 ```
 Task: <the --task description>
@@ -23,21 +20,19 @@ Previous handoff:          (from the second step on)
 status: ...
 <previous step's summary>
 
-<your SKILL.md content>
+<the SKILL.md content>
+
+Protocol: end your reply with a fenced handoff block ...
 ```
 
-## The handoff contract is jig's job, not yours
+The protocol section is jig's own: it instructs the agent to close its reply
+with a handoff block (`status: pass | fail | escalate`, artifact paths, a
+summary written for the next agent). A step whose output has no parseable
+handoff is recorded as `invalid-handoff` and stops the run - silence is not
+success.
 
-The prompt envelope ends with jig's protocol section instructing the agent
-to close its reply with a fenced handoff block (`status: pass | fail |
-escalate`, artifact paths, a summary for the next agent). Your skill file
-never restates it - any plain markdown file, including one you already use
-elsewhere, works as a skill byte-for-byte. A step that exits without a
-parseable handoff is recorded as `invalid-handoff` and stops the run -
-silence is not success.
-
-What your skill SHOULD say is what the statuses *mean for this step*: its
-completion criterion.
+The skill's part of the contract is meaning, not mechanics: say what the
+statuses mean *for this step* - its completion criterion.
 
 ## Style
 
@@ -53,5 +48,6 @@ completion criterion.
   restated sentence.
 - The failure path earns as many words as the success path: say what the
   summary must contain on fail, because it is all the next attempt gets.
-- Skills are versioned with the repository they operate on - evolve them in
-  the same PRs as the code.
+- Repo-local skills are versioned with the repository they operate on -
+  evolve them in the same PRs as the code. Workflows that depend on
+  `skill_paths` libraries fail validation loudly on machines without them.

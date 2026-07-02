@@ -14,13 +14,14 @@ escalation to humans, the run history, and the cost log.
 2. In your repository:
 
    ```sh
-   jig init
+   jig init --harness claude --skill-paths ~/.claude/skills
    ```
 
-   This scaffolds `.jig/` from the starter set embedded in the binary: a
-   reference `bugfix` workflow, five skills, and a commented config. (The
-   same tree ships as `jig-template.tar.gz` on each release if you prefer
-   `curl | tar`.)
+   Scaffolds `.jig/` from the set embedded in the binary: two reference
+   workflows (`bugfix`, `feature-development`), their skills, and a working
+   harness preset (`claude` or `codex`; bare `jig init` writes a commented
+   template). `--skill-paths` points workflows at an existing skill
+   library.
 
 3. Point `.jig/config.yaml` at your harness, then:
 

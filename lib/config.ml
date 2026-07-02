@@ -1,6 +1,19 @@
 open Result_syntax
 
-type t = { harness : string list; wrapper : string list }
+type t = {
+  harness : string list;
+  wrapper : string list;
+  skill_paths : string list;
+}
+
+let expand_home path =
+  match Sys.getenv_opt "HOME" with
+  | None -> path
+  | Some home ->
+      if path = "~" then home
+      else if String.length path >= 2 && String.sub path 0 2 = "~/" then
+        Filename.concat home (String.sub path 2 (String.length path - 2))
+      else path
 
 let string_list_field fields ~key =
   match List.assoc_opt key fields with
@@ -21,11 +34,18 @@ let of_yaml yaml =
   | `O fields -> (
       let* harness = string_list_field fields ~key:"harness" in
       let* wrapper = string_list_field fields ~key:"wrapper" in
+      let* skill_paths = string_list_field fields ~key:"skill_paths" in
       match harness with
       | None -> Error "config: missing required key: harness"
       | Some [] -> Error "config: harness must not be empty"
       | Some harness ->
-          Ok { harness; wrapper = Option.value wrapper ~default:[] })
+          Ok
+            {
+              harness;
+              wrapper = Option.value wrapper ~default:[];
+              skill_paths =
+                List.map expand_home (Option.value skill_paths ~default:[]);
+            })
   | _ -> Error "config: expected a mapping at the top level"
 
 let of_string content =
@@ -40,3 +60,9 @@ let load ~jig_dir =
     Result.map_error (fun message -> "config: " ^ message) (File.read path)
   in
   of_string content
+
+(* Validation needs skill resolution but not a harness; a missing config is
+   fine there (repo-local skills only), an invalid one is still an error. *)
+let load_skill_paths ~jig_dir =
+  if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then Ok []
+  else Result.map (fun config -> config.skill_paths) (load ~jig_dir)

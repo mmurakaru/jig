@@ -88,7 +88,11 @@ struct
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
   let execute_step engine progress (step : Workflow.step) =
-    let* skill_body = Skill.load ~jig_dir:engine.jig_dir ~name:step.Workflow.skill in
+    let* skill_body =
+      Skill.load ~jig_dir:engine.jig_dir
+        ~skill_paths:engine.config.Config.skill_paths
+        ~name:step.Workflow.skill
+    in
     let* command =
       Model_provider_port.resolve ~config:engine.config
         ~skill:step.Workflow.skill
@@ -272,8 +276,11 @@ struct
         (workflow_name ^ ".yaml")
     in
     let* workflow = Workflow.load ~path:workflow_path in
-    let* () = Validate.workflow ~jig_dir workflow in
     let* config = Config.load ~jig_dir in
+    let* () =
+      Validate.workflow ~jig_dir ~skill_paths:config.Config.skill_paths
+        workflow
+    in
     Ok (jig_dir, workflow, config)
 
   (* An infrastructure error (unreadable skill, spawn failure, store failure)

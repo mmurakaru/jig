@@ -145,16 +145,24 @@ let list_workflows json_output =
                 Printf.printf "%s: INVALID - %s\n" file problem)
           entries
 
-let init_project () =
-  match Jig_core.Init.scaffold ~root:(Sys.getcwd ()) with
+let init_project preset skill_paths =
+  match
+    Jig_core.Init.scaffold ~root:(Sys.getcwd ()) ~preset ~skill_paths
+  with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1
   | Ok written ->
       List.iter (fun path -> Printf.printf "  .jig/%s\n" path) written;
-      print_endline
-        "scaffolded - edit .jig/config.yaml to point at your harness, then: \
-         jig run bugfix --task \"...\""
+      (match preset with
+      | Jig_core.Init.Custom ->
+          print_endline
+            "scaffolded - edit .jig/config.yaml to point at your harness, \
+             then: jig run bugfix --task \"...\""
+      | _ ->
+          print_endline
+            "scaffolded with a harness preset - review .jig/config.yaml \
+             (scope the tool allowlist), then: jig run bugfix --task \"...\"")
 
 let optional_workflow_arg =
   let doc = "Name of the workflow under .jig/workflows/ to execute." in
@@ -215,9 +223,34 @@ let list_cmd =
   Cmd.v (Cmd.info "list" ~doc)
     Term.(const (fun () json -> list_workflows json) $ list_what_arg $ json_flag)
 
+let harness_preset_arg =
+  let doc =
+    "Write a known-good harness preset into the scaffolded config: claude, \
+     codex, or custom (the commented template, the default)."
+  in
+  Arg.(
+    value
+    & opt
+        (enum
+           [
+             ("claude", Jig_core.Init.Claude);
+             ("codex", Jig_core.Init.Codex);
+             ("custom", Jig_core.Init.Custom);
+           ])
+        Jig_core.Init.Custom
+    & info [ "harness" ] ~docv:"HARNESS" ~doc)
+
+let skill_paths_arg =
+  let doc =
+    "Directory to add to the config's skill_paths (repeatable, kept in \
+     order)."
+  in
+  Arg.(value & opt_all string [] & info [ "skill-paths" ] ~docv:"DIR" ~doc)
+
 let init_cmd =
   let doc = "Scaffold a starter .jig/ (workflow, skills, config) into this repository." in
-  Cmd.v (Cmd.info "init" ~doc) Term.(const init_project $ const ())
+  Cmd.v (Cmd.info "init" ~doc)
+    Term.(const init_project $ harness_preset_arg $ skill_paths_arg)
 
 let () =
   let doc = "A minimal, agnostic runner for AI-driven development workflows." in

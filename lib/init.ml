@@ -1,3 +1,46 @@
+type harness_preset = Claude | Codex | Custom
+
+(* Presets encode third-party CLI flags: verify against the harness docs
+   whenever one is touched. jig appends the prompt as the final argument,
+   so no preset may end with a flag that takes multiple values. *)
+let claude_config =
+  "# Verified against the claude CLI docs at preset creation; adjust the\n\
+   # allowlist to what your skills need. jig appends the step prompt as\n\
+   # the FINAL argument - never end the list with a multi-value flag.\n\
+   harness:\n\
+   \  - claude\n\
+   \  - -p\n\
+   \  - --allowedTools\n\
+   \  - \"Bash(git:*),Bash(npm:*),Bash(npx:*)\"\n\
+   \  - --permission-mode\n\
+   \  - acceptEdits\n\
+   \  - --output-format\n\
+   \  - json\n"
+
+let codex_config =
+  "# Verified against the codex CLI docs at preset creation. --json streams\n\
+   # JSONL events; widen --sandbox only if your skills need it.\n\
+   harness:\n\
+   \  - codex\n\
+   \  - exec\n\
+   \  - --sandbox\n\
+   \  - workspace-write\n\
+   \  - --json\n"
+
+let config_content ~preset ~skill_paths =
+  let base =
+    match preset with
+    | Custom -> List.assoc "config.yaml" Template_data.files
+    | Claude -> claude_config
+    | Codex -> codex_config
+  in
+  match skill_paths with
+  | [] -> base
+  | paths ->
+      base ^ "\nskill_paths:\n"
+      ^ String.concat ""
+          (List.map (fun path -> Printf.sprintf "  - %S\n" path) paths)
+
 let rec ensure_directory path =
   if not (Sys.file_exists path) then (
     ensure_directory (Filename.dirname path);
@@ -6,7 +49,7 @@ let rec ensure_directory path =
 
 (* Scaffold the embedded starter set into <root>/.jig. Refuses to touch an
    existing .jig - init bootstraps, it never merges or overwrites. *)
-let scaffold ~root =
+let scaffold ~root ~preset ~skill_paths =
   let jig_dir = Filename.concat root ".jig" in
   if Sys.file_exists jig_dir then
     Error
@@ -16,14 +59,22 @@ let scaffold ~root =
          jig_dir)
   else (
     try
+      let files =
+        List.map
+          (fun (relative_path, content) ->
+            if relative_path = "config.yaml" then
+              (relative_path, config_content ~preset ~skill_paths)
+            else (relative_path, content))
+          Template_data.files
+      in
       List.iter
         (fun (relative_path, content) ->
           let path = Filename.concat jig_dir relative_path in
           ensure_directory (Filename.dirname path);
           Out_channel.with_open_text path (fun channel ->
               Out_channel.output_string channel content))
-        Template_data.files;
-      Ok (List.map fst Template_data.files)
+        files;
+      Ok (List.map fst files)
     with
     | Sys_error message -> Error (Printf.sprintf "init: %s" message)
     | Unix.Unix_error (error, _, _) ->

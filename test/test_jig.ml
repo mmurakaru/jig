@@ -995,7 +995,7 @@ let make_bare_temp_dir () =
 
 let test_init_scaffolds_valid_project () =
   let root = make_bare_temp_dir () in
-  match Init.scaffold ~root with
+  match Init.scaffold ~root ~preset:Init.Custom ~skill_paths:[] with
   | Error message -> Alcotest.fail message
   | Ok written -> (
       Alcotest.(check bool) "several files written" true
@@ -1013,11 +1013,61 @@ let test_init_scaffolds_valid_project () =
 let test_init_refuses_existing_jig_dir () =
   let root = make_bare_temp_dir () in
   Unix.mkdir (Filename.concat root ".jig") 0o755;
-  match Init.scaffold ~root with
+  match Init.scaffold ~root ~preset:Init.Custom ~skill_paths:[] with
   | Ok _ -> Alcotest.fail "expected init to refuse an existing .jig"
   | Error message ->
       Alcotest.(check bool) "names the conflict" true
         (contains ~affix:".jig" message)
+
+let scaffolded_config root =
+  In_channel.with_open_text
+    (Filename.concat root ".jig/config.yaml")
+    In_channel.input_all
+
+let test_init_claude_preset_is_well_formed () =
+  let root = make_bare_temp_dir () in
+  match
+    Init.scaffold ~root ~preset:Init.Claude
+      ~skill_paths:[ "/some/library"; "/another/library" ]
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Config.of_string (scaffolded_config root) with
+      | Error message -> Alcotest.fail message
+      | Ok config ->
+          Alcotest.(check string) "harness head" "claude"
+            (List.hd config.Config.harness);
+          Alcotest.(check string)
+            "last element is single-valued (prompt-safe)" "json"
+            (List.nth config.Config.harness
+               (List.length config.Config.harness - 1));
+          Alcotest.(check (list string))
+            "skill_paths kept in order"
+            [ "/some/library"; "/another/library" ]
+            config.Config.skill_paths)
+
+let test_init_codex_preset_is_well_formed () =
+  let root = make_bare_temp_dir () in
+  match Init.scaffold ~root ~preset:Init.Codex ~skill_paths:[] with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Config.of_string (scaffolded_config root) with
+      | Error message -> Alcotest.fail message
+      | Ok config ->
+          Alcotest.(check (list string))
+            "codex exec invocation"
+            [ "codex"; "exec"; "--sandbox"; "workspace-write"; "--json" ]
+            config.Config.harness)
+
+let test_init_custom_matches_template () =
+  let root = make_bare_temp_dir () in
+  match Init.scaffold ~root ~preset:Init.Custom ~skill_paths:[] with
+  | Error message -> Alcotest.fail message
+  | Ok _ ->
+      Alcotest.(check string)
+        "bare init writes the template config verbatim"
+        (List.assoc "config.yaml" Template_data.files)
+        (scaffolded_config root)
 
 (* Metering *)
 
@@ -1249,6 +1299,12 @@ let () =
             test_init_scaffolds_valid_project;
           Alcotest.test_case "refuses an existing .jig" `Quick
             test_init_refuses_existing_jig_dir;
+          Alcotest.test_case "claude preset is well-formed" `Quick
+            test_init_claude_preset_is_well_formed;
+          Alcotest.test_case "codex preset is well-formed" `Quick
+            test_init_codex_preset_is_well_formed;
+          Alcotest.test_case "bare init matches the template" `Quick
+            test_init_custom_matches_template;
         ] );
       ( "metering",
         [

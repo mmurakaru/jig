@@ -853,6 +853,42 @@ let test_concurrent_isolated_runs_do_not_interfere () =
   Alcotest.(check bool) "both worktrees alive while paused" true
     (Sys.file_exists (workspace first) && Sys.file_exists (workspace second))
 
+(* Init: the embedded starter set *)
+
+let make_bare_temp_dir () =
+  let root =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "jig-init-%d-%d" (Unix.getpid ()) (Random.int 1_000_000))
+  in
+  Unix.mkdir root 0o755;
+  root
+
+let test_init_scaffolds_valid_project () =
+  let root = make_bare_temp_dir () in
+  match Init.scaffold ~root with
+  | Error message -> Alcotest.fail message
+  | Ok written -> (
+      Alcotest.(check bool) "several files written" true
+        (List.length written >= 7);
+      let jig_dir = Filename.concat root ".jig" in
+      match
+        Result.bind
+          (Workflow.load
+             ~path:(Filename.concat jig_dir "workflows/bugfix.yaml"))
+          (fun workflow -> Validate.workflow ~jig_dir workflow)
+      with
+      | Error message -> Alcotest.fail message
+      | Ok () -> ())
+
+let test_init_refuses_existing_jig_dir () =
+  let root = make_bare_temp_dir () in
+  Unix.mkdir (Filename.concat root ".jig") 0o755;
+  match Init.scaffold ~root with
+  | Ok _ -> Alcotest.fail "expected init to refuse an existing .jig"
+  | Error message ->
+      Alcotest.(check bool) "names the conflict" true
+        (contains ~affix:".jig" message)
+
 (* Metering *)
 
 let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) () =
@@ -1063,6 +1099,13 @@ let () =
             test_store_load_hints_version_on_garbage;
           Alcotest.test_case "last handoff picks the latest" `Quick
             test_last_handoff_picks_latest;
+        ] );
+      ( "init",
+        [
+          Alcotest.test_case "scaffolds a valid project" `Quick
+            test_init_scaffolds_valid_project;
+          Alcotest.test_case "refuses an existing .jig" `Quick
+            test_init_refuses_existing_jig_dir;
         ] );
       ( "metering",
         [

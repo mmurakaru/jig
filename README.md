@@ -11,11 +11,16 @@ escalation to humans, the run history, and the cost log.
 ## Quickstart
 
 1. Download a binary from the releases page (or `dune build` from source).
-2. Copy the template into your repository:
+2. In your repository:
 
    ```sh
-   cp -R template/.jig your-repo/.jig
+   jig init
    ```
+
+   This scaffolds `.jig/` from the starter set embedded in the binary: a
+   reference `bugfix` workflow, five skills, and a commented config. (The
+   same tree ships as `jig-template.tar.gz` on each release if you prefer
+   `curl | tar`.)
 
 3. Point `.jig/config.yaml` at your harness, then:
 
@@ -35,9 +40,10 @@ marked `escalate` pauses the run for you:
 jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lexer"
 ```
 
-## The four verbs
+## The verbs
 
 ```
+jig init                                    # scaffold .jig/ from the embedded starter set
 jig run <workflow> --task "<description>"   # execute a workflow against a task
 jig run --resume <run-id> [--guidance "…"]  # continue a paused run
 jig status <run-id> [--json]                # inspect a run

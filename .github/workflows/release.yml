@@ -24,8 +24,15 @@ jobs:
           ocaml-compiler: "5.4"
           dune-cache: true
       - run: opam install . --deps-only
-      - run: opam exec -- dune build --profile release
+      # Scope the build to the binary: test deps are not installed here.
+      - run: opam exec -- dune build --profile release bin/main.exe
       - run: cp _build/default/bin/main.exe ${{ matrix.artifact }}
+      - name: Pack the starter template
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p stage/.jig
+          cp -R template/* stage/.jig/
+          tar -czf jig-template.tar.gz -C stage .jig
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,3 +43,6 @@ jobs:
           esac
           gh release create "$GITHUB_REF_NAME" $prerelease_flag --generate-notes 2>/dev/null || true
           gh release upload "$GITHUB_REF_NAME" "${{ matrix.artifact }}" --clobber
+          if [ -f jig-template.tar.gz ]; then
+            gh release upload "$GITHUB_REF_NAME" jig-template.tar.gz --clobber
+          fi

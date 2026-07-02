@@ -17,9 +17,13 @@ jobs:
       - run: opam install . --deps-only --with-test
       - run: opam exec -- dune build
       - run: opam exec -- dune test
-      - name: Template validates against the shipped binary
+      - name: jig init scaffolds a valid project from the embedded template
         run: |
-          cp -R template /tmp/template-check
-          cd /tmp/template-check
+          mkdir /tmp/init-check
+          cd /tmp/init-check
+          "$GITHUB_WORKSPACE/_build/default/bin/main.exe" init
           "$GITHUB_WORKSPACE/_build/default/bin/main.exe" validate bugfix
           "$GITHUB_WORKSPACE/_build/default/bin/main.exe" list workflows
+          # The embedded set must match the template tree exactly.
+          mkdir /tmp/tree-check && cp -R "$GITHUB_WORKSPACE"/template/* /tmp/tree-check/
+          diff -r /tmp/tree-check /tmp/init-check/.jig

@@ -1,3 +1,44 @@
 (library
  (name jig_core)
  (libraries yaml yojson unix))
+
+; The starter set jig init scaffolds, embedded at build time so the binary
+; is self-contained. Adding a template file requires listing it here AND in
+; the echo/cat sequence below - CI's init check catches a missing entry.
+(rule
+ (targets template_data.ml)
+ (deps
+  ../template/config.yaml
+  ../template/workflows/bugfix.yaml
+  ../template/skills/reproduce-issue/SKILL.md
+  ../template/skills/write-failing-test/SKILL.md
+  ../template/skills/implement-fix/SKILL.md
+  ../template/skills/run-tests/SKILL.md
+  ../template/skills/open-pr/SKILL.md)
+ (action
+  (with-stdout-to
+   %{targets}
+   (progn
+    (echo "let files = [\n")
+    (echo "(\"config.yaml\", {tmpl|")
+    (cat ../template/config.yaml)
+    (echo "|tmpl});\n")
+    (echo "(\"workflows/bugfix.yaml\", {tmpl|")
+    (cat ../template/workflows/bugfix.yaml)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/reproduce-issue/SKILL.md\", {tmpl|")
+    (cat ../template/skills/reproduce-issue/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/write-failing-test/SKILL.md\", {tmpl|")
+    (cat ../template/skills/write-failing-test/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/implement-fix/SKILL.md\", {tmpl|")
+    (cat ../template/skills/implement-fix/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/run-tests/SKILL.md\", {tmpl|")
+    (cat ../template/skills/run-tests/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/open-pr/SKILL.md\", {tmpl|")
+    (cat ../template/skills/open-pr/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "]\n")))))

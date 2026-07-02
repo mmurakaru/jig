@@ -675,6 +675,81 @@ let test_record_persisted_incrementally () =
           Alcotest.(check int) "position persisted" 0
             loaded.Run.position.Run.entry_index)
 
+let test_list_workflows_reports_valid_and_invalid () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/two.yaml")
+    "name: two\nsteps:\n  - skill: a\n  - skill: b\n";
+  write_file
+    (Filename.concat root ".jig/workflows/broken.yaml")
+    "name: broken\nbogus: true\nsteps:\n  - skill: a\n";
+  match Project.list_workflows ~jig_dir:(Filename.concat root ".jig") with
+  | Error message -> Alcotest.fail message
+  | Ok entries ->
+      let names =
+        List.filter_map
+          (function
+            | Project.Listed listing -> Some listing.Project.workflow_name
+            | Project.Unparseable _ -> None)
+          entries
+      in
+      Alcotest.(check (list string)) "valid workflows" [ "hello"; "two" ] names;
+      let invalid =
+        List.filter_map
+          (function
+            | Project.Unparseable { file; _ } -> Some file
+            | Project.Listed _ -> None)
+          entries
+      in
+      Alcotest.(check (list string)) "invalid reported" [ "broken.yaml" ] invalid
+
+let test_store_load_hints_version_on_garbage () =
+  let root = make_temp_root () in
+  let runs_dir = Filename.concat root "runs" in
+  Unix.mkdir runs_dir 0o755;
+  write_file (Filename.concat runs_dir "old-record.json") "{\"id\": 42}";
+  match Store.Filesystem.load ~runs_dir ~id:"old-record" with
+  | Ok _ -> Alcotest.fail "expected a parse failure"
+  | Error message ->
+      Alcotest.(check bool) "mentions version" true
+        (contains ~affix:"different jig version" message)
+
+let test_last_handoff_picks_latest () =
+  let handoff summary =
+    Some { Handoff.status = Handoff.Pass; artifacts = []; summary }
+  in
+  let step name h =
+    {
+      Run.skill = name;
+      outcome = Run.Pass;
+      exit_code = 0;
+      stdout = "";
+      stderr = "";
+      handoff = h;
+      handoff_error = None;
+      started_at = "";
+      finished_at = "";
+    }
+  in
+  let run =
+    {
+      Run.id = "x";
+      workflow = "w";
+      task = "t";
+      status = Run.Completed;
+      error = None;
+      position = { Run.entry_index = 0; iterations_used = 0 };
+      steps =
+        [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
+      started_at = "";
+      finished_at = None;
+    }
+  in
+  match Run.last_handoff run with
+  | Some found -> Alcotest.(check string) "latest wins" "last" found.Handoff.summary
+  | None -> Alcotest.fail "expected a handoff"
+
 let test_run_record_contains_handoffs_in_order () =
   let root = make_temp_root () in
   setup_three_step_project root;
@@ -782,6 +857,15 @@ let () =
             test_escalate_handoff_pauses_run;
           Alcotest.test_case "record keeps handoffs in order" `Quick
             test_run_record_contains_handoffs_in_order;
+        ] );
+      ( "inspection",
+        [
+          Alcotest.test_case "list workflows reports valid and invalid" `Quick
+            test_list_workflows_reports_valid_and_invalid;
+          Alcotest.test_case "store load hints at version mismatch" `Quick
+            test_store_load_hints_version_on_garbage;
+          Alcotest.test_case "last handoff picks the latest" `Quick
+            test_last_handoff_picks_latest;
         ] );
       ( "lifecycle",
         [

@@ -25,8 +25,17 @@ module Filesystem : S = struct
     Result.bind
       (Result.map_error (fun message -> "store: " ^ message) (File.read path))
       (fun content ->
-        match Yojson.Safe.from_string content with
-        | json -> Run.of_json json
-        | exception Yojson.Json_error message ->
-            Error (Printf.sprintf "store: %s is not valid json: %s" path message))
+        let parsed =
+          match Yojson.Safe.from_string content with
+          | json -> Run.of_json json
+          | exception Yojson.Json_error message ->
+              Error (Printf.sprintf "not valid json: %s" message)
+        in
+        Result.map_error
+          (fun message ->
+            Printf.sprintf
+              "store: failed to read %s: %s (the record may have been \
+               written by a different jig version)"
+              path message)
+          parsed)
 end

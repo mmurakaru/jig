@@ -143,6 +143,17 @@ let list_workflows json_output =
                 Printf.printf "%s: INVALID - %s\n" file problem)
           entries
 
+let init_project () =
+  match Jig_core.Init.scaffold ~root:(Sys.getcwd ()) with
+  | Error message ->
+      Printf.eprintf "jig: %s\n" message;
+      exit 1
+  | Ok written ->
+      List.iter (fun path -> Printf.printf "  .jig/%s\n" path) written;
+      print_endline
+        "scaffolded - edit .jig/config.yaml to point at your harness, then: \
+         jig run bugfix --task \"...\""
+
 let optional_workflow_arg =
   let doc = "Name of the workflow under .jig/workflows/ to execute." in
   Arg.(value & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc)
@@ -202,7 +213,13 @@ let list_cmd =
   Cmd.v (Cmd.info "list" ~doc)
     Term.(const (fun () json -> list_workflows json) $ list_what_arg $ json_flag)
 
+let init_cmd =
+  let doc = "Scaffold a starter .jig/ (workflow, skills, config) into this repository." in
+  Cmd.v (Cmd.info "init" ~doc) Term.(const init_project $ const ())
+
 let () =
   let doc = "A minimal, agnostic runner for AI-driven development workflows." in
   let info = Cmd.info "jig" ~version:"0.1.0" ~doc in
-  exit (Cmd.eval (Cmd.group info [ run_cmd; validate_cmd; status_cmd; list_cmd ]))
+  exit
+    (Cmd.eval
+       (Cmd.group info [ init_cmd; run_cmd; validate_cmd; status_cmd; list_cmd ]))

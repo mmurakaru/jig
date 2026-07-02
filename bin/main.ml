@@ -35,17 +35,23 @@ let report_run (run : Jig_core.Run.t) path =
       exit 2
   | _ -> exit 1
 
+let print_step_live step =
+  Printf.printf "  %s: %s%s\n%!" step.Jig_core.Run.skill
+    (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
+    (cost_suffix step)
+
 let run_workflow workflow resume task guidance isolated =
   let root = Sys.getcwd () in
   let result =
     match (workflow, resume, task) with
     | Some workflow_name, None, Some task ->
-        Jig_core.Runner.Default.execute_run ~root ~workflow_name ~task
-          ~isolated
+        Jig_core.Runner.Default.execute_run ~on_step:print_step_live ~root
+          ~workflow_name ~task ~isolated ()
     | None, Some _, None when isolated ->
         Error "--isolated belongs to the original run; a resume reuses its workspace"
     | None, Some run_id, None ->
-        Jig_core.Runner.Default.resume_run ~root ~run_id ~guidance
+        Jig_core.Runner.Default.resume_run ~on_step:print_step_live ~root
+          ~run_id ~guidance ()
     | Some _, Some _, _ ->
         Error "pass either a workflow or --resume, not both"
     | Some _, None, None -> Error "running a workflow requires --task"
@@ -78,12 +84,25 @@ let validate_workflow workflow =
       Printf.eprintf "jig: %s\n" message;
       exit 1
 
-let show_status run_id json_output =
+let latest_run_id ~runs_dir =
+  match Jig_core.Store.Filesystem.list_runs ~runs_dir with
+  | Error message -> Error message
+  | Ok [] -> Error "no runs yet - nothing under runs/"
+  | Ok (newest :: _) -> Ok newest.Jig_core.Run.id
+
+let show_status run_id latest json_output =
   let root = Sys.getcwd () in
+  let runs_dir = Filename.concat root "runs" in
+  let resolved =
+    match (run_id, latest) with
+    | Some _, true -> Error "pass a run id or --latest, not both"
+    | Some id, false -> Ok id
+    | None, true -> latest_run_id ~runs_dir
+    | None, false -> Error "pass a run id or --latest"
+  in
   match
-    Jig_core.Store.Filesystem.load
-      ~runs_dir:(Filename.concat root "runs")
-      ~id:run_id
+    Result.bind resolved (fun id ->
+        Jig_core.Store.Filesystem.load ~runs_dir ~id)
   with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
@@ -110,6 +129,38 @@ let show_status run_id json_output =
             "paused: resume with jig run --resume %s [--guidance \"...\"]\n"
             run.Jig_core.Run.id
       | _ -> ())
+
+let list_runs json_output =
+  let runs_dir = Filename.concat (Sys.getcwd ()) "runs" in
+  match Jig_core.Store.Filesystem.list_runs ~runs_dir with
+  | Error message ->
+      Printf.eprintf "jig: %s\n" message;
+      exit 1
+  | Ok [] when not json_output -> print_endline "no runs yet"
+  | Ok runs when json_output ->
+      let summaries =
+        List.map
+          (fun run ->
+            `Assoc
+              [
+                ("id", `String run.Jig_core.Run.id);
+                ("workflow", `String run.Jig_core.Run.workflow);
+                ( "status",
+                  `String (Jig_core.Run.string_of_status run.Jig_core.Run.status)
+                );
+                ("started_at", `String run.Jig_core.Run.started_at);
+              ])
+          runs
+      in
+      print_endline (Yojson.Safe.pretty_to_string (`List summaries))
+  | Ok runs ->
+      List.iter
+        (fun run ->
+          Printf.printf "%s  %s  %s  %s\n" run.Jig_core.Run.id
+            run.Jig_core.Run.workflow
+            (Jig_core.Run.string_of_status run.Jig_core.Run.status)
+            run.Jig_core.Run.started_at)
+        runs
 
 let list_workflows json_output =
   let jig_dir = Filename.concat (Sys.getcwd ()) ".jig" in
@@ -208,20 +259,35 @@ let json_flag =
 
 let run_id_arg =
   let doc = "Run id to inspect (the runs/<id>.json record)." in
-  Arg.(required & pos 0 (some string) None & info [] ~docv:"RUN-ID" ~doc)
+  Arg.(value & pos 0 (some string) None & info [] ~docv:"RUN-ID" ~doc)
+
+let latest_flag =
+  let doc = "Inspect the newest run." in
+  Arg.(value & flag & info [ "latest" ] ~doc)
 
 let status_cmd =
   let doc = "Inspect a run's progress, outcomes, and last handoff." in
-  Cmd.v (Cmd.info "status" ~doc) Term.(const show_status $ run_id_arg $ json_flag)
+  Cmd.v (Cmd.info "status" ~doc)
+    Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
+
+type listable = Workflows | Runs
 
 let list_what_arg =
-  let doc = "What to list; only \"workflows\" is supported." in
-  Arg.(required & pos 0 (some (enum [ ("workflows", ()) ])) None & info [] ~docv:"WHAT" ~doc)
+  let doc = "What to list: workflows or runs." in
+  Arg.(
+    required
+    & pos 0 (some (enum [ ("workflows", Workflows); ("runs", Runs) ])) None
+    & info [] ~docv:"WHAT" ~doc)
 
 let list_cmd =
-  let doc = "Discover what is runnable in this repository." in
+  let doc = "Discover what is runnable, and what has run, in this repository." in
   Cmd.v (Cmd.info "list" ~doc)
-    Term.(const (fun () json -> list_workflows json) $ list_what_arg $ json_flag)
+    Term.(
+      const (fun what json ->
+          match what with
+          | Workflows -> list_workflows json
+          | Runs -> list_runs json)
+      $ list_what_arg $ json_flag)
 
 let harness_preset_arg =
   let doc =

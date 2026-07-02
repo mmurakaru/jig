@@ -1,6 +1,8 @@
 # Clarify the requirements
 
-Read the task and explore the code it touches. Write the requirement down as
+If the task references an issue or ticket, read its body and comments with
+the repository's tracker CLI first. Read the task and explore the code it
+touches. Write the requirement down as
 testable statements: what must be true when the feature is done, what is out
 of scope, and which existing behavior must not change.
 

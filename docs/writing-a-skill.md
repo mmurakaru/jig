@@ -26,37 +26,32 @@ status: ...
 <your SKILL.md content>
 ```
 
-## The one obligation: end with a handoff
+## The handoff contract is jig's job, not yours
 
-Every skill must instruct the agent to end its reply with a fenced handoff
-block. The handoff is how the run continues - jig parses the last such block
-in the step's output:
+The prompt envelope ends with jig's protocol section instructing the agent
+to close its reply with a fenced handoff block (`status: pass | fail |
+escalate`, artifact paths, a summary for the next agent). Your skill file
+never restates it - any plain markdown file, including one you already use
+elsewhere, works as a skill byte-for-byte. A step that exits without a
+parseable handoff is recorded as `invalid-handoff` and stops the run -
+silence is not success.
 
-    ```handoff
-    status: pass | fail | escalate
-    artifacts:
-      - paths/the/step/produced
-    summary: |
-      Prose written for the NEXT agent: what happened, what to look at,
-      what to do differently.
-    ```
-
-Rules that make handoffs useful:
-
-- `status` is required. `pass` continues the workflow, `fail` stops it (or
-  retries, inside a retry block), `escalate` pauses the run for a human.
-- Reference artifacts by path; never paste file contents into the summary -
-  the workspace already has them.
-- Write the summary for its reader: the next step's agent, or the human who
-  gets the escalation.
-- A step that exits without a parseable handoff is recorded as
-  `invalid-handoff` and stops the run - silence is not success.
+What your skill SHOULD say is what the statuses *mean for this step*: its
+completion criterion.
 
 ## Style
 
 - One capability per skill. If the instructions need sections for two
   different jobs, split the skill.
-- Say what "done" means and what honest failure looks like. Agents follow
-  incentives you write down.
+- End on a checkable completion criterion: "done when the failure is
+  observable on demand", not "investigate the issue". A vague criterion
+  invites the agent to declare victory early.
+- Make the criterion exhaustive where it matters: "every statement in the
+  spec implemented and covered", not "implement the spec".
+- Cut anything the agent does by default; every surviving line should
+  change behavior. Prefer one strong word (red, verbatim, minimal) over a
+  restated sentence.
+- The failure path earns as many words as the success path: say what the
+  summary must contain on fail, because it is all the next attempt gets.
 - Skills are versioned with the repository they operate on - evolve them in
   the same PRs as the code.

@@ -10,11 +10,15 @@
  (deps
   ../template/config.yaml
   ../template/workflows/bugfix.yaml
+  ../template/workflows/feature-development.yaml
   ../template/skills/reproduce-issue/SKILL.md
   ../template/skills/write-failing-test/SKILL.md
   ../template/skills/implement-fix/SKILL.md
   ../template/skills/run-tests/SKILL.md
-  ../template/skills/open-pr/SKILL.md)
+  ../template/skills/open-pr/SKILL.md
+  ../template/skills/clarify-requirements/SKILL.md
+  ../template/skills/implement-feature/SKILL.md
+  ../template/skills/capture-evidence/SKILL.md)
  (action
   (with-stdout-to
    %{targets}
@@ -25,6 +29,9 @@
     (echo "|tmpl});\n")
     (echo "(\"workflows/bugfix.yaml\", {tmpl|")
     (cat ../template/workflows/bugfix.yaml)
+    (echo "|tmpl});\n")
+    (echo "(\"workflows/feature-development.yaml\", {tmpl|")
+    (cat ../template/workflows/feature-development.yaml)
     (echo "|tmpl});\n")
     (echo "(\"skills/reproduce-issue/SKILL.md\", {tmpl|")
     (cat ../template/skills/reproduce-issue/SKILL.md)
@@ -40,5 +47,14 @@
     (echo "|tmpl});\n")
     (echo "(\"skills/open-pr/SKILL.md\", {tmpl|")
     (cat ../template/skills/open-pr/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/clarify-requirements/SKILL.md\", {tmpl|")
+    (cat ../template/skills/clarify-requirements/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/implement-feature/SKILL.md\", {tmpl|")
+    (cat ../template/skills/implement-feature/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"skills/capture-evidence/SKILL.md\", {tmpl|")
+    (cat ../template/skills/capture-evidence/SKILL.md)
     (echo "|tmpl});\n")
     (echo "]\n")))))

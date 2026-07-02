@@ -92,6 +92,27 @@ let render handoff =
     (string_of_status handoff.status)
     artifacts handoff.summary
 
+let of_json json =
+  let* status =
+    match Yojson.Safe.Util.member "status" json with
+    | `String value -> status_of_string value
+    | _ -> Error "handoff: missing or non-string status in run record"
+  in
+  let artifacts =
+    match Yojson.Safe.Util.member "artifacts" json with
+    | `List entries ->
+        List.filter_map
+          (function `String path -> Some path | _ -> None)
+          entries
+    | _ -> []
+  in
+  let summary =
+    match Yojson.Safe.Util.member "summary" json with
+    | `String value -> value
+    | _ -> ""
+  in
+  Ok { status; artifacts; summary }
+
 let to_json handoff =
   `Assoc
     [

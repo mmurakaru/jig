@@ -1,27 +1,43 @@
 open Cmdliner
 
-let run_workflow workflow task =
-  match
-    Jig_core.Runner.Default.execute_run ~root:(Sys.getcwd ())
-      ~workflow_name:workflow ~task
-  with
+let report_run (run : Jig_core.Run.t) path =
+  Printf.printf "run %s: %s\n" run.Jig_core.Run.id
+    (Jig_core.Run.string_of_status run.Jig_core.Run.status);
+  List.iter
+    (fun step ->
+      Printf.printf "  %s: %s\n" step.Jig_core.Run.skill
+        (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome))
+    run.Jig_core.Run.steps;
+  Printf.printf "run record: %s\n" path;
+  match run.Jig_core.Run.status with
+  | Jig_core.Run.Completed -> ()
+  | Jig_core.Run.Paused ->
+      Printf.printf
+        "paused: a human needs to look at the last handoff, then jig run \
+         --resume %s\n"
+        run.Jig_core.Run.id;
+      exit 2
+  | _ -> exit 1
+
+let run_workflow workflow resume task guidance =
+  let root = Sys.getcwd () in
+  let result =
+    match (workflow, resume, task) with
+    | Some workflow_name, None, Some task ->
+        Jig_core.Runner.Default.execute_run ~root ~workflow_name ~task
+    | None, Some run_id, None ->
+        Jig_core.Runner.Default.resume_run ~root ~run_id ~guidance
+    | Some _, Some _, _ ->
+        Error "pass either a workflow or --resume, not both"
+    | Some _, None, None -> Error "running a workflow requires --task"
+    | None, Some _, Some _ -> Error "--task belongs to the original run; use --guidance when resuming"
+    | None, None, _ -> Error "pass a workflow name or --resume <run-id>"
+  in
+  match result with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1
-  | Ok (run, path) ->
-      Printf.printf "run %s: %s\n" run.Jig_core.Run.id
-        (Jig_core.Run.string_of_status run.Jig_core.Run.status);
-      List.iter
-        (fun step ->
-          Printf.printf "  %s: %s\n" step.Jig_core.Run.skill
-            (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome))
-        run.Jig_core.Run.steps;
-      Printf.printf "run record: %s\n" path;
-      (match run.Jig_core.Run.status with
-      | Jig_core.Run.Escalated ->
-          Printf.printf "escalated: a human needs to look at the last handoff\n"
-      | _ -> ());
-      if run.Jig_core.Run.status <> Jig_core.Run.Completed then exit 1
+  | Ok (run, path) -> report_run run path
 
 let validate_workflow workflow =
   let root = Sys.getcwd () in
@@ -41,21 +57,39 @@ let validate_workflow workflow =
       Printf.eprintf "jig: %s\n" message;
       exit 1
 
-let workflow_arg =
+let optional_workflow_arg =
   let doc = "Name of the workflow under .jig/workflows/ to execute." in
+  Arg.(value & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc)
+
+let required_workflow_arg =
+  let doc = "Name of the workflow under .jig/workflows/ to validate." in
   Arg.(required & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc)
 
 let task_arg =
   let doc = "Description of the task to run the workflow against." in
-  Arg.(required & opt (some string) None & info [ "task" ] ~docv:"TASK" ~doc)
+  Arg.(value & opt (some string) None & info [ "task" ] ~docv:"TASK" ~doc)
+
+let resume_arg =
+  let doc = "Continue a paused (or interrupted) run from where it stopped." in
+  Arg.(value & opt (some string) None & info [ "resume" ] ~docv:"RUN-ID" ~doc)
+
+let guidance_arg =
+  let doc =
+    "Human guidance injected into the first step executed after a resume."
+  in
+  Arg.(value & opt (some string) None & info [ "guidance" ] ~docv:"TEXT" ~doc)
 
 let run_cmd =
-  let doc = "Execute a workflow against a task." in
-  Cmd.v (Cmd.info "run" ~doc) Term.(const run_workflow $ workflow_arg $ task_arg)
+  let doc = "Execute a workflow against a task, or resume a paused run." in
+  Cmd.v (Cmd.info "run" ~doc)
+    Term.(
+      const run_workflow $ optional_workflow_arg $ resume_arg $ task_arg
+      $ guidance_arg)
 
 let validate_cmd =
   let doc = "Lint a workflow against the schema and the project's skills." in
-  Cmd.v (Cmd.info "validate" ~doc) Term.(const validate_workflow $ workflow_arg)
+  Cmd.v (Cmd.info "validate" ~doc)
+    Term.(const validate_workflow $ required_workflow_arg)
 
 let () =
   let doc = "A minimal, agnostic runner for AI-driven development workflows." in

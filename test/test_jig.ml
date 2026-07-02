@@ -176,20 +176,31 @@ let test_store_saves_run () =
       Run.id = "2026-07-02-hello-120000-1";
       workflow = "hello";
       task = "test";
-      status = Run.Completed;
+      status = Run.Paused;
       error = None;
+      position = { Run.entry_index = 2; iterations_used = 1 };
       steps = [];
-      started_at = "2026-07-02T12:00:00";
-      finished_at = "2026-07-02T12:00:01";
+      started_at = "2026-07-02T12:00:00Z";
+      finished_at = None;
     }
   in
-  match Store.Filesystem.save ~runs_dir:(Filename.concat root "runs") run with
+  let runs_dir = Filename.concat root "runs" in
+  match Store.Filesystem.save ~runs_dir run with
   | Error message -> Alcotest.fail message
-  | Ok path ->
+  | Ok path -> (
       Alcotest.(check bool) "run file exists" true (Sys.file_exists path);
-      let json = Yojson.Safe.from_file path in
-      let id = Yojson.Safe.Util.(json |> member "id" |> to_string) in
-      Alcotest.(check string) "id roundtrips" "2026-07-02-hello-120000-1" id
+      match Store.Filesystem.load ~runs_dir ~id:run.Run.id with
+      | Error message -> Alcotest.fail message
+      | Ok loaded ->
+          Alcotest.(check string) "id roundtrips" run.Run.id loaded.Run.id;
+          Alcotest.(check string) "status roundtrips" "paused"
+            (Run.string_of_status loaded.Run.status);
+          Alcotest.(check int) "entry index roundtrips" 2
+            loaded.Run.position.Run.entry_index;
+          Alcotest.(check int) "iterations roundtrip" 1
+            loaded.Run.position.Run.iterations_used;
+          Alcotest.(check bool) "no finished_at while paused" true
+            (loaded.Run.finished_at = None))
 
 (* Handoff parsing *)
 
@@ -309,20 +320,6 @@ let test_missing_skill_fails_validation () =
         (contains ~affix:"does-not-exist" message);
       Alcotest.(check bool) "refused before running: no runs dir" false
         (Sys.file_exists (Filename.concat root "runs"))
-
-let test_run_refuses_retry_workflows_for_now () =
-  let root = make_temp_root () in
-  setup_project root ~harness:[ "echo" ];
-  write_file
-    (Filename.concat root ".jig/workflows/looped.yaml")
-    "name: looped\nsteps:\n  - retry:\n      max_iterations: 2\n      on_exhausted: abort\n      steps:\n        - skill: say-hi\n";
-  match
-    Runner.Default.execute_run ~root ~workflow_name:"looped" ~task:"x"
-  with
-  | Ok _ -> Alcotest.fail "expected retry workflows to be refused"
-  | Error message ->
-      Alcotest.(check bool) "says it is not executable yet" true
-        (contains ~affix:"not executable yet" message)
 
 let test_validate_reports_missing_skills () =
   let root = make_temp_root () in
@@ -467,7 +464,7 @@ let test_fail_handoff_short_circuits () =
       Alcotest.(check int) "no further harness calls" 1
         (List.length (Scripted_executor.prompts ()))
 
-let test_escalate_handoff_escalates_run () =
+let test_escalate_handoff_pauses_run () =
   let root = make_temp_root () in
   setup_three_step_project root;
   Scripted_executor.reset
@@ -477,10 +474,206 @@ let test_escalate_handoff_escalates_run () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "escalated"
+      Alcotest.(check string) "status" "paused"
         (Run.string_of_status run.Run.status);
       Alcotest.(check int) "run stopped at the escalating step" 1
-        (List.length run.Run.steps)
+        (List.length run.Run.steps);
+      Alcotest.(check bool) "paused runs have no finished_at" true
+        (run.Run.finished_at = None)
+
+let setup_retry_project root ~max_iterations ~on_exhausted =
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/fixloop.yaml")
+    (Printf.sprintf
+       "name: fixloop\n\
+        steps:\n\
+       \  - retry:\n\
+       \      max_iterations: %d\n\
+       \      on_exhausted: %s\n\
+       \      steps:\n\
+       \        - skill: implement-fix\n\
+       \        - skill: run-tests\n\
+       \          until: pass\n"
+       max_iterations on_exhausted);
+  List.iter
+    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
+    [ "implement-fix"; "run-tests" ]
+
+let test_retry_until_pass () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:3 ~on_exhausted:"escalate";
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ~summary:"first fix attempt" ();
+        handoff_block ~status:"fail" ~summary:"tests still red" ();
+        handoff_block ~summary:"second fix attempt" ();
+        handoff_block ~summary:"tests green" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "two iterations, four steps" 4
+        (List.length run.Run.steps);
+      let third_prompt = List.nth (Scripted_executor.prompts ()) 2 in
+      Alcotest.(check bool)
+        "second iteration sees the failing handoff" true
+        (contains ~affix:"tests still red" third_prompt)
+
+let test_retry_exhausted_escalates () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ();
+        handoff_block ~status:"fail" ();
+        handoff_block ();
+        handoff_block ~status:"fail" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "paused"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "both iterations recorded" 4
+        (List.length run.Run.steps);
+      Alcotest.(check int) "iterations used persisted" 2
+        run.Run.position.Run.iterations_used
+
+let test_retry_exhausted_aborts () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:1 ~on_exhausted:"abort";
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block ~status:"fail" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "aborted"
+        (Run.string_of_status run.Run.status)
+
+let setup_on_fail_project root ~on_fail =
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/guarded.yaml")
+    (Printf.sprintf
+       "name: guarded\nsteps:\n  - skill: fragile\n    on_fail: %s\n" on_fail);
+  add_skill root "fragile" "# fragile\n"
+
+let test_on_fail_escalate_pauses () =
+  let root = make_temp_root () in
+  setup_on_fail_project root ~on_fail:"escalate";
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot proceed" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "paused"
+        (Run.string_of_status run.Run.status)
+
+let test_on_fail_abort_aborts () =
+  let root = make_temp_root () in
+  setup_on_fail_project root ~on_fail:"abort";
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"fail" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "aborted"
+        (Run.string_of_status run.Run.status)
+
+let test_resume_continues_from_paused_step () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ~summary:"one done" ();
+        handoff_block ~status:"escalate" ~summary:"stuck on two" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (paused_run, _) -> (
+      Alcotest.(check string) "paused" "paused"
+        (Run.string_of_status paused_run.Run.status);
+      Scripted_executor.reset
+        ~outputs:
+          [
+            handoff_block ~summary:"two done after help" ();
+            handoff_block ~summary:"three done" ();
+          ];
+      match
+        Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id
+          ~guidance:(Some "focus on the flaky assertion")
+      with
+      | Error message -> Alcotest.fail message
+      | Ok (run, _) -> (
+          Alcotest.(check string) "completed after resume" "completed"
+            (Run.string_of_status run.Run.status);
+          Alcotest.(check int) "four steps total" 4
+            (List.length run.Run.steps);
+          match Scripted_executor.prompts () with
+          | first_resumed :: second_resumed :: _ ->
+              Alcotest.(check bool) "guidance in first resumed prompt" true
+                (contains ~affix:"focus on the flaky assertion" first_resumed);
+              Alcotest.(check bool) "escalating handoff threaded" true
+                (contains ~affix:"stuck on two" first_resumed);
+              Alcotest.(check bool) "guidance consumed after one step" false
+                (contains ~affix:"focus on the flaky assertion" second_resumed)
+          | prompts ->
+              Alcotest.fail
+                (Printf.sprintf "expected 2 resumed prompts, got %d"
+                   (List.length prompts))))
+
+let test_resume_refuses_completed_runs () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      match
+        Scripted_runner.resume_run ~root ~run_id:run.Run.id ~guidance:None
+      with
+      | Ok _ -> Alcotest.fail "expected resume of a completed run to fail"
+      | Error message ->
+          Alcotest.(check bool) "names the status" true
+            (contains ~affix:"completed" message))
+
+let test_record_persisted_incrementally () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      let runs_dir = Filename.concat root "runs" in
+      match Store.Filesystem.load ~runs_dir ~id:run.Run.id with
+      | Error message -> Alcotest.fail message
+      | Ok loaded ->
+          Alcotest.(check string) "paused state persisted" "paused"
+            (Run.string_of_status loaded.Run.status);
+          Alcotest.(check int) "position persisted" 0
+            loaded.Run.position.Run.entry_index)
 
 let test_run_record_contains_handoffs_in_order () =
   let root = make_temp_root () in
@@ -575,8 +768,6 @@ let () =
             test_missing_handoff_is_distinct;
           Alcotest.test_case "missing skill fails validation" `Quick
             test_missing_skill_fails_validation;
-          Alcotest.test_case "retry workflows refused until lifecycle lands"
-            `Quick test_run_refuses_retry_workflows_for_now;
           Alcotest.test_case "validate lists all missing skills" `Quick
             test_validate_reports_missing_skills;
           Alcotest.test_case "step output is recorded" `Quick
@@ -587,9 +778,28 @@ let () =
             test_handoffs_thread_between_steps;
           Alcotest.test_case "fail handoff short-circuits" `Quick
             test_fail_handoff_short_circuits;
-          Alcotest.test_case "escalate handoff escalates the run" `Quick
-            test_escalate_handoff_escalates_run;
+          Alcotest.test_case "escalate handoff pauses the run" `Quick
+            test_escalate_handoff_pauses_run;
           Alcotest.test_case "record keeps handoffs in order" `Quick
             test_run_record_contains_handoffs_in_order;
+        ] );
+      ( "lifecycle",
+        [
+          Alcotest.test_case "retry loops until the until-step passes" `Quick
+            test_retry_until_pass;
+          Alcotest.test_case "exhausted retry escalates to paused" `Quick
+            test_retry_exhausted_escalates;
+          Alcotest.test_case "exhausted retry aborts" `Quick
+            test_retry_exhausted_aborts;
+          Alcotest.test_case "on_fail escalate pauses" `Quick
+            test_on_fail_escalate_pauses;
+          Alcotest.test_case "on_fail abort aborts" `Quick
+            test_on_fail_abort_aborts;
+          Alcotest.test_case "resume continues from the paused step" `Quick
+            test_resume_continues_from_paused_step;
+          Alcotest.test_case "resume refuses completed runs" `Quick
+            test_resume_refuses_completed_runs;
+          Alcotest.test_case "state persists incrementally" `Quick
+            test_record_persisted_incrementally;
         ] );
     ]

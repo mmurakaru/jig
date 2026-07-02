@@ -1,11 +1,19 @@
 open Result_syntax
 
-let build_prompt ~task ~skill_body ~previous_handoff =
-  match previous_handoff with
-  | None -> Printf.sprintf "Task: %s\n\n%s" task skill_body
-  | Some handoff ->
-      Printf.sprintf "Task: %s\n\nPrevious handoff:\n%s\n\n%s" task
-        (Handoff.render handoff) skill_body
+let build_prompt ~task ~skill_body ~previous_handoff ~guidance =
+  let guidance_section =
+    match guidance with
+    | Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text
+    | None -> ""
+  in
+  let handoff_section =
+    match previous_handoff with
+    | Some handoff ->
+        Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
+    | None -> ""
+  in
+  Printf.sprintf "Task: %s\n\n%s%s%s" task guidance_section handoff_section
+    skill_body
 
 module Make
     (Executor_port : Executor.S)
@@ -13,6 +21,41 @@ module Make
     (Metering_port : Metering.S)
     (Store_port : Store.S) =
 struct
+  (* Threaded through execution; the run record is re-saved after every step
+     so killing the process mid-run leaves a resumable record. *)
+  type engine = {
+    root : string;
+    jig_dir : string;
+    config : Config.t;
+    task : string;
+    entries : Workflow.entry list;
+  }
+
+  type progress = {
+    run : Run.t;
+    last_handoff : Handoff.t option;
+    guidance : string option;
+  }
+
+  (* How an entry (or the whole run) ended: either the run continues to the
+     next entry, or it stops in a terminal-or-paused state. *)
+  type verdict = Proceed of progress | Stop of Run.status * progress
+
+  let runs_dir engine = Filename.concat engine.root "runs"
+
+  let persist engine progress ~status ~finished =
+    let run =
+      {
+        progress.run with
+        Run.status;
+        finished_at =
+          (if finished then Some (Run.iso8601 (Unix.gettimeofday ()))
+           else None);
+      }
+    in
+    let* path = Store_port.save ~runs_dir:(runs_dir engine) run in
+    Ok ({ progress with run }, path)
+
   let outcome_of_exec exec_result =
     if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
     else
@@ -24,41 +67,26 @@ struct
           | Handoff.Escalate -> (Run.Escalate, Some handoff, None))
       | Error message -> (Run.Invalid_handoff, None, Some message)
 
-  (* Retry blocks and on_fail handlers validate but do not execute yet;
-     refusing up front beats silently ignoring declared semantics. *)
-  let executable_steps workflow =
-    let rec collect entries =
-      match entries with
-      | [] -> Ok []
-      | Workflow.Retry _ :: _ ->
-          Error
-            "workflow uses a retry block, which is not executable yet \
-             (retry lifecycle is not implemented); jig validate accepts it"
-      | Workflow.Step step :: rest ->
-          if step.Workflow.on_fail <> None then
-            Error
-              "workflow uses on_fail, which is not executable yet (escalation \
-               lifecycle is not implemented); jig validate accepts it"
-          else
-            let* remaining = collect rest in
-            Ok (step :: remaining)
-    in
-    collect workflow.Workflow.entries
-
-  let execute_step ~config ~run_id ~task ~jig_dir ~previous_handoff
-      (step : Workflow.step) =
-    let* skill_body = Skill.load ~jig_dir ~name:step.Workflow.skill in
+  (* Guidance rides on exactly one step - the first one executed after a
+     resume - then is consumed. *)
+  let execute_step engine progress (step : Workflow.step) =
+    let* skill_body = Skill.load ~jig_dir:engine.jig_dir ~name:step.Workflow.skill in
     let* command =
-      Model_provider_port.resolve ~config ~skill:step.Workflow.skill
+      Model_provider_port.resolve ~config:engine.config
+        ~skill:step.Workflow.skill
     in
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* exec_result =
       Executor_port.execute ~command
-        ~prompt:(build_prompt ~task ~skill_body ~previous_handoff)
+        ~prompt:
+          (build_prompt ~task:engine.task ~skill_body
+             ~previous_handoff:progress.last_handoff
+             ~guidance:progress.guidance)
     in
-    Metering_port.record ~run_id ~skill:step.Workflow.skill ~exec_result;
+    Metering_port.record ~run_id:progress.run.Run.id
+      ~skill:step.Workflow.skill ~exec_result;
     let outcome, handoff, handoff_error = outcome_of_exec exec_result in
-    Ok
+    let step_record =
       {
         Run.skill = step.Workflow.skill;
         outcome;
@@ -70,40 +98,138 @@ struct
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
-
-  (* Always returns the step records that actually executed, so a run record
-     can be persisted even when a step errors out mid-run. Threads each step's
-     handoff into the next step's prompt; only Pass continues the run. *)
-  let execute_steps ~config ~run_id ~task ~jig_dir steps =
-    let rec loop completed previous_handoff remaining =
-      match remaining with
-      | [] -> (List.rev completed, None)
-      | step :: rest -> (
-          match
-            execute_step ~config ~run_id ~task ~jig_dir ~previous_handoff step
-          with
-          | Error message -> (List.rev completed, Some message)
-          | Ok step_record -> (
-              match step_record.Run.outcome with
-              | Run.Pass ->
-                  loop (step_record :: completed) step_record.Run.handoff rest
-              | Run.Fail | Run.Escalate | Run.Invalid_handoff ->
-                  (List.rev (step_record :: completed), None)))
     in
-    loop [] None steps
+    let progress =
+      {
+        run =
+          {
+            progress.run with
+            Run.steps = progress.run.Run.steps @ [ step_record ];
+          };
+        last_handoff = (match handoff with Some _ -> handoff | None -> progress.last_handoff);
+        guidance = None;
+      }
+    in
+    let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
+    Ok (step_record, progress)
 
-  let status_of ~step_error steps =
-    if step_error <> None then Run.Failed
-    else
-      match List.rev steps with
-      | [] -> Run.Failed
-      | last :: _ -> (
-          match last.Run.outcome with
-          | Run.Escalate -> Run.Escalated
-          | Run.Pass -> Run.Completed
-          | Run.Fail | Run.Invalid_handoff -> Run.Failed)
+  let stop_for_failure ~on_fail progress =
+    match on_fail with
+    | Some Workflow.Escalate -> Stop (Run.Paused, progress)
+    | Some Workflow.Abort -> Stop (Run.Aborted, progress)
+    | None -> Stop (Run.Failed, progress)
 
-  let execute_run ~root ~workflow_name ~task =
+  let execute_plain_entry engine progress step =
+    let* step_record, progress = execute_step engine progress step in
+    match step_record.Run.outcome with
+    | Run.Pass -> Ok (Proceed progress)
+    | Run.Escalate -> Ok (Stop (Run.Paused, progress))
+    | Run.Invalid_handoff -> Ok (Stop (Run.Failed, progress))
+    | Run.Fail -> Ok (stop_for_failure ~on_fail:step.Workflow.on_fail progress)
+
+  (* One retry iteration: run the group in order. Pass on an until-step
+     completes the group early; any fail (or invalid handoff) fails the
+     iteration, and its handoff threads into the next attempt - that is the
+     self-correction loop. Escalate always pauses the whole run. *)
+  type iteration_result =
+    | Group_done of progress
+    | Iteration_failed of progress
+    | Interrupted of Run.status * progress
+
+  let execute_iteration engine progress (retry : Workflow.retry) =
+    let rec loop progress remaining =
+      match remaining with
+      | [] -> Ok (Group_done progress)
+      | (step : Workflow.step) :: rest -> (
+          let* step_record, progress = execute_step engine progress step in
+          match step_record.Run.outcome with
+          | Run.Pass ->
+              if step.Workflow.until_pass then Ok (Group_done progress)
+              else loop progress rest
+          | Run.Escalate -> Ok (Interrupted (Run.Paused, progress))
+          | Run.Fail | Run.Invalid_handoff ->
+              Ok (Iteration_failed progress))
+    in
+    loop progress retry.Workflow.retry_steps
+
+  let execute_retry_entry engine progress (retry : Workflow.retry) =
+    let update_iterations progress iterations_used =
+      {
+        progress with
+        run =
+          {
+            progress.run with
+            Run.position =
+              { progress.run.Run.position with Run.iterations_used };
+          };
+      }
+    in
+    let rec attempt progress iterations_used =
+      if iterations_used >= retry.Workflow.max_iterations then
+        match retry.Workflow.on_exhausted with
+        | Workflow.Escalate -> Ok (Stop (Run.Paused, progress))
+        | Workflow.Abort -> Ok (Stop (Run.Aborted, progress))
+      else
+        let* result = execute_iteration engine progress retry in
+        match result with
+        | Group_done progress -> Ok (Proceed progress)
+        | Interrupted (status, progress) -> Ok (Stop (status, progress))
+        | Iteration_failed progress ->
+            attempt
+              (update_iterations progress (iterations_used + 1))
+              (iterations_used + 1)
+    in
+    attempt progress progress.run.Run.position.Run.iterations_used
+
+  let set_entry_index progress entry_index =
+    {
+      progress with
+      run =
+        {
+          progress.run with
+          Run.position = { Run.entry_index; iterations_used = progress.run.Run.position.Run.iterations_used };
+        };
+    }
+
+  let execute_entries engine progress =
+    let entry_count = List.length engine.entries in
+    let rec loop progress entry_index =
+      if entry_index >= entry_count then Ok (Run.Completed, progress)
+      else
+        let entry = List.nth engine.entries entry_index in
+        let progress = set_entry_index progress entry_index in
+        let* verdict =
+          match entry with
+          | Workflow.Step step -> execute_plain_entry engine progress step
+          | Workflow.Retry retry -> execute_retry_entry engine progress retry
+        in
+        match verdict with
+        | Proceed progress ->
+            let progress =
+              {
+                progress with
+                run =
+                  {
+                    progress.run with
+                    Run.position =
+                      { Run.entry_index; iterations_used = 0 };
+                  };
+              }
+            in
+            loop progress (entry_index + 1)
+        | Stop (status, progress) -> Ok (status, progress)
+    in
+    loop progress progress.run.Run.position.Run.entry_index
+
+  let finish engine progress status =
+    let* progress, path =
+      persist engine progress
+        ~status
+        ~finished:(status <> Run.Running && status <> Run.Paused)
+    in
+    Ok (progress.run, path)
+
+  let load_project ~root ~workflow_name =
     let jig_dir = Filename.concat root ".jig" in
     let workflow_path =
       Filename.concat
@@ -112,32 +238,88 @@ struct
     in
     let* workflow = Workflow.load ~path:workflow_path in
     let* () = Validate.workflow ~jig_dir workflow in
-    let* plain_steps = executable_steps workflow in
     let* config = Config.load ~jig_dir in
+    Ok (jig_dir, workflow, config)
+
+  (* An infrastructure error (unreadable skill, spawn failure, store failure)
+     still persists what executed, then propagates as an Error. *)
+  let drive engine progress =
+    match execute_entries engine progress with
+    | Ok (status, progress) -> finish engine progress status
+    | Error message ->
+        let progress =
+          {
+            progress with
+            run = { progress.run with Run.error = Some message };
+          }
+        in
+        (match finish engine progress Run.Failed with
+        | Ok _ | Error _ -> ());
+        Error message
+
+  let execute_run ~root ~workflow_name ~task =
+    let* jig_dir, workflow, config = load_project ~root ~workflow_name in
     let started = Unix.gettimeofday () in
-    let run_id =
-      Run.make_id ~workflow:workflow.Workflow.name ~time:started
-        ~pid:(Unix.getpid ())
-    in
-    let steps, step_error =
-      execute_steps ~config ~run_id ~task ~jig_dir plain_steps
+    let engine =
+      {
+        root;
+        jig_dir;
+        config;
+        task;
+        entries = workflow.Workflow.entries;
+      }
     in
     let run =
       {
-        Run.id = run_id;
+        Run.id =
+          Run.make_id ~workflow:workflow.Workflow.name ~time:started
+            ~pid:(Unix.getpid ());
         workflow = workflow.Workflow.name;
         task;
-        status = status_of ~step_error steps;
-        error = step_error;
-        steps;
+        status = Run.Running;
+        error = None;
+        position = { Run.entry_index = 0; iterations_used = 0 };
+        steps = [];
         started_at = Run.iso8601 started;
-        finished_at = Run.iso8601 (Unix.gettimeofday ());
+        finished_at = None;
       }
     in
-    let* path = Store_port.save ~runs_dir:(Filename.concat root "runs") run in
-    match step_error with
-    | Some message -> Error message
-    | None -> Ok (run, path)
+    drive engine { run; last_handoff = None; guidance = None }
+
+  let resume_run ~root ~run_id ~guidance =
+    let runs_directory = Filename.concat root "runs" in
+    let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
+    let* () =
+      match existing.Run.status with
+      | Run.Paused | Run.Running -> Ok ()
+      | status ->
+          Error
+            (Printf.sprintf
+               "run %s is %s; only paused (or interrupted running) runs can \
+                be resumed"
+               run_id
+               (Run.string_of_status status))
+    in
+    let* jig_dir, workflow, config =
+      load_project ~root ~workflow_name:existing.Run.workflow
+    in
+    let engine =
+      {
+        root;
+        jig_dir;
+        config;
+        task = existing.Run.task;
+        entries = workflow.Workflow.entries;
+      }
+    in
+    let last_handoff =
+      List.fold_left
+        (fun previous step ->
+          match step.Run.handoff with Some _ as h -> h | None -> previous)
+        None existing.Run.steps
+    in
+    let run = { existing with Run.status = Run.Running; finished_at = None } in
+    drive engine { run; last_handoff; guidance }
 end
 
 module Default =

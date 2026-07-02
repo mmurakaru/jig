@@ -29,6 +29,7 @@ struct
     config : Config.t;
     task : string;
     entries : Workflow.entry list;
+    workspace : string;
   }
 
   type progress = {
@@ -77,7 +78,7 @@ struct
     in
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* exec_result =
-      Executor_port.execute ~command
+      Executor_port.execute ~command ~cwd:engine.workspace
         ~prompt:
           (build_prompt ~task:engine.task ~skill_body
              ~previous_handoff:progress.last_handoff
@@ -221,11 +222,16 @@ struct
     in
     loop progress progress.run.Run.position.Run.entry_index
 
+  (* Terminal runs clean their worktree up; paused runs keep it so a resume
+     finds the work in progress exactly where the agent left it. *)
   let finish engine progress status =
-    let* progress, path =
-      persist engine progress
-        ~status
-        ~finished:(status <> Run.Running && status <> Run.Paused)
+    let finished = status <> Run.Running && status <> Run.Paused in
+    let* progress, path = persist engine progress ~status ~finished in
+    let* () =
+      match (finished, progress.run.Run.workspace) with
+      | true, Some workspace_path ->
+          Workspace.remove ~root:engine.root ~path:workspace_path
+      | _ -> Ok ()
     in
     Ok (progress.run, path)
 
@@ -257,9 +263,19 @@ struct
         | Ok _ | Error _ -> ());
         Error message
 
-  let execute_run ~root ~workflow_name ~task =
+  let execute_run ~root ~workflow_name ~task ~isolated =
     let* jig_dir, workflow, config = load_project ~root ~workflow_name in
     let started = Unix.gettimeofday () in
+    let run_id =
+      Run.make_id ~workflow:workflow.Workflow.name ~time:started
+        ~pid:(Unix.getpid ())
+    in
+    let* workspace =
+      if isolated then
+        let* path = Workspace.create ~root ~run_id in
+        Ok (Some path)
+      else Ok None
+    in
     let engine =
       {
         root;
@@ -267,18 +283,18 @@ struct
         config;
         task;
         entries = workflow.Workflow.entries;
+        workspace = Option.value workspace ~default:root;
       }
     in
     let run =
       {
-        Run.id =
-          Run.make_id ~workflow:workflow.Workflow.name ~time:started
-            ~pid:(Unix.getpid ());
+        Run.id = run_id;
         workflow = workflow.Workflow.name;
         task;
         status = Run.Running;
         error = None;
         position = { Run.entry_index = 0; iterations_used = 0 };
+        workspace;
         steps = [];
         started_at = Run.iso8601 started;
         finished_at = None;
@@ -303,6 +319,15 @@ struct
     let* jig_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
+    let* () =
+      match existing.Run.workspace with
+      | Some path when not (Sys.file_exists path) ->
+          Error
+            (Printf.sprintf
+               "run %s used isolated workspace %s, which no longer exists"
+               run_id path)
+      | _ -> Ok ()
+    in
     let engine =
       {
         root;
@@ -310,6 +335,7 @@ struct
         config;
         task = existing.Run.task;
         entries = workflow.Workflow.entries;
+        workspace = Option.value existing.Run.workspace ~default:root;
       }
     in
     let last_handoff = Run.last_handoff existing in

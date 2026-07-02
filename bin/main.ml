@@ -19,12 +19,15 @@ let report_run (run : Jig_core.Run.t) path =
       exit 2
   | _ -> exit 1
 
-let run_workflow workflow resume task guidance =
+let run_workflow workflow resume task guidance isolated =
   let root = Sys.getcwd () in
   let result =
     match (workflow, resume, task) with
     | Some workflow_name, None, Some task ->
         Jig_core.Runner.Default.execute_run ~root ~workflow_name ~task
+          ~isolated
+    | None, Some _, None when isolated ->
+        Error "--isolated belongs to the original run; a resume reuses its workspace"
     | None, Some run_id, None ->
         Jig_core.Runner.Default.resume_run ~root ~run_id ~guidance
     | Some _, Some _, _ ->
@@ -150,12 +153,16 @@ let guidance_arg =
   in
   Arg.(value & opt (some string) None & info [ "guidance" ] ~docv:"TEXT" ~doc)
 
+let isolated_flag =
+  let doc = "Run in a git worktree named by the run id instead of the current directory." in
+  Arg.(value & flag & info [ "isolated" ] ~doc)
+
 let run_cmd =
   let doc = "Execute a workflow against a task, or resume a paused run." in
   Cmd.v (Cmd.info "run" ~doc)
     Term.(
       const run_workflow $ optional_workflow_arg $ resume_arg $ task_arg
-      $ guidance_arg)
+      $ guidance_arg $ isolated_flag)
 
 let validate_cmd =
   let doc = "Lint a workflow against the schema and the project's skills." in

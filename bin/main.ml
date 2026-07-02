@@ -23,6 +23,24 @@ let run_workflow workflow task =
       | _ -> ());
       if run.Jig_core.Run.status <> Jig_core.Run.Completed then exit 1
 
+let validate_workflow workflow =
+  let root = Sys.getcwd () in
+  let jig_dir = Filename.concat root ".jig" in
+  let path =
+    Filename.concat (Filename.concat jig_dir "workflows") (workflow ^ ".yaml")
+  in
+  let result =
+    Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
+        Result.map
+          (fun () -> parsed.Jig_core.Workflow.name)
+          (Jig_core.Validate.workflow ~jig_dir parsed))
+  in
+  match result with
+  | Ok name -> Printf.printf "workflow %s: ok\n" name
+  | Error message ->
+      Printf.eprintf "jig: %s\n" message;
+      exit 1
+
 let workflow_arg =
   let doc = "Name of the workflow under .jig/workflows/ to execute." in
   Arg.(required & pos 0 (some string) None & info [] ~docv:"WORKFLOW" ~doc)
@@ -35,7 +53,11 @@ let run_cmd =
   let doc = "Execute a workflow against a task." in
   Cmd.v (Cmd.info "run" ~doc) Term.(const run_workflow $ workflow_arg $ task_arg)
 
+let validate_cmd =
+  let doc = "Lint a workflow against the schema and the project's skills." in
+  Cmd.v (Cmd.info "validate" ~doc) Term.(const validate_workflow $ workflow_arg)
+
 let () =
   let doc = "A minimal, agnostic runner for AI-driven development workflows." in
   let info = Cmd.info "jig" ~version:"0.1.0" ~doc in
-  exit (Cmd.eval (Cmd.group info [ run_cmd ]))
+  exit (Cmd.eval (Cmd.group info [ run_cmd; validate_cmd ]))

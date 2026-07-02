@@ -42,7 +42,91 @@ let test_workflow_parses () =
       Alcotest.(check (list string))
         "steps"
         [ "say-hi"; "say-bye" ]
-        (List.map (fun s -> s.Workflow.skill) workflow.Workflow.steps)
+        (Workflow.referenced_skills workflow)
+
+let full_schema_yaml =
+  {|name: bugfix
+steps:
+  - skill: reproduce-issue
+    on_fail: escalate
+  - skill: write-failing-test
+  - retry:
+      max_iterations: 3
+      on_exhausted: escalate
+      steps:
+        - skill: implement-fix
+        - skill: run-tests
+          until: pass
+  - skill: open-pr
+|}
+
+let test_workflow_parses_full_schema () =
+  match Workflow.of_string full_schema_yaml with
+  | Error message -> Alcotest.fail message
+  | Ok workflow -> (
+      Alcotest.(check (list string))
+        "all skills seen"
+        [
+          "reproduce-issue";
+          "write-failing-test";
+          "implement-fix";
+          "run-tests";
+          "open-pr";
+        ]
+        (Workflow.referenced_skills workflow);
+      match workflow.Workflow.entries with
+      | [ Workflow.Step first; _; Workflow.Retry retry; _ ] ->
+          Alcotest.(check bool) "on_fail parsed" true
+            (first.Workflow.on_fail = Some Workflow.Escalate);
+          Alcotest.(check int) "max_iterations" 3 retry.Workflow.max_iterations;
+          Alcotest.(check bool) "on_exhausted parsed" true
+            (retry.Workflow.on_exhausted = Workflow.Escalate);
+          Alcotest.(check bool) "until pass on last retry step" true
+            (match List.rev retry.Workflow.retry_steps with
+            | last :: _ -> last.Workflow.until_pass
+            | [] -> false)
+      | _ -> Alcotest.fail "expected step/step/retry/step entries")
+
+let expect_workflow_error ~mentions yaml =
+  match Workflow.of_string yaml with
+  | Ok _ -> Alcotest.fail (Printf.sprintf "expected an error mentioning %S" mentions)
+  | Error message ->
+      Alcotest.(check bool)
+        (Printf.sprintf "error mentions %S" mentions)
+        true
+        (contains ~affix:mentions message)
+
+let test_retry_requires_max_iterations () =
+  expect_workflow_error ~mentions:"max_iterations"
+    "name: x\nsteps:\n  - retry:\n      on_exhausted: escalate\n      steps:\n        - skill: a\n"
+
+let test_retry_requires_on_exhausted () =
+  expect_workflow_error ~mentions:"on_exhausted"
+    "name: x\nsteps:\n  - retry:\n      max_iterations: 3\n      steps:\n        - skill: a\n"
+
+let test_unknown_top_level_key_rejected () =
+  expect_workflow_error ~mentions:"timeout"
+    "name: x\ntimeout: 5\nsteps:\n  - skill: a\n"
+
+let test_unknown_step_key_rejected () =
+  expect_workflow_error ~mentions:"model"
+    "name: x\nsteps:\n  - skill: a\n    model: opus\n"
+
+let test_until_outside_retry_rejected () =
+  expect_workflow_error ~mentions:"until"
+    "name: x\nsteps:\n  - skill: a\n    until: pass\n"
+
+let test_nested_retry_rejected () =
+  expect_workflow_error ~mentions:"nest"
+    "name: x\nsteps:\n  - retry:\n      max_iterations: 2\n      on_exhausted: abort\n      steps:\n        - retry:\n            max_iterations: 2\n            on_exhausted: abort\n            steps:\n              - skill: a\n"
+
+let test_invalid_on_fail_value_rejected () =
+  expect_workflow_error ~mentions:"give-up"
+    "name: x\nsteps:\n  - skill: a\n    on_fail: give-up\n"
+
+let test_non_positive_max_iterations_rejected () =
+  expect_workflow_error ~mentions:"positive"
+    "name: x\nsteps:\n  - retry:\n      max_iterations: 0\n      on_exhausted: abort\n      steps:\n        - skill: a\n"
 
 let test_workflow_rejects_missing_name () =
   match Workflow.of_string "steps:\n  - skill: say-hi\n" with
@@ -210,7 +294,7 @@ let test_end_to_end_fail () =
       Alcotest.(check string) "status" "failed"
         (Run.string_of_status run.Run.status)
 
-let test_missing_skill_is_an_error () =
+let test_missing_skill_fails_validation () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "echo" ];
   write_file
@@ -223,10 +307,41 @@ let test_missing_skill_is_an_error () =
   | Error message ->
       Alcotest.(check bool) "mentions the skill" true
         (contains ~affix:"does-not-exist" message);
-      let runs_dir = Filename.concat root "runs" in
-      let persisted = Sys.readdir runs_dir in
-      Alcotest.(check int) "failed run record persisted" 1
-        (Array.length persisted)
+      Alcotest.(check bool) "refused before running: no runs dir" false
+        (Sys.file_exists (Filename.concat root "runs"))
+
+let test_run_refuses_retry_workflows_for_now () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "echo" ];
+  write_file
+    (Filename.concat root ".jig/workflows/looped.yaml")
+    "name: looped\nsteps:\n  - retry:\n      max_iterations: 2\n      on_exhausted: abort\n      steps:\n        - skill: say-hi\n";
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"looped" ~task:"x"
+  with
+  | Ok _ -> Alcotest.fail "expected retry workflows to be refused"
+  | Error message ->
+      Alcotest.(check bool) "says it is not executable yet" true
+        (contains ~affix:"not executable yet" message)
+
+let test_validate_reports_missing_skills () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "echo" ];
+  write_file
+    (Filename.concat root ".jig/workflows/broken.yaml")
+    "name: broken\nsteps:\n  - skill: say-hi\n  - skill: ghost-one\n  - skill: ghost-two\n";
+  let jig_dir = Filename.concat root ".jig" in
+  match
+    Result.bind
+      (Workflow.load ~path:(Filename.concat jig_dir "workflows/broken.yaml"))
+      (fun workflow -> Validate.workflow ~jig_dir workflow)
+  with
+  | Ok () -> Alcotest.fail "expected validation to fail"
+  | Error message ->
+      Alcotest.(check bool) "lists first missing skill" true
+        (contains ~affix:"ghost-one" message);
+      Alcotest.(check bool) "lists second missing skill" true
+        (contains ~affix:"ghost-two" message)
 
 let test_workflow_rejects_name_with_slash () =
   match Workflow.of_string "name: team/deploy\nsteps:\n  - skill: x\n" with
@@ -406,6 +521,24 @@ let () =
             test_workflow_rejects_empty_steps;
           Alcotest.test_case "rejects name with slash" `Quick
             test_workflow_rejects_name_with_slash;
+          Alcotest.test_case "parses the full frozen schema" `Quick
+            test_workflow_parses_full_schema;
+          Alcotest.test_case "retry requires max_iterations" `Quick
+            test_retry_requires_max_iterations;
+          Alcotest.test_case "retry requires on_exhausted" `Quick
+            test_retry_requires_on_exhausted;
+          Alcotest.test_case "rejects unknown top-level key" `Quick
+            test_unknown_top_level_key_rejected;
+          Alcotest.test_case "rejects unknown step key" `Quick
+            test_unknown_step_key_rejected;
+          Alcotest.test_case "rejects until outside retry" `Quick
+            test_until_outside_retry_rejected;
+          Alcotest.test_case "rejects nested retry" `Quick
+            test_nested_retry_rejected;
+          Alcotest.test_case "rejects invalid on_fail value" `Quick
+            test_invalid_on_fail_value_rejected;
+          Alcotest.test_case "rejects non-positive max_iterations" `Quick
+            test_non_positive_max_iterations_rejected;
         ] );
       ( "config",
         [
@@ -440,8 +573,12 @@ let () =
             test_end_to_end_fail;
           Alcotest.test_case "missing handoff is a distinct outcome" `Quick
             test_missing_handoff_is_distinct;
-          Alcotest.test_case "missing skill is an error" `Quick
-            test_missing_skill_is_an_error;
+          Alcotest.test_case "missing skill fails validation" `Quick
+            test_missing_skill_fails_validation;
+          Alcotest.test_case "retry workflows refused until lifecycle lands"
+            `Quick test_run_refuses_retry_workflows_for_now;
+          Alcotest.test_case "validate lists all missing skills" `Quick
+            test_validate_reports_missing_skills;
           Alcotest.test_case "step output is recorded" `Quick
             test_step_output_is_recorded;
           Alcotest.test_case "executor port is swappable" `Quick

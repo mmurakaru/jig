@@ -1,5 +1,6 @@
 module type S = sig
   val save : runs_dir:string -> Run.t -> (string, string) result
+  val load : runs_dir:string -> id:string -> (Run.t, string) result
 end
 
 module Filesystem : S = struct
@@ -18,4 +19,14 @@ module Filesystem : S = struct
     | Sys_error message -> Error (Printf.sprintf "store: %s" message)
     | Unix.Unix_error (error, _, _) ->
         Error (Printf.sprintf "store: %s" (Unix.error_message error))
+
+  let load ~runs_dir ~id =
+    let path = Filename.concat runs_dir (id ^ ".json") in
+    Result.bind
+      (Result.map_error (fun message -> "store: " ^ message) (File.read path))
+      (fun content ->
+        match Yojson.Safe.from_string content with
+        | json -> Run.of_json json
+        | exception Yojson.Json_error message ->
+            Error (Printf.sprintf "store: %s is not valid json: %s" path message))
 end

@@ -47,6 +47,7 @@ struct
     task : string;
     entries : Workflow.entry list;
     workspace : string;
+    on_step : Run.step_record -> unit;
   }
 
   type progress = {
@@ -145,6 +146,7 @@ struct
       }
     in
     let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
+    engine.on_step step_record;
     Ok (step_record, progress)
 
   let stop_for_failure ~on_fail progress =
@@ -299,7 +301,8 @@ struct
         | Ok _ | Error _ -> ());
         Error message
 
-  let execute_run ~root ~workflow_name ~task ~isolated =
+  let execute_run ?(on_step = fun _ -> ()) ~root ~workflow_name ~task
+      ~isolated () =
     let* jig_dir, workflow, config = load_project ~root ~workflow_name in
     let started = Unix.gettimeofday () in
     let run_id =
@@ -320,6 +323,7 @@ struct
         task;
         entries = workflow.Workflow.entries;
         workspace = Option.value workspace ~default:root;
+        on_step;
       }
     in
     let run =
@@ -338,7 +342,7 @@ struct
     in
     drive engine { run; last_handoff = None; guidance = None }
 
-  let resume_run ~root ~run_id ~guidance =
+  let resume_run ?(on_step = fun _ -> ()) ~root ~run_id ~guidance () =
     let runs_directory = Filename.concat root "runs" in
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
@@ -372,6 +376,7 @@ struct
         task = existing.Run.task;
         entries = workflow.Workflow.entries;
         workspace = Option.value existing.Run.workspace ~default:root;
+        on_step;
       }
     in
     let last_handoff = Run.last_handoff existing in

@@ -66,9 +66,11 @@ let validate_workflow workflow =
   in
   let result =
     Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
-        Result.map
-          (fun () -> parsed.Jig_core.Workflow.name)
-          (Jig_core.Validate.workflow ~jig_dir parsed))
+        Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
+          (fun skill_paths ->
+            Result.map
+              (fun () -> parsed.Jig_core.Workflow.name)
+              (Jig_core.Validate.workflow ~jig_dir ~skill_paths parsed)))
   in
   match result with
   | Ok name -> Printf.printf "workflow %s: ok\n" name

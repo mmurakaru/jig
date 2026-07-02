@@ -334,7 +334,7 @@ let test_validate_reports_missing_skills () =
   match
     Result.bind
       (Workflow.load ~path:(Filename.concat jig_dir "workflows/broken.yaml"))
-      (fun workflow -> Validate.workflow ~jig_dir workflow)
+      (fun workflow -> Validate.workflow ~jig_dir ~skill_paths:[] workflow)
   with
   | Ok () -> Alcotest.fail "expected validation to fail"
   | Error message ->
@@ -875,6 +875,114 @@ let test_concurrent_isolated_runs_do_not_interfere () =
   Alcotest.(check bool) "both worktrees alive while paused" true
     (Sys.file_exists (workspace first) && Sys.file_exists (workspace second))
 
+(* skill_paths: resolution from external libraries *)
+
+let write_config_with_skill_paths root ~skill_paths =
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    (Printf.sprintf "harness:\n  - irrelevant\nskill_paths:\n%s"
+       (String.concat ""
+          (List.map (fun path -> Printf.sprintf "  - %S\n" path) skill_paths)))
+
+let make_external_library () =
+  let library =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "jig-library-%d-%d" (Unix.getpid ())
+         (Random.int 1_000_000))
+  in
+  Unix.mkdir library 0o755;
+  let dir = Filename.concat library "external-skill" in
+  Unix.mkdir dir 0o755;
+  write_file (Filename.concat dir "SKILL.md")
+    "# External skill\n\nThe library version.\n";
+  library
+
+let test_external_skill_resolves_and_runs () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  let library = make_external_library () in
+  write_config_with_skill_paths root ~skill_paths:[ library ];
+  write_file
+    (Filename.concat root ".jig/workflows/uses-external.yaml")
+    "name: uses-external\nsteps:\n  - skill: external-skill\n";
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"uses-external"
+      ~task:"x" ~isolated:false
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      match Scripted_executor.prompts () with
+      | [ prompt ] ->
+          Alcotest.(check bool) "external skill body used verbatim" true
+            (contains ~affix:"The library version." prompt)
+      | _ -> Alcotest.fail "expected one prompt")
+
+let test_repo_skill_shadows_external () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  let library = make_external_library () in
+  write_config_with_skill_paths root ~skill_paths:[ library ];
+  add_skill root "external-skill" "# Shadow\n\nThe repo version.\n";
+  write_file
+    (Filename.concat root ".jig/workflows/uses-external.yaml")
+    "name: uses-external\nsteps:\n  - skill: external-skill\n";
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"uses-external"
+      ~task:"x" ~isolated:false
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ prompt ] ->
+          Alcotest.(check bool) "repo version wins" true
+            (contains ~affix:"The repo version." prompt);
+          Alcotest.(check bool) "library version shadowed" false
+            (contains ~affix:"The library version." prompt)
+      | _ -> Alcotest.fail "expected one prompt")
+
+let test_missing_skill_error_lists_searched_paths () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  let library = make_external_library () in
+  write_config_with_skill_paths root ~skill_paths:[ library ];
+  write_file
+    (Filename.concat root ".jig/workflows/ghost.yaml")
+    "name: ghost\nsteps:\n  - skill: nowhere-to-be-found\n";
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"ghost" ~task:"x"
+      ~isolated:false
+  with
+  | Ok _ -> Alcotest.fail "expected a resolution error"
+  | Error message ->
+      Alcotest.(check bool) "lists the repo skills dir" true
+        (contains ~affix:".jig/skills" message);
+      Alcotest.(check bool) "lists the external library" true
+        (contains ~affix:library message)
+
+let test_skill_paths_expand_home () =
+  let fake_home = make_temp_root () in
+  let original_home = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" fake_home;
+  Fun.protect
+    ~finally:(fun () ->
+      match original_home with
+      | Some home -> Unix.putenv "HOME" home
+      | None -> ())
+    (fun () ->
+      match
+        Config.of_string "harness:\n  - x\nskill_paths:\n  - ~/my-skills\n"
+      with
+      | Error message -> Alcotest.fail message
+      | Ok config ->
+          Alcotest.(check (list string))
+            "tilde expanded"
+            [ Filename.concat fake_home "my-skills" ]
+            config.Config.skill_paths)
+
 (* Init: the embedded starter set *)
 
 let make_bare_temp_dir () =
@@ -897,7 +1005,7 @@ let test_init_scaffolds_valid_project () =
         Result.bind
           (Workflow.load
              ~path:(Filename.concat jig_dir "workflows/bugfix.yaml"))
-          (fun workflow -> Validate.workflow ~jig_dir workflow)
+          (fun workflow -> Validate.workflow ~jig_dir ~skill_paths:[] workflow)
       with
       | Error message -> Alcotest.fail message
       | Ok () -> ())
@@ -1123,6 +1231,17 @@ let () =
             test_store_load_hints_version_on_garbage;
           Alcotest.test_case "last handoff picks the latest" `Quick
             test_last_handoff_picks_latest;
+        ] );
+      ( "skill-paths",
+        [
+          Alcotest.test_case "external skill resolves and runs" `Quick
+            test_external_skill_resolves_and_runs;
+          Alcotest.test_case "repo skill shadows external" `Quick
+            test_repo_skill_shadows_external;
+          Alcotest.test_case "miss lists every searched path" `Quick
+            test_missing_skill_error_lists_searched_paths;
+          Alcotest.test_case "tilde expands against HOME" `Quick
+            test_skill_paths_expand_home;
         ] );
       ( "init",
         [

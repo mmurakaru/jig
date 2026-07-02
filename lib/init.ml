@@ -4,14 +4,17 @@ type harness_preset = Claude | Codex | Custom
    whenever one is touched. jig appends the prompt as the final argument,
    so no preset may end with a flag that takes multiple values. *)
 let claude_config =
-  "# Verified against the claude CLI docs at preset creation; adjust the\n\
-   # allowlist to what your skills need. jig appends the step prompt as\n\
-   # the FINAL argument - never end the list with a multi-value flag.\n\
+  "# Verified against the claude CLI docs at preset creation. jig appends\n\
+   # the step prompt as the FINAL argument - never end the list with a\n\
+   # multi-value flag.\n\
+   # git and gh are what the starter skills themselves use (committing,\n\
+   # opening PRs, reading issues). Add your stack's tools to the same\n\
+   # list, e.g. Bash(pnpm:*) or Bash(pytest:*) or Bash(cargo:*).\n\
    harness:\n\
    \  - claude\n\
    \  - -p\n\
    \  - --allowedTools\n\
-   \  - \"Bash(git:*),Bash(npm:*),Bash(npx:*)\"\n\
+   \  - \"Bash(git:*),Bash(gh:*)\"\n\
    \  - --permission-mode\n\
    \  - acceptEdits\n\
    \  - --output-format\n\

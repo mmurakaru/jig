@@ -788,6 +788,7 @@ let test_last_handoff_picks_latest () =
       stderr = "";
       handoff = h;
       handoff_error = None;
+      session_id = None;
       started_at = "";
       finished_at = "";
     }
@@ -1227,6 +1228,10 @@ let test_init_claude_preset_is_well_formed () =
            Alcotest.(check bool) "harness worktree tools denied" true
              (denies_worktree_tools config.Config.harness));
           Alcotest.(check (list string))
+            "attach reopens the step's session"
+            [ "claude"; "--resume"; "{session_id}" ]
+            config.Config.attach;
+          Alcotest.(check (list string))
             "skill_paths kept in order"
             [ "/some/library"; "/another/library" ]
             config.Config.skill_paths)
@@ -1256,16 +1261,24 @@ let test_init_custom_matches_template () =
 
 (* Metering *)
 
-let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) () =
+let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) ?session
+    () =
+  let session_field =
+    match session with
+    | Some id -> [ ("session_id", `String id) ]
+    | None -> []
+  in
   Yojson.Safe.to_string
     (`Assoc
-       [
-         ("type", `String "result");
-         ("result", `String ("all done\n\n" ^ handoff));
-         ("total_cost_usd", `Float cost);
-         ( "usage",
-           `Assoc [ ("input_tokens", `Int 900); ("output_tokens", `Int 120) ] );
-       ])
+       ([
+          ("type", `String "result");
+          ("result", `String ("all done\n\n" ^ handoff));
+          ("total_cost_usd", `Float cost);
+          ( "usage",
+            `Assoc [ ("input_tokens", `Int 900); ("output_tokens", `Int 120) ]
+          );
+        ]
+       @ session_field))
 
 let test_parse_cost_known_and_unknown () =
   let known, usage = Metering.parse_cost (claude_style_output ()) in
@@ -1347,6 +1360,59 @@ let test_cost_roundtrips_through_store () =
               Alcotest.(check bool) "cost survives the roundtrip" true
                 (step.Run.cost = Metering.Cost_usd 0.31)
           | _ -> Alcotest.fail "expected one step"))
+
+let test_parse_session_id () =
+  Alcotest.(check (option string))
+    "captured from structured output" (Some "sess-123")
+    (Metering.parse_session_id (claude_style_output ~session:"sess-123" ()));
+  Alcotest.(check (option string))
+    "absent field stays absent" None
+    (Metering.parse_session_id (claude_style_output ()));
+  Alcotest.(check (option string))
+    "plain text has no session" None
+    (Metering.parse_session_id (handoff_block ()))
+
+let test_session_id_roundtrips_through_store () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:[ claude_style_output ~session:"sess-42" () ];
+  match
+    Metered_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      match
+        Store.Filesystem.load ~runs_dir:(Filename.concat root "runs")
+          ~id:run.Run.id
+      with
+      | Error message -> Alcotest.fail message
+      | Ok loaded -> (
+          match loaded.Run.steps with
+          | [ step ] ->
+              Alcotest.(check (option string))
+                "session id survives the roundtrip" (Some "sess-42")
+                step.Run.session_id
+          | _ -> Alcotest.fail "expected one step"))
+
+let test_attach_command_substitution () =
+  (match Attach.command ~attach:[] ~session_id:"abc" with
+  | Ok _ -> Alcotest.fail "empty attach config must be an error"
+  | Error message ->
+      Alcotest.(check bool) "error names the config key" true
+        (contains ~affix:"attach" message));
+  match
+    Attach.command
+      ~attach:[ "claude"; "--resume"; "{session_id}"; "pre-{session_id}-post" ]
+      ~session_id:"sess-9"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok command ->
+      Alcotest.(check (list string))
+        "placeholder replaced wherever it appears"
+        [ "claude"; "--resume"; "sess-9"; "pre-sess-9-post" ]
+        command
 
 let test_run_record_contains_handoffs_in_order () =
   let root = make_temp_root () in
@@ -1512,6 +1578,12 @@ let () =
             test_metering_end_to_end;
           Alcotest.test_case "cost roundtrips through the store" `Quick
             test_cost_roundtrips_through_store;
+          Alcotest.test_case "session id parsed from harness output" `Quick
+            test_parse_session_id;
+          Alcotest.test_case "session id roundtrips through the store" `Quick
+            test_session_id_roundtrips_through_store;
+          Alcotest.test_case "attach command substitutes the session id"
+            `Quick test_attach_command_substitution;
         ] );
       ( "isolation",
         [

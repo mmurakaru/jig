@@ -11,6 +11,7 @@ type step_record = {
   stderr : string;
   handoff : Handoff.t option;
   handoff_error : string option;
+  session_id : string option;
   started_at : string;
   finished_at : string;
 }
@@ -90,6 +91,11 @@ let step_to_json step =
     | Some message -> [ ("handoff_error", `String message) ]
     | None -> []
   in
+  let session_field =
+    match step.session_id with
+    | Some id -> [ ("session_id", `String id) ]
+    | None -> []
+  in
   `Assoc
     ([
        ("skill", `String step.skill);
@@ -97,7 +103,7 @@ let step_to_json step =
        ("exit_code", `Int step.exit_code);
        ("cost_usd", Metering.cost_to_json step.cost);
      ]
-    @ handoff_field @ handoff_error_field
+    @ handoff_field @ handoff_error_field @ session_field
     @ [
         ("stdout", `String step.stdout);
         ("stderr", `String step.stderr);
@@ -199,6 +205,7 @@ let step_of_json json =
       stderr;
       handoff;
       handoff_error = optional_string json "handoff_error";
+      session_id = optional_string json "session_id";
       started_at;
       finished_at;
     }

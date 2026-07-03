@@ -29,6 +29,16 @@ let parse_cost stdout =
       (cost, usage)
   | _ -> (Unknown_cost, None)
 
+(* The id an interactive harness needs to reopen the step's session. *)
+let parse_session_id stdout =
+  match Yojson.Safe.from_string stdout with
+  | exception _ -> None
+  | `Assoc _ as json -> (
+      match Yojson.Safe.Util.member "session_id" json with
+      | `String value -> Some value
+      | _ -> None)
+  | _ -> None
+
 let cost_to_json = function
   | Cost_usd value -> `Float value
   | Unknown_cost -> `String "unknown"

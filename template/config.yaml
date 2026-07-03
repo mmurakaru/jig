@@ -21,3 +21,11 @@ harness:
 # Optional: wrap every harness invocation in an OS-level sandbox.
 # wrapper:
 #   - srt
+
+# Optional: command for `jig attach <run-id>` - reopens a step's recorded
+# harness session interactively; {session_id} is replaced from the step
+# record.
+# attach:
+#   - claude
+#   - --resume
+#   - "{session_id}"

@@ -28,10 +28,14 @@ let report_run (run : Jig_core.Run.t) path =
   match run.Jig_core.Run.status with
   | Jig_core.Run.Completed -> ()
   | Jig_core.Run.Paused ->
+      (match Jig_core.Run.last_handoff run with
+      | Some handoff ->
+          Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
+      | None -> ());
       Printf.printf
-        "paused: a human needs to look at the last handoff, then jig run \
-         --resume %s\n"
-        run.Jig_core.Run.id;
+        "paused: answer with  jig run --resume %s --guidance \"...\"\n\
+        \        or reopen the step's session:  jig attach %s\n"
+        run.Jig_core.Run.id run.Jig_core.Run.id;
       exit 2
   | _ -> exit 1
 
@@ -126,9 +130,87 @@ let show_status run_id latest json_output =
       (match run.Jig_core.Run.status with
       | Jig_core.Run.Paused ->
           Printf.printf
-            "paused: resume with jig run --resume %s [--guidance \"...\"]\n"
-            run.Jig_core.Run.id
+            "paused: resume with jig run --resume %s [--guidance \"...\"]\n\
+             or reopen the step's session: jig attach %s\n"
+            run.Jig_core.Run.id run.Jig_core.Run.id
       | _ -> ())
+
+let attach_run run_id latest step_number =
+  let ( let* ) = Result.bind in
+  let root = Sys.getcwd () in
+  let runs_dir = Filename.concat root "runs" in
+  let session_of_step (step : Jig_core.Run.step_record) =
+    match step.Jig_core.Run.session_id with
+    | Some session -> Ok session
+    | None ->
+        Error
+          (Printf.sprintf
+             "step %s recorded no session id (the harness output carried \
+              none)"
+             step.Jig_core.Run.skill)
+  in
+  let result =
+    let* id =
+      match (run_id, latest) with
+      | Some _, true -> Error "pass a run id or --latest, not both"
+      | Some id, false -> Ok id
+      | None, true -> latest_run_id ~runs_dir
+      | None, false -> Error "pass a run id or --latest"
+    in
+    let* run = Jig_core.Store.Filesystem.load ~runs_dir ~id in
+    let* config =
+      Jig_core.Config.load ~jig_dir:(Filename.concat root ".jig")
+    in
+    let steps = run.Jig_core.Run.steps in
+    let* session_id =
+      match step_number with
+      | Some number -> (
+          match List.nth_opt steps (number - 1) with
+          | Some step -> session_of_step step
+          | None ->
+              Error
+                (Printf.sprintf "run %s has %d steps, no step %d" id
+                   (List.length steps) number))
+      | None -> (
+          let newest_with_session =
+            List.fold_left
+              (fun found (step : Jig_core.Run.step_record) ->
+                match step.Jig_core.Run.session_id with
+                | Some _ as session -> session
+                | None -> found)
+              None steps
+          in
+          match newest_with_session with
+          | Some session -> Ok session
+          | None ->
+              Error
+                (Printf.sprintf "no step of run %s recorded a session id" id))
+    in
+    let workspace = Option.value run.Jig_core.Run.workspace ~default:root in
+    let* () =
+      if Sys.file_exists workspace then Ok ()
+      else
+        Error
+          (Printf.sprintf "run %s used workspace %s, which no longer exists"
+             id workspace)
+    in
+    let* command =
+      Jig_core.Attach.command ~attach:config.Jig_core.Config.attach
+        ~session_id
+    in
+    Ok (command, workspace)
+  in
+  match result with
+  | Error message ->
+      Printf.eprintf "jig: %s\n" message;
+      exit 1
+  | Ok (command, workspace) -> (
+      Unix.chdir workspace;
+      try Unix.execvp (List.hd command) (Array.of_list command)
+      with Unix.Unix_error (error, _, _) ->
+        Printf.eprintf "jig: attach: %s: %s\n" (List.hd command)
+          (Unix.error_message error);
+        exit 1)
 
 let list_runs json_output =
   let runs_dir = Filename.concat (Sys.getcwd ()) "runs" in
@@ -270,6 +352,21 @@ let status_cmd =
   Cmd.v (Cmd.info "status" ~doc)
     Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
 
+let attach_step_arg =
+  let doc =
+    "Attach to this step number (1-based). Default: the newest step that \
+     recorded a session id."
+  in
+  Arg.(value & opt (some int) None & info [ "step" ] ~docv:"N" ~doc)
+
+let attach_cmd =
+  let doc =
+    "Reopen a step's recorded harness session interactively, in the run's \
+     workspace."
+  in
+  Cmd.v (Cmd.info "attach" ~doc)
+    Term.(const attach_run $ run_id_arg $ latest_flag $ attach_step_arg)
+
 type listable = Workflows | Runs
 
 let list_what_arg =
@@ -323,4 +420,5 @@ let () =
   let info = Cmd.info "jig" ~version:"0.1.0" ~doc in
   exit
     (Cmd.eval
-       (Cmd.group info [ init_cmd; run_cmd; validate_cmd; status_cmd; list_cmd ]))
+       (Cmd.group info
+          [ init_cmd; run_cmd; validate_cmd; status_cmd; attach_cmd; list_cmd ]))

@@ -154,6 +154,7 @@ struct
         stderr = exec_result.Executor.stderr;
         handoff;
         handoff_error;
+        session_id = Metering.parse_session_id exec_result.Executor.stdout;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }

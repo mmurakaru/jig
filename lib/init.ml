@@ -22,11 +22,21 @@ let claude_config =
    \  - --permission-mode\n\
    \  - acceptEdits\n\
    \  - --output-format\n\
-   \  - json\n"
+   \  - json\n\
+   \n\
+   # jig attach <run-id> reopens a step's recorded session interactively;\n\
+   # {session_id} is replaced with the id from the step record.\n\
+   attach:\n\
+   \  - claude\n\
+   \  - --resume\n\
+   \  - \"{session_id}\"\n"
 
 let codex_config =
   "# Verified against the codex CLI docs at preset creation. --json streams\n\
    # JSONL events; widen --sandbox only if your skills need it.\n\
+   # `codex resume <session-id>` reopens sessions; set attach: once your\n\
+   # codex version's --json output records a session id in jig's step\n\
+   # records.\n\
    harness:\n\
    \  - codex\n\
    \  - exec\n\

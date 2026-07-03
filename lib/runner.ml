@@ -17,7 +17,8 @@ let handoff_protocol =
    ```\n\n\
    status: pass only when this step's goal is verifiably met; fail when it \
    is not (a retry reads your summary to do better); escalate when a human \
-   must decide. Reference artifacts by path; never paste their contents."
+   must decide. Reference artifacts by path, and omit the artifacts key \
+   when there are none; never paste their contents."
 
 let build_prompt ~task ~skill_body ~previous_handoff ~guidance =
   let guidance_section =

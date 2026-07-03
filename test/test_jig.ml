@@ -224,6 +224,18 @@ let test_handoff_parses () =
         "artifacts" [ "src/foo.ml" ] handoff.Handoff.artifacts;
       Alcotest.(check string) "summary" "did the thing" handoff.Handoff.summary
 
+let test_handoff_empty_artifacts_key () =
+  match
+    Handoff.parse
+      "```handoff\nstatus: escalate\nartifacts:\nsummary: which wording?\n```\n"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok handoff ->
+      Alcotest.(check (list string))
+        "bare artifacts key means none" [] handoff.Handoff.artifacts;
+      Alcotest.(check string) "status" "escalate"
+        (Handoff.string_of_status handoff.Handoff.status)
+
 let test_handoff_last_block_wins () =
   let output =
     "```handoff\nstatus: fail\n```\nrevised:\n```handoff\nstatus: pass\n```\n"
@@ -1567,6 +1579,8 @@ let () =
         [
           Alcotest.test_case "parses status, artifacts, summary" `Quick
             test_handoff_parses;
+          Alcotest.test_case "empty artifacts key means none" `Quick
+            test_handoff_empty_artifacts_key;
           Alcotest.test_case "last block wins" `Quick
             test_handoff_last_block_wins;
           Alcotest.test_case "missing block is an error" `Quick

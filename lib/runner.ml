@@ -377,7 +377,68 @@ struct
     in
     drive engine { run; last_handoff = None; guidance = None }
 
-  let resume_run ?(on_step = fun _ -> ()) ~root ~run_id ~guidance () =
+  (* A human can complete the paused entry themselves: the pass is recorded
+     with no cost - the absent harness spend is the audit trail - and a
+     human-authored handoff threads onward. Entry granularity: skipping
+     inside a retry group marks the whole group done, gate included. *)
+  let skip_target_skill ~entries ~entry_index =
+    match List.nth_opt entries entry_index with
+    | Some (Workflow.Step step) -> Ok step.Workflow.skill
+    | Some (Workflow.Retry retry) ->
+        let gate =
+          List.find_opt
+            (fun step -> step.Workflow.until_pass)
+            retry.Workflow.retry_steps
+        in
+        Ok
+          (match (gate, retry.Workflow.retry_steps) with
+          | Some step, _ -> step.Workflow.skill
+          | None, first :: _ -> first.Workflow.skill
+          | None, [] -> "retry")
+    | None ->
+        Error "run: position is past the workflow's entries; nothing to skip"
+
+  let human_skip ~entries ~guidance run =
+    let* skill =
+      skip_target_skill ~entries
+        ~entry_index:run.Run.position.Run.entry_index
+    in
+    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let summary =
+      match guidance with
+      | Some text -> "A human completed this step manually.\n" ^ text
+      | None -> "A human completed this step manually."
+    in
+    let record =
+      {
+        Run.skill;
+        outcome = Run.Pass;
+        exit_code = 0;
+        cost = Metering.Unknown_cost;
+        stdout = "";
+        stderr = "";
+        handoff =
+          Some { Handoff.status = Handoff.Pass; artifacts = []; summary };
+        handoff_error = None;
+        session_id = None;
+        started_at = now;
+        finished_at = now;
+      }
+    in
+    Ok
+      ( record,
+        {
+          run with
+          Run.steps = run.Run.steps @ [ record ];
+          position =
+            {
+              Run.entry_index = run.Run.position.Run.entry_index + 1;
+              iterations_used = 0;
+            };
+        } )
+
+  let resume_run ?(on_step = fun _ -> ()) ?(skip = false) ~root ~run_id
+      ~guidance () =
     let runs_directory = Filename.concat root "runs" in
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
@@ -416,7 +477,13 @@ struct
     in
     let last_handoff = Run.last_handoff existing in
     let run = { existing with Run.status = Run.Running; finished_at = None } in
-    drive engine { run; last_handoff; guidance }
+    if skip then
+      let* record, run =
+        human_skip ~entries:workflow.Workflow.entries ~guidance run
+      in
+      on_step record;
+      drive engine { run; last_handoff = record.Run.handoff; guidance = None }
+    else drive engine { run; last_handoff; guidance }
 end
 
 module Default =

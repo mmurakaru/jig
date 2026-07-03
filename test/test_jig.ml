@@ -508,6 +508,50 @@ let test_escalate_handoff_pauses_run () =
       Alcotest.(check bool) "paused runs have no finished_at" true
         (run.Run.finished_at = None)
 
+let test_skip_marks_paused_entry_done () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~status:"escalate" ~summary:"stuck on one" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (paused_run, _) -> (
+      Scripted_executor.reset
+        ~outputs:
+          [
+            handoff_block ~summary:"two done" ();
+            handoff_block ~summary:"three done" ();
+          ];
+      match
+        Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id
+          ~guidance:(Some "wired it up by hand") ~skip:true ()
+      with
+      | Error message -> Alcotest.fail message
+      | Ok (run, _) -> (
+          Alcotest.(check string) "completed" "completed"
+            (Run.string_of_status run.Run.status);
+          Alcotest.(check int)
+            "escalated, human-skipped, then two agent steps" 4
+            (List.length run.Run.steps);
+          let skipped = List.nth run.Run.steps 1 in
+          Alcotest.(check string) "skipped record names the paused skill"
+            "one" skipped.Run.skill;
+          Alcotest.(check bool) "no cost on the human pass" true
+            (skipped.Run.cost = Metering.Unknown_cost);
+          Alcotest.(check string) "skipped record is empty of output" ""
+            skipped.Run.stdout;
+          match Scripted_executor.prompts () with
+          | first_after_skip :: _ ->
+              Alcotest.(check bool) "human handoff threads onward" true
+                (contains ~affix:"A human completed this step manually."
+                   first_after_skip);
+              Alcotest.(check bool) "guidance text rides in the summary" true
+                (contains ~affix:"wired it up by hand" first_after_skip)
+          | [] -> Alcotest.fail "expected prompts after the skip"))
+
 let setup_retry_project root ~max_iterations ~on_exhausted =
   setup_project root ~harness:[ "irrelevant" ];
   write_file
@@ -551,6 +595,39 @@ let test_retry_until_pass () =
       Alcotest.(check bool)
         "second iteration sees the failing handoff" true
         (contains ~affix:"tests still red" third_prompt)
+
+let test_skip_advances_past_retry_group () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ();
+        handoff_block ~status:"fail" ();
+        handoff_block ();
+        handoff_block ~status:"fail" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (paused_run, _) -> (
+      Scripted_executor.reset ~outputs:[];
+      match
+        Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id
+          ~guidance:None ~skip:true ()
+      with
+      | Error message -> Alcotest.fail message
+      | Ok (run, _) ->
+          Alcotest.(check string) "whole group marked done" "completed"
+            (Run.string_of_status run.Run.status);
+          Alcotest.(check int) "no further harness calls" 0
+            (List.length (Scripted_executor.prompts ()));
+          let skipped = List.nth run.Run.steps 4 in
+          Alcotest.(check string)
+            "skipped record names the group's gate skill" "run-tests"
+            skipped.Run.skill)
 
 let test_invalid_handoff_text_threads_into_retry () =
   let root = make_temp_root () in
@@ -1610,6 +1687,10 @@ let () =
             test_on_fail_escalate_pauses;
           Alcotest.test_case "on_fail abort aborts" `Quick
             test_on_fail_abort_aborts;
+          Alcotest.test_case "skip marks the paused entry done" `Quick
+            test_skip_marks_paused_entry_done;
+          Alcotest.test_case "skip advances past the whole retry group" `Quick
+            test_skip_advances_past_retry_group;
           Alcotest.test_case "resume continues from the paused step" `Quick
             test_resume_continues_from_paused_step;
           Alcotest.test_case "resume refuses completed runs" `Quick

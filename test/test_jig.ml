@@ -877,6 +877,47 @@ let test_concurrent_isolated_runs_do_not_interfere () =
 
 (* Run visibility *)
 
+(* Snapshots the store from inside the harness call: whatever the executor
+   sees is what `jig status` would report while the step is executing. *)
+let probe_runs_dir = ref ""
+let probe_seen : Run.t list ref = ref []
+
+module Probe_executor : Executor.S = struct
+  let execute ~command:_ ~cwd:_ ~prompt:_ =
+    (match Store.Filesystem.list_runs ~runs_dir:!probe_runs_dir with
+    | Ok runs -> probe_seen := runs
+    | Error _ -> probe_seen := []);
+    Ok { Executor.exit_code = 0; stdout = handoff_block (); stderr = "" }
+end
+
+module Probe_runner =
+  Runner.Make (Probe_executor) (Model_provider.Default) (Metering.Noop)
+    (Store.Filesystem)
+
+let test_run_record_visible_during_first_step () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  probe_runs_dir := Filename.concat root "runs";
+  probe_seen := [];
+  match
+    Probe_runner.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match !probe_seen with
+      | [ run ] ->
+          Alcotest.(check string) "in-flight status" "running"
+            (Run.string_of_status run.Run.status);
+          Alcotest.(check int) "no steps completed yet" 0
+            (List.length run.Run.steps)
+      | runs ->
+          Alcotest.fail
+            (Printf.sprintf
+               "expected the in-flight run in the store during step 1, found \
+                %d runs"
+               (List.length runs)))
+
 let test_on_step_fires_per_step_in_order () =
   let root = make_temp_root () in
   setup_three_step_project root;
@@ -1347,6 +1388,8 @@ let () =
         ] );
       ( "visibility",
         [
+          Alcotest.test_case "run record visible during first step" `Quick
+            test_run_record_visible_during_first_step;
           Alcotest.test_case "on_step fires per step in order" `Quick
             test_on_step_fires_per_step_in_order;
           Alcotest.test_case "list runs newest-first" `Quick

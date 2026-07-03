@@ -236,6 +236,32 @@ let test_handoff_empty_artifacts_key () =
       Alcotest.(check string) "status" "escalate"
         (Handoff.string_of_status handoff.Handoff.status)
 
+let test_handoff_empty_artifact_entries () =
+  (match
+     Handoff.parse
+       "```handoff\nstatus: escalate\nartifacts:\n  - []\nsummary: stuck\n```\n"
+   with
+  | Error message -> Alcotest.fail message
+  | Ok handoff ->
+      Alcotest.(check (list string))
+        "an empty-list entry means none" [] handoff.Handoff.artifacts);
+  (match
+     Handoff.parse
+       "```handoff\nstatus: pass\nartifacts:\n  - src/real.ml\n  -\n```\n"
+   with
+  | Error message -> Alcotest.fail message
+  | Ok handoff ->
+      Alcotest.(check (list string))
+        "paths survive next to empty entries" [ "src/real.ml" ]
+        handoff.Handoff.artifacts);
+  match
+    Handoff.parse "```handoff\nstatus: pass\nartifacts:\n  - 3\n```\n"
+  with
+  | Ok _ -> Alcotest.fail "a numeric artifact entry must stay an error"
+  | Error message ->
+      Alcotest.(check bool) "names the artifacts rule" true
+        (contains ~affix:"artifacts" message)
+
 let test_handoff_last_block_wins () =
   let output =
     "```handoff\nstatus: fail\n```\nrevised:\n```handoff\nstatus: pass\n```\n"
@@ -1581,6 +1607,8 @@ let () =
             test_handoff_parses;
           Alcotest.test_case "empty artifacts key means none" `Quick
             test_handoff_empty_artifacts_key;
+          Alcotest.test_case "empty artifact entries mean none" `Quick
+            test_handoff_empty_artifact_entries;
           Alcotest.test_case "last block wins" `Quick
             test_handoff_last_block_wins;
           Alcotest.test_case "missing block is an error" `Quick

@@ -54,14 +54,16 @@ let of_yaml yaml =
         (* A bare `artifacts:` line - nothing to hand over - is yaml null. *)
         | Some `Null -> Ok []
         | Some (`A entries) ->
-            let paths =
-              List.filter_map
-                (function `String path -> Some path | _ -> None)
-                entries
-            in
-            if List.length paths <> List.length entries then
-              Error "handoff: artifacts must be a list of paths"
-            else Ok paths
+            (* Agents spell "no artifacts" many ways; empty entries mean
+               none, and only foreign shapes reject the block. *)
+            List.fold_right
+              (fun entry accumulator ->
+                let* paths = accumulator in
+                match entry with
+                | `String "" | `Null | `A [] -> Ok paths
+                | `String path -> Ok (path :: paths)
+                | _ -> Error "handoff: artifacts must be a list of paths")
+              entries (Ok [])
         | Some _ -> Error "handoff: artifacts must be a list of paths"
       in
       let summary =

@@ -288,6 +288,11 @@ struct
   (* An infrastructure error (unreadable skill, spawn failure, store failure)
      still persists what executed, then propagates as an Error. *)
   let drive engine progress =
+    (* Persist before the first step so status/list see the in-flight run;
+       a resume likewise flips its stored status back to Running here. *)
+    let* progress, _ =
+      persist engine progress ~status:Run.Running ~finished:false
+    in
     match execute_entries engine progress with
     | Ok (status, progress) -> finish engine progress status
     | Error message ->

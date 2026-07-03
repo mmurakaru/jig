@@ -88,6 +88,28 @@ struct
           | Handoff.Escalate -> (Run.Escalate, Some handoff, None))
       | Error message -> (Run.Invalid_handoff, None, Some message)
 
+  (* A step that ends without a handoff block still said something; thread
+     its final text into the next attempt so a retry does not start blind.
+     Tail-truncated: the end of a long reply carries the freshest state. *)
+  let degraded_text_limit = 4000
+
+  let degraded_handoff stdout =
+    let text = Handoff.agent_text stdout in
+    let text =
+      let length = String.length text in
+      if length <= degraded_text_limit then text
+      else
+        "[earlier output truncated]\n"
+        ^ String.sub text (length - degraded_text_limit) degraded_text_limit
+    in
+    {
+      Handoff.status = Handoff.Fail;
+      artifacts = [];
+      summary =
+        "The previous attempt ended without a handoff block. Its final \
+         message:\n" ^ text;
+    }
+
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
   let execute_step engine progress (step : Workflow.step) =
@@ -143,7 +165,12 @@ struct
             progress.run with
             Run.steps = progress.run.Run.steps @ [ step_record ];
           };
-        last_handoff = (match handoff with Some _ -> handoff | None -> progress.last_handoff);
+        last_handoff =
+          (match (handoff, outcome) with
+          | Some _, _ -> handoff
+          | None, Run.Invalid_handoff ->
+              Some (degraded_handoff exec_result.Executor.stdout)
+          | None, _ -> progress.last_handoff);
         guidance = None;
       }
     in

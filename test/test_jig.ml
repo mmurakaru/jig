@@ -552,6 +552,38 @@ let test_retry_until_pass () =
         "second iteration sees the failing handoff" true
         (contains ~affix:"tests still red" third_prompt)
 
+let test_invalid_handoff_text_threads_into_retry () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:3 ~on_exhausted:"escalate";
+  Scripted_executor.reset
+    ~outputs:
+      [
+        "did some work but still wiring the component test";
+        handoff_block ~summary:"resumed from partial work" ();
+        handoff_block ~summary:"tests green" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      match Scripted_executor.prompts () with
+      | [ _; retried; after_valid ] ->
+          Alcotest.(check bool) "retry is told the block was missing" true
+            (contains ~affix:"without a handoff block" retried);
+          Alcotest.(check bool) "retry sees the invalid attempt's text" true
+            (contains ~affix:"still wiring the component test" retried);
+          Alcotest.(check bool) "valid handoff supersedes degraded text" false
+            (contains ~affix:"still wiring the component test" after_valid);
+          Alcotest.(check bool) "valid handoff threads normally" true
+            (contains ~affix:"resumed from partial work" after_valid)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+
 let test_retry_exhausted_escalates () =
   let root = make_temp_root () in
   setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
@@ -1496,6 +1528,8 @@ let () =
         [
           Alcotest.test_case "retry loops until the until-step passes" `Quick
             test_retry_until_pass;
+          Alcotest.test_case "invalid handoff text threads into the retry"
+            `Quick test_invalid_handoff_text_threads_into_retry;
           Alcotest.test_case "exhausted retry escalates to paused" `Quick
             test_retry_exhausted_escalates;
           Alcotest.test_case "exhausted retry aborts" `Quick

@@ -51,6 +51,8 @@ let of_yaml yaml =
       let* artifacts =
         match List.assoc_opt "artifacts" fields with
         | None -> Ok []
+        (* A bare `artifacts:` line - nothing to hand over - is yaml null. *)
+        | Some `Null -> Ok []
         | Some (`A entries) ->
             let paths =
               List.filter_map

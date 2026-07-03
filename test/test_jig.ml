@@ -468,7 +468,9 @@ let test_prompt_carries_handoff_protocol () =
                prompt);
           Alcotest.(check bool)
             "example status cannot parse as a real handoff" true
-            (contains ~affix:"status: <pass | fail | escalate>" prompt)
+            (contains ~affix:"status: <pass | fail | escalate>" prompt);
+          Alcotest.(check bool) "workspace ownership stated" true
+            (contains ~affix:"the runner owns isolation" prompt)
       | prompts ->
           Alcotest.fail
             (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
@@ -1134,6 +1136,15 @@ let test_init_claude_preset_is_well_formed () =
             "last element is single-valued (prompt-safe)" "json"
             (List.nth config.Config.harness
                (List.length config.Config.harness - 1));
+          (let rec denies_worktree_tools = function
+             | "--disallowedTools" :: tools :: _ ->
+                 contains ~affix:"EnterWorktree" tools
+                 && contains ~affix:"ExitWorktree" tools
+             | _ :: rest -> denies_worktree_tools rest
+             | [] -> false
+           in
+           Alcotest.(check bool) "harness worktree tools denied" true
+             (denies_worktree_tools config.Config.harness));
           Alcotest.(check (list string))
             "skill_paths kept in order"
             [ "/some/library"; "/another/library" ]

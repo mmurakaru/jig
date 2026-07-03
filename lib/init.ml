@@ -10,11 +10,15 @@ let claude_config =
    # git and gh are what the starter skills themselves use (committing,\n\
    # opening PRs, reading issues). Add your stack's tools to the same\n\
    # list, e.g. Bash(pnpm:*) or Bash(pytest:*) or Bash(cargo:*).\n\
+   # jig owns workspace isolation: the harness's own worktree tools are\n\
+   # denied so a step cannot relocate the run's work.\n\
    harness:\n\
    \  - claude\n\
    \  - -p\n\
    \  - --allowedTools\n\
    \  - \"Bash(git:*),Bash(gh:*)\"\n\
+   \  - --disallowedTools\n\
+   \  - \"EnterWorktree,ExitWorktree\"\n\
    \  - --permission-mode\n\
    \  - acceptEdits\n\
    \  - --output-format\n\

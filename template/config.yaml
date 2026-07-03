@@ -6,11 +6,15 @@
 # jig appends the step prompt as the FINAL argument: never end the list
 # with a flag that takes multiple values (e.g. --allowedTools), or it
 # will swallow the prompt.
+# jig owns workspace isolation: deny any harness tool that could relocate
+# the run's work (for claude, the worktree tools).
 harness:
   - claude
   - -p
   - --output-format
   - json
+  - --disallowedTools
+  - "EnterWorktree,ExitWorktree"
   - --permission-mode
   - acceptEdits
 

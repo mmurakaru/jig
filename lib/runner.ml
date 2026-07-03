@@ -3,7 +3,9 @@ open Result_syntax
 (* The handoff contract is the runner's protocol, so the runner states it -
    skill files carry pure instructions and are passed byte-for-byte. *)
 let handoff_protocol =
-  "Protocol: end your reply with a fenced handoff block - it is how the run \
+  "Workspace: the runner owns isolation. Do the work in the current \
+   directory; do not create worktrees or otherwise relocate it.\n\n\
+   Protocol: end your reply with a fenced handoff block - it is how the run \
    continues, and a reply without one fails the step.\n\n\
    ```handoff\n\
    status: <pass | fail | escalate>\n\

@@ -1,4 +1,4 @@
 (executable
  (name main)
  (public_name jig)
- (libraries jig_core cmdliner))
+ (libraries jig_core cmdliner unix))

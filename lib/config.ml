@@ -4,6 +4,7 @@ type t = {
   harness : string list;
   wrapper : string list;
   skill_paths : string list;
+  attach : string list;
 }
 
 let expand_home path =
@@ -35,6 +36,7 @@ let of_yaml yaml =
       let* harness = string_list_field fields ~key:"harness" in
       let* wrapper = string_list_field fields ~key:"wrapper" in
       let* skill_paths = string_list_field fields ~key:"skill_paths" in
+      let* attach = string_list_field fields ~key:"attach" in
       match harness with
       | None -> Error "config: missing required key: harness"
       | Some [] -> Error "config: harness must not be empty"
@@ -45,6 +47,7 @@ let of_yaml yaml =
               wrapper = Option.value wrapper ~default:[];
               skill_paths =
                 List.map expand_home (Option.value skill_paths ~default:[]);
+              attach = Option.value attach ~default:[];
             })
   | _ -> Error "config: expected a mapping at the top level"
 

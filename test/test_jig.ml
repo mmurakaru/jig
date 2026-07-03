@@ -831,6 +831,16 @@ let test_isolated_run_uses_worktree_and_resume_reuses_it () =
         | Some path -> path
         | None -> Alcotest.fail "expected an isolated workspace"
       in
+      Alcotest.(check bool) "workspace path has no git-internal segment" false
+        (contains ~affix:"/.git/" workspace);
+      (let sibling =
+         Filename.concat (Filename.dirname root)
+           (Filename.basename root ^ "-worktrees")
+       in
+       Alcotest.(check bool) "workspace lives in the sibling worktrees dir"
+         true
+         (String.length workspace > String.length sibling
+         && String.sub workspace 0 (String.length sibling) = sibling));
       Alcotest.(check bool) "worktree survives the pause" true
         (Sys.file_exists workspace);
       Alcotest.(check bool) "marker written in the worktree" true
@@ -876,6 +886,45 @@ let test_concurrent_isolated_runs_do_not_interfere () =
     (workspace first <> workspace second);
   Alcotest.(check bool) "both worktrees alive while paused" true
     (Sys.file_exists (workspace first) && Sys.file_exists (workspace second))
+
+let test_resume_honors_recorded_workspace_location () =
+  let root = make_temp_root () in
+  setup_git_project root
+    ~harness:[ "sh"; "-c"; "printf '```handoff\\nstatus: pass\\n```\\n'" ];
+  (* A workspace recorded under the pre-relocation layout: still resumable. *)
+  let old_workspace =
+    Filename.concat root ".git/jig-worktrees/legacy-run"
+  in
+  run_shell root
+    ("git worktree add --detach " ^ Filename.quote old_workspace);
+  let legacy_run =
+    {
+      Run.id = "legacy-run";
+      workflow = "hello";
+      task = "iso";
+      status = Run.Paused;
+      error = None;
+      position = { Run.entry_index = 0; iterations_used = 0 };
+      workspace = Some old_workspace;
+      steps = [];
+      started_at = "2026-07-03T00:00:00Z";
+      finished_at = None;
+    }
+  in
+  (match
+     Store.Filesystem.save ~runs_dir:(Filename.concat root "runs") legacy_run
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  match
+    Runner.Default.resume_run ~root ~run_id:"legacy-run" ~guidance:None ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (finished, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status finished.Run.status);
+      Alcotest.(check bool) "legacy worktree cleaned up" false
+        (Sys.file_exists old_workspace)
 
 (* Run visibility *)
 
@@ -1438,6 +1487,8 @@ let () =
             test_config_wrapper_prepends;
           Alcotest.test_case "isolated run uses a worktree, resume reuses it"
             `Quick test_isolated_run_uses_worktree_and_resume_reuses_it;
+          Alcotest.test_case "resume honors the recorded workspace location"
+            `Quick test_resume_honors_recorded_workspace_location;
           Alcotest.test_case "concurrent isolated runs do not interfere"
             `Quick test_concurrent_isolated_runs_do_not_interfere;
         ] );

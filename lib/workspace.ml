@@ -1,9 +1,11 @@
 let ( let* ) = Result.bind
 
-(* Worktrees live under .git/jig-worktrees/ - inside the git dir they can
-   never show up as untracked files in the parent checkout. *)
+(* Worktrees live in a sibling directory of the repo: paths containing
+   /.git/ are treated as git internals by vite, biome, and file-write
+   guards, and an in-repo location would surface in IDE and watcher scans. *)
 let worktree_path ~root ~run_id =
-  Filename.concat (Filename.concat (Filename.concat root ".git") "jig-worktrees") run_id
+  let container = Filename.basename root ^ "-worktrees" in
+  Filename.concat (Filename.concat (Filename.dirname root) container) run_id
 
 let run_git ~root arguments =
   let* outcome = Subprocess.run ~cwd:root ~argv:("git" :: arguments) () in

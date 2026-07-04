@@ -195,23 +195,77 @@ let attach_run run_id latest step_number =
           (Printf.sprintf "run %s used workspace %s, which no longer exists"
              id workspace)
     in
-    let* command =
-      Jig_core.Attach.command ~attach:config.Jig_core.Config.attach
-        ~session_id
-    in
-    Ok (command, workspace)
+    Ok (id, run, config, session_id, workspace)
   in
   match result with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1
-  | Ok (command, workspace) -> (
-      Unix.chdir workspace;
-      try Unix.execvp (List.hd command) (Array.of_list command)
-      with Unix.Unix_error (error, _, _) ->
-        Printf.eprintf "jig: attach: %s: %s\n" (List.hd command)
-          (Unix.error_message error);
-        exit 1)
+  | Ok (id, run, config, session_id, workspace) -> (
+      let interactive_command () =
+        match
+          Jig_core.Attach.command ~attach:config.Jig_core.Config.attach
+            ~session_id
+        with
+        | Ok command -> command
+        | Error message ->
+            Printf.eprintf "jig: %s\n" message;
+            exit 1
+      in
+      let round_trip =
+        step_number = None
+        &&
+        match run.Jig_core.Run.status with
+        | Jig_core.Run.Paused | Jig_core.Run.Running -> true
+        | _ -> false
+      in
+      if not round_trip then (
+        (* Pure inspection: terminal runs, or an explicit older step. *)
+        let command = interactive_command () in
+        Unix.chdir workspace;
+        try Unix.execvp (List.hd command) (Array.of_list command)
+        with Unix.Unix_error (error, _, _) ->
+          Printf.eprintf "jig: attach: %s: %s\n" (List.hd command)
+            (Unix.error_message error);
+          exit 1)
+      else
+        match
+          Jig_core.Attach.command
+            ~attach:config.Jig_core.Config.attach_headless ~session_id
+        with
+        | Error _ ->
+            Printf.eprintf
+              "jig: attach: no attach_headless command configured - add it \
+               to .jig/config.yaml so the chat can hand back to the run\n";
+            exit 1
+        | Ok headless_command -> (
+            let command = interactive_command () in
+            print_endline
+              "reopening the step's session - exit the chat to hand back to \
+               the run";
+            let chat =
+              Unix.create_process (List.hd command)
+                (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
+            in
+            ignore (Unix.waitpid [] chat);
+            print_endline "collecting the step's handoff...";
+            let continued =
+              Result.bind
+                (Jig_core.Executor.Local.execute ~command:headless_command
+                   ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt)
+                (fun exec_result ->
+                  Jig_core.Runner.Default.continue_attached
+                    ~on_step:print_step_live ~root ~run_id:id ~exec_result ())
+            in
+            match continued with
+            | Ok (run, path) -> report_run run path
+            | Error message ->
+                Printf.eprintf "jig: %s\n" message;
+                Printf.printf
+                  "still paused: jig run --resume %s [--guidance \"...\"] \
+                   [--skip], or jig attach %s\n"
+                  id id;
+                exit 2))
 
 let list_runs json_output =
   let runs_dir = Filename.concat (Sys.getcwd ()) "runs" in
@@ -371,7 +425,8 @@ let attach_step_arg =
 let attach_cmd =
   let doc =
     "Reopen a step's recorded harness session interactively, in the run's \
-     workspace."
+     workspace. On a paused run the chat hands back: when it ends, the \
+     session's handoff completes the paused step and the run continues."
   in
   Cmd.v (Cmd.info "attach" ~doc)
     Term.(const attach_run $ run_id_arg $ latest_flag $ attach_step_arg)

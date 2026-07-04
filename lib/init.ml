@@ -29,7 +29,18 @@ let claude_config =
    attach:\n\
    \  - claude\n\
    \  - --resume\n\
-   \  - \"{session_id}\"\n"
+   \  - \"{session_id}\"\n\
+   \n\
+   # The headless twin: after the chat ends on a paused run, jig resumes\n\
+   # the same session with this command to collect its handoff and\n\
+   # continue the run.\n\
+   attach_headless:\n\
+   \  - claude\n\
+   \  - -p\n\
+   \  - --resume\n\
+   \  - \"{session_id}\"\n\
+   \  - --output-format\n\
+   \  - json\n"
 
 let codex_config =
   "# Verified against the codex CLI docs at preset creation. --json streams\n\

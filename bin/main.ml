@@ -44,14 +44,14 @@ let print_step_live step =
     (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
     (cost_suffix step)
 
-let run_workflow workflow resume task guidance skip isolated =
+let run_workflow workflow resume task guidance skip detach isolated =
   let root = Sys.getcwd () in
-  let result =
+  let execute ?run_id () =
     match (workflow, resume, task) with
     | _, None, _ when skip -> Error "--skip belongs to --resume"
     | Some workflow_name, None, Some task ->
-        Jig_core.Runner.Default.execute_run ~on_step:print_step_live ~root
-          ~workflow_name ~task ~isolated ()
+        Jig_core.Runner.Default.execute_run ~on_step:print_step_live ?run_id
+          ~root ~workflow_name ~task ~isolated ()
     | None, Some _, None when isolated ->
         Error "--isolated belongs to the original run; a resume reuses its workspace"
     | None, Some run_id, None ->
@@ -63,11 +63,70 @@ let run_workflow workflow resume task guidance skip isolated =
     | None, Some _, Some _ -> Error "--task belongs to the original run; use --guidance when resuming"
     | None, None, _ -> Error "pass a workflow name or --resume <run-id>"
   in
-  match result with
-  | Error message ->
-      Printf.eprintf "jig: %s\n" message;
-      exit 1
-  | Ok (run, path) -> report_run run path
+  if not detach then (
+    match execute () with
+    | Error message ->
+        Printf.eprintf "jig: %s\n" message;
+        exit 1
+    | Ok (run, path) -> report_run run path)
+  else
+    (* Surface config/workflow problems here, in the terminal, before
+       detaching; pre-issue the id so it can be printed and name the log. *)
+    let run_id_result =
+      match (workflow, resume, task) with
+      | Some name, None, Some _ ->
+          let jig_dir = Filename.concat root ".jig" in
+          let path =
+            Filename.concat
+              (Filename.concat jig_dir "workflows")
+              (name ^ ".yaml")
+          in
+          Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
+              Result.bind (Jig_core.Config.load ~jig_dir) (fun config ->
+                  Result.map
+                    (fun () ->
+                      Jig_core.Run.make_id ~workflow:name
+                        ~time:(Unix.gettimeofday ()) ~pid:(Unix.getpid ()))
+                    (Jig_core.Validate.workflow ~jig_dir
+                       ~skill_paths:config.Jig_core.Config.skill_paths parsed)))
+      | None, Some run_id, None ->
+          Result.map
+            (fun (_ : Jig_core.Run.t) -> run_id)
+            (Jig_core.Store.Filesystem.load
+               ~runs_dir:(Filename.concat root "runs")
+               ~id:run_id)
+      | _ -> Error "--detach needs a workflow with --task, or --resume <run-id>"
+    in
+    match run_id_result with
+    | Error message ->
+        Printf.eprintf "jig: %s\n" message;
+        exit 1
+    | Ok run_id ->
+        let runs_dir = Filename.concat root "runs" in
+        (try Unix.mkdir runs_dir 0o755
+         with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+        let log_path = Filename.concat runs_dir (run_id ^ ".log") in
+        Printf.printf "detached: %s\nlog: %s\nwatch: jig status %s\n%!" run_id
+          log_path run_id;
+        if Unix.fork () > 0 then exit 0
+        else (
+          ignore (Unix.setsid ());
+          let devnull = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+          Unix.dup2 devnull Unix.stdin;
+          Unix.close devnull;
+          let log =
+            Unix.openfile log_path
+              [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ]
+              0o644
+          in
+          Unix.dup2 log Unix.stdout;
+          Unix.dup2 log Unix.stderr;
+          Unix.close log;
+          match execute ~run_id () with
+          | Error message ->
+              Printf.eprintf "jig: %s\n" message;
+              exit 1
+          | Ok (run, path) -> report_run run path)
 
 let validate_workflow workflow =
   let root = Sys.getcwd () in
@@ -386,12 +445,19 @@ let skip_flag =
   in
   Arg.(value & flag & info [ "skip" ] ~doc)
 
+let detach_flag =
+  let doc =
+    "Return immediately and keep the run alive after this terminal closes; \
+     step output streams to runs/<run-id>.log."
+  in
+  Arg.(value & flag & info [ "detach" ] ~doc)
+
 let run_cmd =
   let doc = "Execute a workflow against a task, or resume a paused run." in
   Cmd.v (Cmd.info "run" ~doc)
     Term.(
       const run_workflow $ optional_workflow_arg $ resume_arg $ task_arg
-      $ guidance_arg $ skip_flag $ isolated_flag)
+      $ guidance_arg $ skip_flag $ detach_flag $ isolated_flag)
 
 let validate_cmd =
   let doc = "Lint a workflow against the schema and the project's skills." in

@@ -457,6 +457,22 @@ let test_executor_is_swappable () =
       Alcotest.(check string) "status" "completed"
         (Run.string_of_status run.Run.status)
 
+let test_execute_run_honors_given_run_id () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~run_id:"pre-issued-id" ~root
+      ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "run carries the pre-issued id" "pre-issued-id"
+        run.Run.id;
+      Alcotest.(check bool) "record lands under the pre-issued id" true
+        (Sys.file_exists
+           (Filename.concat root "runs/pre-issued-id.json"))
+
 let test_handoffs_thread_between_steps () =
   let root = make_temp_root () in
   setup_three_step_project root;
@@ -1801,6 +1817,8 @@ let () =
             test_step_output_is_recorded;
           Alcotest.test_case "executor port is swappable" `Quick
             test_executor_is_swappable;
+          Alcotest.test_case "execute_run honors a pre-issued run id" `Quick
+            test_execute_run_honors_given_run_id;
           Alcotest.test_case "prompt carries the handoff protocol" `Quick
             test_prompt_carries_handoff_protocol;
           Alcotest.test_case "prompt states the workflow position" `Quick

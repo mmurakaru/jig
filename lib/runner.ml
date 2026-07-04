@@ -20,7 +20,26 @@ let handoff_protocol =
    must decide. Reference artifacts by path, and omit the artifacts key \
    when there are none; never paste their contents."
 
-let build_prompt ~task ~skill_body ~previous_handoff ~guidance =
+(* One line of orientation: which workflow, how far along, what follows.
+   The full step list stays out - it bloats every prompt and tempts a step
+   into doing later steps' work early. *)
+let entry_lead_skill = function
+  | Workflow.Step step -> step.Workflow.skill
+  | Workflow.Retry retry -> (
+      match retry.Workflow.retry_steps with
+      | first :: _ -> first.Workflow.skill
+      | [] -> "retry")
+
+let position_line ~workflow_name ~entries ~entry_index ~skill =
+  let continuation =
+    match List.nth_opt entries (entry_index + 1) with
+    | Some entry -> Printf.sprintf "next: %s." (entry_lead_skill entry)
+    | None -> "this is the final step."
+  in
+  Printf.sprintf "Workflow: %s - step %d of %d (%s); %s" workflow_name
+    (entry_index + 1) (List.length entries) skill continuation
+
+let build_prompt ~task ~position ~skill_body ~previous_handoff ~guidance =
   let guidance_section =
     match guidance with
     | Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text
@@ -32,8 +51,8 @@ let build_prompt ~task ~skill_body ~previous_handoff ~guidance =
         Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
-  Printf.sprintf "Task: %s\n\n%s%s%s\n\n%s" task guidance_section
-    handoff_section skill_body handoff_protocol
+  Printf.sprintf "Task: %s\n\n%s\n\n%s%s%s\n\n%s" task position
+    guidance_section handoff_section skill_body handoff_protocol
 
 module Make
     (Executor_port : Executor.S)
@@ -127,8 +146,13 @@ struct
     let* exec_result =
       Executor_port.execute ~command ~cwd:engine.workspace
         ~prompt:
-          (build_prompt ~task:engine.task ~skill_body
-             ~previous_handoff:progress.last_handoff
+          (build_prompt ~task:engine.task
+             ~position:
+               (position_line ~workflow_name:progress.run.Run.workflow
+                  ~entries:engine.entries
+                  ~entry_index:progress.run.Run.position.Run.entry_index
+                  ~skill:step.Workflow.skill)
+             ~skill_body ~previous_handoff:progress.last_handoff
              ~guidance:progress.guidance)
     in
     let cost, usage = Metering.parse_cost exec_result.Executor.stdout in

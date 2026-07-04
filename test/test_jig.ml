@@ -489,6 +489,72 @@ let test_handoffs_thread_between_steps () =
           Alcotest.fail
             (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
 
+let test_prompt_states_workflow_position () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ first; second; third ] ->
+          Alcotest.(check bool) "first step knows its position" true
+            (contains ~affix:"Workflow: pipeline - step 1 of 3 (one); next: two."
+               first);
+          Alcotest.(check bool) "second step names its successor" true
+            (contains ~affix:"step 2 of 3 (two); next: three." second);
+          Alcotest.(check bool) "final step knows it is last" true
+            (contains ~affix:"step 3 of 3 (three); this is the final step."
+               third)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+
+let test_retry_prompt_states_group_position () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/gated.yaml")
+    "name: gated\n\
+     steps:\n\
+    \  - retry:\n\
+    \      max_iterations: 2\n\
+    \      on_exhausted: escalate\n\
+    \      steps:\n\
+    \        - skill: implement-fix\n\
+    \        - skill: run-tests\n\
+    \          until: pass\n\
+    \  - skill: open-pr\n";
+  List.iter
+    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
+    [ "implement-fix"; "run-tests"; "open-pr" ];
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"gated" ~task:"go"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ group_first; group_gate; last ] ->
+          Alcotest.(check bool) "group step carries the entry position" true
+            (contains ~affix:"step 1 of 2 (implement-fix); next: open-pr."
+               group_first);
+          Alcotest.(check bool) "gate step shares the entry position" true
+            (contains ~affix:"step 1 of 2 (run-tests); next: open-pr."
+               group_gate);
+          Alcotest.(check bool) "entry after the group is final" true
+            (contains ~affix:"step 2 of 2 (open-pr); this is the final step."
+               last)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+
 let test_prompt_carries_handoff_protocol () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
@@ -1634,6 +1700,10 @@ let () =
             test_executor_is_swappable;
           Alcotest.test_case "prompt carries the handoff protocol" `Quick
             test_prompt_carries_handoff_protocol;
+          Alcotest.test_case "prompt states the workflow position" `Quick
+            test_prompt_states_workflow_position;
+          Alcotest.test_case "retry prompts share the entry position" `Quick
+            test_retry_prompt_states_group_position;
           Alcotest.test_case "handoffs thread between steps" `Quick
             test_handoffs_thread_between_steps;
           Alcotest.test_case "fail handoff short-circuits" `Quick

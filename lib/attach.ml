@@ -1,10 +1,8 @@
 (* Resolves the command that reopens a step's harness session
    interactively. The template comes from config; every occurrence of
-   the placeholder is replaced with the step's recorded session id. *)
+   a placeholder is replaced with its value. *)
 
-let placeholder = "{session_id}"
-
-let substitute ~session_id part =
+let substitute ~placeholder ~value part =
   let placeholder_length = String.length placeholder in
   let buffer = Buffer.create (String.length part) in
   let rec copy from =
@@ -19,7 +17,7 @@ let substitute ~session_id part =
             brace + placeholder_length <= String.length part
             && String.sub part brace placeholder_length = placeholder
           then (
-            Buffer.add_string buffer session_id;
+            Buffer.add_string buffer value;
             copy (brace + placeholder_length))
           else (
             Buffer.add_char buffer '{';
@@ -34,4 +32,8 @@ let command ~attach ~session_id =
       Error
         "attach: no attach command configured - add attach: to \
          .jig/config.yaml (e.g. [claude, --resume, \"{session_id}\"])"
-  | parts -> Ok (List.map (substitute ~session_id) parts)
+  | parts ->
+      Ok
+        (List.map
+           (substitute ~placeholder:"{session_id}" ~value:session_id)
+           parts)

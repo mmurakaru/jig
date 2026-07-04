@@ -318,6 +318,23 @@ struct
     in
     loop progress progress.run.Run.position.Run.entry_index
 
+  (* Best-effort announcement that the run stopped executing; a notify
+     failure never affects the run's outcome. *)
+  let notify engine run =
+    match engine.config.Config.notify with
+    | [] -> ()
+    | template ->
+        let argv =
+          List.map
+            (fun part ->
+              part
+              |> Attach.substitute ~placeholder:"{run_id}" ~value:run.Run.id
+              |> Attach.substitute ~placeholder:"{status}"
+                   ~value:(Run.string_of_status run.Run.status))
+            template
+        in
+        ignore (Subprocess.run ~cwd:engine.root ~argv ())
+
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
      finds the work in progress exactly where the agent left it. *)
   let finish engine progress status =
@@ -329,6 +346,7 @@ struct
           Workspace.remove ~root:engine.root ~path:workspace_path
       | _ -> Ok ()
     in
+    notify engine progress.run;
     Ok (progress.run, path)
 
   let load_project ~root ~workflow_name =

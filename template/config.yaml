@@ -40,3 +40,11 @@ harness:
 #   - "{session_id}"
 #   - --output-format
 #   - json
+
+# Optional: command run whenever a run stops executing (paused, completed,
+# failed, aborted) - {run_id} and {status} are substituted. Failures are
+# ignored.
+# notify:
+#   - sh
+#   - -c
+#   - osascript -e 'display notification "{run_id} {status}" with title "jig"'

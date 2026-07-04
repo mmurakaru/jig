@@ -457,6 +457,56 @@ let test_executor_is_swappable () =
       Alcotest.(check string) "status" "completed"
         (Run.string_of_status run.Run.status)
 
+let write_notify_config root ~notify_command =
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    (Printf.sprintf
+       "harness:\n  - irrelevant\nnotify:\n  - sh\n  - -c\n  - %S\n"
+       notify_command)
+
+let test_notify_fires_when_run_stops () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_notify_config root
+    ~notify_command:"printf %s {run_id} > notified-{status}";
+  Scripted_executor.reset ~outputs:[];
+  (match
+     Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+       ~isolated:false ()
+   with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      let marker = Filename.concat root "notified-completed" in
+      Alcotest.(check bool) "notify fired on completion" true
+        (Sys.file_exists marker);
+      Alcotest.(check string) "run id substituted" run.Run.id
+        (String.trim (In_channel.with_open_text marker In_channel.input_all)));
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~status:"escalate" ~summary:"need you" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ ->
+      Alcotest.(check bool) "notify fired on pause" true
+        (Sys.file_exists (Filename.concat root "notified-paused"))
+
+let test_notify_failure_is_harmless () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_notify_config root ~notify_command:"exit 1";
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "run outcome unaffected by failing notify"
+        "completed"
+        (Run.string_of_status run.Run.status)
+
 let test_execute_run_honors_given_run_id () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
@@ -1819,6 +1869,10 @@ let () =
             test_executor_is_swappable;
           Alcotest.test_case "execute_run honors a pre-issued run id" `Quick
             test_execute_run_honors_given_run_id;
+          Alcotest.test_case "notify fires when a run stops" `Quick
+            test_notify_fires_when_run_stops;
+          Alcotest.test_case "notify failure is harmless" `Quick
+            test_notify_failure_is_harmless;
           Alcotest.test_case "prompt carries the handoff protocol" `Quick
             test_prompt_carries_handoff_protocol;
           Alcotest.test_case "prompt states the workflow position" `Quick

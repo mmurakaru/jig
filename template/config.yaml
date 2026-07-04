@@ -29,3 +29,14 @@ harness:
 #   - claude
 #   - --resume
 #   - "{session_id}"
+
+# Optional: the headless twin of attach. After the chat ends on a paused
+# run, jig resumes the same session with this command to collect its
+# handoff and continue the run.
+# attach_headless:
+#   - claude
+#   - -p
+#   - --resume
+#   - "{session_id}"
+#   - --output-format
+#   - json

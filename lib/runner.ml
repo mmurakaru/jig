@@ -39,6 +39,12 @@ let position_line ~workflow_name ~entries ~entry_index ~skill =
   Printf.sprintf "Workflow: %s - step %d of %d (%s); %s" workflow_name
     (entry_index + 1) (List.length entries) skill continuation
 
+(* Sent through attach_headless after an interactive attach ends; the
+   session already carries the full protocol from its original envelope. *)
+let elicit_handoff_prompt =
+  "The interactive session is over. Emit your handoff block for the current \
+   state of this step."
+
 let build_prompt ~task ~position ~skill_body ~previous_handoff ~guidance =
   let guidance_section =
     match guidance with
@@ -509,6 +515,127 @@ struct
       on_step record;
       drive engine { run; last_handoff = record.Run.handoff; guidance = None }
     else drive engine { run; last_handoff; guidance }
+
+  (* After an interactive attach, the same session is resumed headlessly and
+     asked for its handoff; that result completes the paused entry as if the
+     step had just executed. An unparseable reply changes nothing - the run
+     stays paused on disk and the caller reports the error. *)
+  let continue_attached ?(on_step = fun _ -> ()) ~root ~run_id
+      ~(exec_result : Executor.exec_result) () =
+    let runs_directory = Filename.concat root "runs" in
+    let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
+    let* () =
+      match existing.Run.status with
+      | Run.Paused | Run.Running -> Ok ()
+      | status ->
+          Error
+            (Printf.sprintf
+               "run %s is %s; only paused runs can continue from an attach"
+               run_id
+               (Run.string_of_status status))
+    in
+    let* jig_dir, workflow, config =
+      load_project ~root ~workflow_name:existing.Run.workflow
+    in
+    let* () =
+      match existing.Run.workspace with
+      | Some path when not (Sys.file_exists path) ->
+          Error
+            (Printf.sprintf
+               "run %s used isolated workspace %s, which no longer exists"
+               run_id path)
+      | _ -> Ok ()
+    in
+    let outcome, handoff, handoff_error = outcome_of_exec exec_result in
+    let* () =
+      match outcome with
+      | Run.Invalid_handoff ->
+          Error
+            (Printf.sprintf
+               "attach: the session's reply carried no parseable handoff \
+                (%s); the run is unchanged - re-attach, or resume with \
+                --guidance or --skip"
+               (Option.value handoff_error ~default:"missing block"))
+      | _ -> Ok ()
+    in
+    let entry_index = existing.Run.position.Run.entry_index in
+    let* skill =
+      skip_target_skill ~entries:workflow.Workflow.entries ~entry_index
+    in
+    let engine =
+      {
+        root;
+        jig_dir;
+        config;
+        task = existing.Run.task;
+        entries = workflow.Workflow.entries;
+        workspace = Option.value existing.Run.workspace ~default:root;
+        on_step;
+      }
+    in
+    let cost, usage = Metering.parse_cost exec_result.Executor.stdout in
+    let* () =
+      Metering_port.record ~runs_dir:(runs_dir engine)
+        ~event:
+          {
+            Metering.run_id = existing.Run.id;
+            skill;
+            command = config.Config.attach_headless;
+            cost;
+            usage;
+            recorded_at = Run.iso8601 (Unix.gettimeofday ());
+          }
+    in
+    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let record =
+      {
+        Run.skill;
+        outcome;
+        exit_code = exec_result.Executor.exit_code;
+        cost;
+        stdout = exec_result.Executor.stdout;
+        stderr = exec_result.Executor.stderr;
+        handoff;
+        handoff_error;
+        session_id = Metering.parse_session_id exec_result.Executor.stdout;
+        started_at = now;
+        finished_at = now;
+      }
+    in
+    let run =
+      {
+        existing with
+        Run.status = Run.Running;
+        finished_at = None;
+        steps = existing.Run.steps @ [ record ];
+      }
+    in
+    on_step record;
+    match outcome with
+    | Run.Pass ->
+        let run =
+          {
+            run with
+            Run.position = { Run.entry_index = entry_index + 1; iterations_used = 0 };
+          }
+        in
+        drive engine { run; last_handoff = handoff; guidance = None }
+    | Run.Escalate ->
+        finish engine { run; last_handoff = handoff; guidance = None } Run.Paused
+    | Run.Fail ->
+        let status =
+          match List.nth_opt workflow.Workflow.entries entry_index with
+          | Some (Workflow.Step step) -> (
+              match step.Workflow.on_fail with
+              | Some Workflow.Escalate -> Run.Paused
+              | Some Workflow.Abort -> Run.Aborted
+              | None -> Run.Failed)
+          (* A retry entry escalated to get here; a failed elicitation
+             still needs the human, so the run stays theirs. *)
+          | _ -> Run.Paused
+        in
+        finish engine { run; last_handoff = handoff; guidance = None } status
+    | Run.Invalid_handoff -> Error "attach: unreachable - rejected above"
 end
 
 module Default =

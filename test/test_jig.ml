@@ -1413,6 +1413,13 @@ let test_init_claude_preset_is_well_formed () =
             [ "claude"; "--resume"; "{session_id}" ]
             config.Config.attach;
           Alcotest.(check (list string))
+            "attach_headless collects the handoff"
+            [
+              "claude"; "-p"; "--resume"; "{session_id}"; "--output-format";
+              "json";
+            ]
+            config.Config.attach_headless;
+          Alcotest.(check (list string))
             "skill_paths kept in order"
             [ "/some/library"; "/another/library" ]
             config.Config.skill_paths)
@@ -1460,6 +1467,102 @@ let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) ?session
           );
         ]
        @ session_field))
+
+let pause_pipeline_at_step_one root =
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~status:"escalate" ~summary:"stuck on one" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> run
+
+let elicited_result stdout = { Executor.exit_code = 0; stdout; stderr = "" }
+
+let test_continue_attached_pass_drives_the_run () =
+  let root = make_temp_root () in
+  let paused = pause_pipeline_at_step_one root in
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ~summary:"two done" ();
+        handoff_block ~summary:"three done" ();
+      ];
+  match
+    Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
+      ~exec_result:
+        (elicited_result
+           (claude_style_output
+              ~handoff:(handoff_block ~summary:"resolved with the human" ())
+              ~session:"sess-att" ()))
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "run drove to completion" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "escalated, elicited, then two agent steps" 4
+        (List.length run.Run.steps);
+      let elicited_step = List.nth run.Run.steps 1 in
+      Alcotest.(check string) "elicited record names the paused skill" "one"
+        elicited_step.Run.skill;
+      Alcotest.(check (option string))
+        "elicited record keeps the session id" (Some "sess-att")
+        elicited_step.Run.session_id;
+      match Scripted_executor.prompts () with
+      | first_after :: _ ->
+          Alcotest.(check bool) "elicited handoff threads onward" true
+            (contains ~affix:"resolved with the human" first_after)
+      | [] -> Alcotest.fail "expected the run to keep driving")
+
+let test_continue_attached_escalate_stays_paused () =
+  let root = make_temp_root () in
+  let paused = pause_pipeline_at_step_one root in
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
+      ~exec_result:
+        (elicited_result
+           (claude_style_output
+              ~handoff:
+                (handoff_block ~status:"escalate" ~summary:"still blocked" ())
+              ()))
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "run stays paused" "paused"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "the elicited attempt is recorded" 2
+        (List.length run.Run.steps);
+      Alcotest.(check int) "no further harness calls" 0
+        (List.length (Scripted_executor.prompts ()))
+
+let test_continue_attached_invalid_leaves_run_untouched () =
+  let root = make_temp_root () in
+  let paused = pause_pipeline_at_step_one root in
+  match
+    Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
+      ~exec_result:(elicited_result "no handoff block here")
+      ()
+  with
+  | Ok _ -> Alcotest.fail "an unparseable elicitation must be an error"
+  | Error message -> (
+      Alcotest.(check bool) "error mentions the handoff" true
+        (contains ~affix:"handoff" message);
+      match
+        Store.Filesystem.load
+          ~runs_dir:(Filename.concat root "runs")
+          ~id:paused.Run.id
+      with
+      | Error message -> Alcotest.fail message
+      | Ok reloaded ->
+          Alcotest.(check string) "run on disk still paused" "paused"
+            (Run.string_of_status reloaded.Run.status);
+          Alcotest.(check int) "no record was added" 1
+            (List.length reloaded.Run.steps))
 
 let test_parse_cost_known_and_unknown () =
   let known, usage = Metering.parse_cost (claude_style_output ()) in
@@ -1799,6 +1902,12 @@ let () =
             test_on_fail_escalate_pauses;
           Alcotest.test_case "on_fail abort aborts" `Quick
             test_on_fail_abort_aborts;
+          Alcotest.test_case "attached pass drives the run onward" `Quick
+            test_continue_attached_pass_drives_the_run;
+          Alcotest.test_case "attached escalate stays paused" `Quick
+            test_continue_attached_escalate_stays_paused;
+          Alcotest.test_case "unparseable elicitation leaves the run untouched"
+            `Quick test_continue_attached_invalid_leaves_run_untouched;
           Alcotest.test_case "skip marks the paused entry done" `Quick
             test_skip_marks_paused_entry_done;
           Alcotest.test_case "skip advances past the whole retry group" `Quick

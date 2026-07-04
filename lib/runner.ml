@@ -367,13 +367,18 @@ struct
         | Ok _ | Error _ -> ());
         Error message
 
-  let execute_run ?(on_step = fun _ -> ()) ~root ~workflow_name ~task
+  let execute_run ?(on_step = fun _ -> ()) ?run_id ~root ~workflow_name ~task
       ~isolated () =
     let* jig_dir, workflow, config = load_project ~root ~workflow_name in
     let started = Unix.gettimeofday () in
+    (* A detaching caller pre-issues the id so it can print it and name
+       the log file before forking. *)
     let run_id =
-      Run.make_id ~workflow:workflow.Workflow.name ~time:started
-        ~pid:(Unix.getpid ())
+      match run_id with
+      | Some id -> id
+      | None ->
+          Run.make_id ~workflow:workflow.Workflow.name ~time:started
+            ~pid:(Unix.getpid ())
     in
     let* workspace =
       if isolated then

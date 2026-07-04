@@ -46,9 +46,13 @@ jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lex
 ```
 jig init                                    # scaffold .jig/ from the embedded starter set
 jig run <workflow> --task "<description>"   # execute a workflow against a task
+  [--isolated]                              #   in a git worktree per run
+  [--detach]                                #   survives its terminal; steps stream to runs/<run-id>.log
 jig run --resume <run-id> [--guidance "…"]  # continue a paused run
+  [--skip]                                  #   a human finished the paused step; record it and move on
+jig attach <run-id>                         # open the paused step's session; exiting the chat hands back
 jig status <run-id> [--json]                # inspect a run
-jig list workflows [--json]                 # discover what is runnable
+jig list workflows|runs [--json]            # discover what is runnable, and what ran
 jig validate <workflow>                     # lint before running
 ```
 

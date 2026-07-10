@@ -76,6 +76,10 @@ strings - jig never evaluates, inlines, or resolves them;
   effect on that run. A pause resumes at the same item and body step;
   `--skip` completes the current item's current step and automation
   continues with the rest. An empty items file is an error.
+- Items are isolated: each item starts fresh, with no handoff from the
+  previous item (or the step before the forEach). Threading within an item
+  - step-to-step and retry - is unchanged. Per-item context comes from
+  `with:`, not from an upstream handoff.
 
 ## Where intelligence lives
 

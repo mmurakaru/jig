@@ -1012,6 +1012,38 @@ let retry_fanout_workflow_yaml =
   \              - skill: port-two\n\
   \                until: pass\n"
 
+let test_for_each_isolates_handoffs_between_items () =
+  let root = make_temp_root () in
+  setup_fanout_project root;
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ~summary:"alpha-one done" ();
+        handoff_block ~summary:"alpha-two done" ();
+        handoff_block ~summary:"beta-one done" ();
+        handoff_block ~summary:"beta-two done" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ _alpha_one; alpha_two; beta_one; _beta_two ] ->
+          Alcotest.(check bool)
+            "within item 1, step 2 sees step 1's handoff" true
+            (contains ~affix:"alpha-one done" alpha_two);
+          Alcotest.(check bool)
+            "item 2's first step does NOT see item 1's handoff" false
+            (contains ~affix:"alpha-two done" beta_one);
+          Alcotest.(check bool)
+            "item 2's first step has no previous handoff" false
+            (contains ~affix:"Previous handoff" beta_one)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 4 prompts, got %d" (List.length prompts)))
+
 let test_for_each_retry_loops_within_one_item () =
   let root = make_temp_root () in
   setup_fanout_project ~workflow:retry_fanout_workflow_yaml root;
@@ -2732,6 +2764,8 @@ let () =
             test_context_renders_into_every_prompt;
           Alcotest.test_case "forEach runs the body once per item" `Quick
             test_for_each_runs_body_per_item;
+          Alcotest.test_case "forEach isolates handoffs between items" `Quick
+            test_for_each_isolates_handoffs_between_items;
           Alcotest.test_case "forEach retry loops within one item" `Quick
             test_for_each_retry_loops_within_one_item;
           Alcotest.test_case "escalate inside forEach pauses at the item"

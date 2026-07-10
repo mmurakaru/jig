@@ -352,6 +352,10 @@ struct
      re-enters exactly the item and body entry that paused; the items file
      is read once, when the entry first starts. *)
   let execute_for_each_entry engine progress (for_each : Workflow.for_each) =
+    (* A resume re-enters with a snapshot and a seeded handoff mid-item;
+       a fresh entry has neither. Only a fresh entry isolates its first
+       item from the step before the forEach. *)
+    let fresh_entry = Option.is_none progress.run.Run.position.Run.for_each in
     let* state =
       match progress.run.Run.position.Run.for_each with
       | Some state -> Ok state
@@ -382,10 +386,15 @@ struct
       set_position progress
         { progress.run.Run.position with Run.iterations_used = 0 }
     in
+    (* Each item is an independent unit of the fan-out: it must not inherit
+       the previous item's (or the pre-forEach step's) handoff. Threading
+       within an item - step-to-step and retry - is untouched. *)
+    let clear_handoff progress = { progress with last_handoff = None } in
+    let progress = if fresh_entry then clear_handoff progress else progress in
     let rec loop progress item_index body_index =
       if item_index >= item_count then Ok (Proceed progress)
       else if body_index >= body_count then
-        loop progress (item_index + 1) 0
+        loop (clear_handoff progress) (item_index + 1) 0
       else
         let progress = set_cursor progress item_index body_index in
         let bindings = List.nth items item_index in

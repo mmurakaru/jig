@@ -50,6 +50,8 @@ steps:
   - skill: reproduce-issue
     on_fail: escalate
   - skill: write-failing-test
+    with:
+      spec: docs/specs/login.md
   - retry:
       max_iterations: 3
       on_exhausted: escalate
@@ -75,9 +77,14 @@ let test_workflow_parses_full_schema () =
         ]
         (Workflow.referenced_skills workflow);
       match workflow.Workflow.entries with
-      | [ Workflow.Step first; _; Workflow.Retry retry; _ ] ->
+      | [ Workflow.Step first; Workflow.Step second; Workflow.Retry retry; _ ]
+        ->
           Alcotest.(check bool) "on_fail parsed" true
             (first.Workflow.on_fail = Some Workflow.Escalate);
+          Alcotest.(check (list (pair string string)))
+            "with inputs parsed"
+            [ ("spec", "docs/specs/login.md") ]
+            second.Workflow.inputs;
           Alcotest.(check int) "max_iterations" 3 retry.Workflow.max_iterations;
           Alcotest.(check bool) "on_exhausted parsed" true
             (retry.Workflow.on_exhausted = Workflow.Escalate);
@@ -123,6 +130,68 @@ let test_nested_retry_rejected () =
 let test_invalid_on_fail_value_rejected () =
   expect_workflow_error ~mentions:"give-up"
     "name: x\nsteps:\n  - skill: a\n    on_fail: give-up\n"
+
+let test_with_inputs_parse_in_file_order () =
+  match
+    Workflow.of_string
+      "name: x\n\
+       steps:\n\
+      \  - skill: a\n\
+      \    with:\n\
+      \      spec: docs/spec.md\n\
+      \      fixture: test/f.tsv\n"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok workflow -> (
+      match workflow.Workflow.entries with
+      | [ Workflow.Step step ] ->
+          Alcotest.(check (list (pair string string)))
+            "inputs in file order"
+            [ ("spec", "docs/spec.md"); ("fixture", "test/f.tsv") ]
+            step.Workflow.inputs
+      | _ -> Alcotest.fail "expected a single step")
+
+let test_with_allowed_inside_retry () =
+  match
+    Workflow.of_string
+      "name: x\n\
+       steps:\n\
+      \  - retry:\n\
+      \      max_iterations: 2\n\
+      \      on_exhausted: escalate\n\
+      \      steps:\n\
+      \        - skill: a\n\
+      \          with:\n\
+      \            spec: s.md\n\
+      \        - skill: b\n\
+      \          until: pass\n"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok workflow -> (
+      match workflow.Workflow.entries with
+      | [ Workflow.Retry retry ] -> (
+          match retry.Workflow.retry_steps with
+          | [ first; second ] ->
+              Alcotest.(check (list (pair string string)))
+                "first retry step carries its inputs"
+                [ ("spec", "s.md") ]
+                first.Workflow.inputs;
+              Alcotest.(check (list (pair string string)))
+                "second retry step has none" [] second.Workflow.inputs
+          | _ -> Alcotest.fail "expected two retry steps")
+      | _ -> Alcotest.fail "expected a retry entry")
+
+let test_with_rejects_non_string_value () =
+  expect_workflow_error ~mentions:"quote"
+    "name: x\nsteps:\n  - skill: a\n    with:\n      count: 3\n"
+
+let test_with_rejects_non_mapping () =
+  expect_workflow_error ~mentions:"mapping"
+    "name: x\nsteps:\n  - skill: a\n    with:\n      - spec\n"
+
+let test_with_rejects_duplicate_keys () =
+  expect_workflow_error ~mentions:"duplicate"
+    "name: x\nsteps:\n  - skill: a\n    with:\n      spec: one.md\n      spec: two.md\n"
 
 let test_non_positive_max_iterations_rejected () =
   expect_workflow_error ~mentions:"positive"
@@ -522,6 +591,101 @@ let test_execute_run_honors_given_run_id () =
       Alcotest.(check bool) "record lands under the pre-issued id" true
         (Sys.file_exists
            (Filename.concat root "runs/pre-issued-id.json"))
+
+let index_of ~affix text =
+  let affix_length = String.length affix in
+  let text_length = String.length text in
+  let rec scan i =
+    if i + affix_length > text_length then None
+    else if String.sub text i affix_length = affix then Some i
+    else scan (i + 1)
+  in
+  scan 0
+
+let setup_inputs_project root =
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/bound.yaml")
+    "name: bound\n\
+     steps:\n\
+    \  - skill: one\n\
+    \  - skill: two\n\
+    \    with:\n\
+    \      spec: docs/spec.md\n";
+  List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two" ]
+
+let test_prompt_carries_step_inputs () =
+  let root = make_temp_root () in
+  setup_inputs_project root;
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~summary:"first done" (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"bound" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ first; second ] -> (
+          Alcotest.(check bool) "unbound step has no inputs section" false
+            (contains ~affix:"Step inputs" first);
+          Alcotest.(check bool) "bound step carries the section" true
+            (contains
+               ~affix:
+                 "Step inputs (bound by the workflow; treat each value as a \
+                  literal):"
+               second);
+          Alcotest.(check bool) "bound step carries the value" true
+            (contains ~affix:"spec: docs/spec.md" second);
+          match
+            (index_of ~affix:"Step inputs" second,
+             index_of ~affix:"Previous handoff" second)
+          with
+          | Some inputs_at, Some handoff_at ->
+              Alcotest.(check bool) "inputs render before the handoff" true
+                (inputs_at < handoff_at)
+          | _ -> Alcotest.fail "expected both sections in the second prompt")
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts)))
+
+let test_retry_steps_carry_their_own_inputs () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/looped.yaml")
+    "name: looped\n\
+     steps:\n\
+    \  - retry:\n\
+    \      max_iterations: 2\n\
+    \      on_exhausted: abort\n\
+    \      steps:\n\
+    \        - skill: one\n\
+    \          with:\n\
+    \            target: alpha\n\
+    \        - skill: two\n\
+    \          until: pass\n\
+    \          with:\n\
+    \            target: beta\n";
+  List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two" ];
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"looped" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      match Scripted_executor.prompts () with
+      | [ first; second ] ->
+          Alcotest.(check bool) "first sees its own value" true
+            (contains ~affix:"target: alpha" first);
+          Alcotest.(check bool) "first does not see the second's" false
+            (contains ~affix:"target: beta" first);
+          Alcotest.(check bool) "second sees its own value" true
+            (contains ~affix:"target: beta" second)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts)))
 
 let test_handoffs_thread_between_steps () =
   let root = make_temp_root () in
@@ -1821,6 +1985,16 @@ let () =
             test_invalid_on_fail_value_rejected;
           Alcotest.test_case "rejects non-positive max_iterations" `Quick
             test_non_positive_max_iterations_rejected;
+          Alcotest.test_case "parses with inputs in file order" `Quick
+            test_with_inputs_parse_in_file_order;
+          Alcotest.test_case "with is allowed inside retry steps" `Quick
+            test_with_allowed_inside_retry;
+          Alcotest.test_case "rejects non-string with value" `Quick
+            test_with_rejects_non_string_value;
+          Alcotest.test_case "rejects non-mapping with" `Quick
+            test_with_rejects_non_mapping;
+          Alcotest.test_case "rejects duplicate with keys" `Quick
+            test_with_rejects_duplicate_keys;
         ] );
       ( "config",
         [
@@ -1879,6 +2053,10 @@ let () =
             test_prompt_states_workflow_position;
           Alcotest.test_case "retry prompts share the entry position" `Quick
             test_retry_prompt_states_group_position;
+          Alcotest.test_case "prompt carries step inputs" `Quick
+            test_prompt_carries_step_inputs;
+          Alcotest.test_case "retry steps carry their own inputs" `Quick
+            test_retry_steps_carry_their_own_inputs;
           Alcotest.test_case "handoffs thread between steps" `Quick
             test_handoffs_thread_between_steps;
           Alcotest.test_case "fail handoff short-circuits" `Quick

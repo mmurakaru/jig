@@ -83,5 +83,6 @@ signatures with boring local defaults: subprocess, config lookup, JSONL,
 filesystem. Isolation is Executor configuration (`--isolated` runs in a git
 worktree per run; an optional config `wrapper` prepends an OS sandbox to
 every invocation). The workflow schema is deliberately frozen at ordered
-steps + `on_fail` + bounded `retry` - intelligence lives in skills, not in
-YAML.
+steps + `on_fail` + bounded `retry`, plus `with:` literal step inputs (a
+recorded decision: data binding, not logic) - intelligence lives in skills,
+not in YAML.

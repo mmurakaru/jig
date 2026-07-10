@@ -45,7 +45,21 @@ let elicit_handoff_prompt =
   "The interactive session is over. Emit your handoff block for the current \
    state of this step."
 
-let build_prompt ~task ~position ~skill_body ~previous_handoff ~guidance =
+let build_prompt ~task ~position ~inputs ~skill_body ~previous_handoff
+    ~guidance =
+  let inputs_section =
+    match inputs with
+    | [] -> ""
+    | pairs ->
+        Printf.sprintf
+          "Step inputs (bound by the workflow; treat each value as a \
+           literal):\n\
+           %s\n\n"
+          (String.concat "\n"
+             (List.map
+                (fun (key, value) -> Printf.sprintf "%s: %s" key value)
+                pairs))
+  in
   let guidance_section =
     match guidance with
     | Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text
@@ -57,8 +71,9 @@ let build_prompt ~task ~position ~skill_body ~previous_handoff ~guidance =
         Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
-  Printf.sprintf "Task: %s\n\n%s\n\n%s%s%s\n\n%s" task position
-    guidance_section handoff_section skill_body handoff_protocol
+  Printf.sprintf "Task: %s\n\n%s\n\n%s%s%s%s\n\n%s" task position
+    inputs_section guidance_section handoff_section skill_body
+    handoff_protocol
 
 module Make
     (Executor_port : Executor.S)
@@ -158,7 +173,8 @@ struct
                   ~entries:engine.entries
                   ~entry_index:progress.run.Run.position.Run.entry_index
                   ~skill:step.Workflow.skill)
-             ~skill_body ~previous_handoff:progress.last_handoff
+             ~inputs:step.Workflow.inputs ~skill_body
+             ~previous_handoff:progress.last_handoff
              ~guidance:progress.guidance)
     in
     let cost, usage = Metering.parse_cost exec_result.Executor.stdout in

@@ -21,7 +21,7 @@ type entry = Step of step | Retry of retry | For_each of for_each
    item, in order. The parser guarantees the body holds only Step/Retry. *)
 and for_each = { items_file : string; var : string; body : entry list }
 
-type t = { name : string; entries : entry list }
+type t = { name : string; context : string option; entries : entry list }
 
 let is_valid_name name =
   name <> ""
@@ -398,7 +398,7 @@ let of_yaml yaml =
   | `O fields ->
       let* () =
         check_no_unknown_keys ~context:"the workflow"
-          ~allowed:[ "name"; "steps" ] fields
+          ~allowed:[ "name"; "context"; "steps" ] fields
       in
       let* name =
         match List.assoc_opt "name" fields with
@@ -415,6 +415,14 @@ let of_yaml yaml =
                 or '-'"
                name)
       in
+      (* Constant framing for the whole workflow (recorded decision: data,
+         not logic) - rendered into every step's prompt, never threaded. *)
+      let* context =
+        match List.assoc_opt "context" fields with
+        | None -> Ok None
+        | Some (`String text) -> Ok (Some text)
+        | Some _ -> Error "workflow: context must be a string"
+      in
       let* entries =
         match List.assoc_opt "steps" fields with
         | Some (`A yaml_entries) -> traverse entry_of_yaml yaml_entries
@@ -422,7 +430,7 @@ let of_yaml yaml =
         | None -> Error "workflow: missing required key: steps"
       in
       if entries = [] then Error "workflow: steps must not be empty"
-      else Ok { name; entries }
+      else Ok { name; context; entries }
   | _ -> Error "workflow: expected a mapping at the top level"
 
 let of_string content =

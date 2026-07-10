@@ -11,6 +11,9 @@ content reaches the harness byte-for-byte.
 For each step, jig composes one prompt for the harness:
 
 ```
+Context:                   (only when the workflow sets `context:`)
+<the workflow's constant framing>
+
 Task: <the --task description>
 
 Step inputs (bound by the workflow; treat each value as a literal):

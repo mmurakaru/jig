@@ -280,6 +280,29 @@ let test_with_allowed_inside_retry () =
           | _ -> Alcotest.fail "expected two retry steps")
       | _ -> Alcotest.fail "expected a retry entry")
 
+let test_context_parses () =
+  match
+    Workflow.of_string
+      "name: x\ncontext: |\n  keep the tokens\n  no visual change\nsteps:\n  - skill: a\n"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok workflow ->
+      Alcotest.(check (option string))
+        "context parsed"
+        (Some "keep the tokens\nno visual change\n")
+        workflow.Workflow.context
+
+let test_context_absent_is_none () =
+  match Workflow.of_string "name: x\nsteps:\n  - skill: a\n" with
+  | Error message -> Alcotest.fail message
+  | Ok workflow ->
+      Alcotest.(check (option string))
+        "no context" None workflow.Workflow.context
+
+let test_context_rejects_non_string () =
+  expect_workflow_error ~mentions:"context"
+    "name: x\ncontext:\n  - a\nsteps:\n  - skill: a\n"
+
 let test_with_rejects_non_string_value () =
   expect_workflow_error ~mentions:"quote"
     "name: x\nsteps:\n  - skill: a\n    with:\n      count: 3\n"
@@ -1207,6 +1230,43 @@ let test_old_run_json_still_loads () =
       let step = List.hd run.Run.steps in
       Alcotest.(check (option int)) "no item_index" None step.Run.item_index;
       Alcotest.(check (option string)) "no item_key" None step.Run.item_key
+
+let test_context_renders_into_every_prompt () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root "ports.tsv")
+    "name\tspec\nalpha\ta.md\nbeta\tb.md\n";
+  write_file
+    (Filename.concat root ".jig/workflows/framed.yaml")
+    "name: framed\n\
+     context: |\n\
+    \  invariant framing here\n\
+     steps:\n\
+    \  - skill: one\n\
+    \  - forEach:\n\
+    \      items: ports.tsv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - skill: two\n";
+  List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two" ];
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"framed" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ ->
+      let prompts = Scripted_executor.prompts () in
+      Alcotest.(check int) "one plain step plus two items" 3
+        (List.length prompts);
+      List.iter
+        (fun prompt ->
+          Alcotest.(check bool) "every prompt carries the context preamble"
+            true
+            (contains ~affix:"Context:\ninvariant framing here" prompt))
+        prompts
 
 let test_handoffs_thread_between_steps () =
   let root = make_temp_root () in
@@ -2551,6 +2611,12 @@ let () =
             test_with_rejects_non_mapping;
           Alcotest.test_case "rejects duplicate with keys" `Quick
             test_with_rejects_duplicate_keys;
+          Alcotest.test_case "parses a context field" `Quick
+            test_context_parses;
+          Alcotest.test_case "absent context is none" `Quick
+            test_context_absent_is_none;
+          Alcotest.test_case "rejects a non-string context" `Quick
+            test_context_rejects_non_string;
           Alcotest.test_case "parses a forEach block" `Quick
             test_for_each_parses;
           Alcotest.test_case "forEach requires items" `Quick
@@ -2662,6 +2728,8 @@ let () =
             test_prompt_carries_step_inputs;
           Alcotest.test_case "retry steps carry their own inputs" `Quick
             test_retry_steps_carry_their_own_inputs;
+          Alcotest.test_case "context renders into every prompt" `Quick
+            test_context_renders_into_every_prompt;
           Alcotest.test_case "forEach runs the body once per item" `Quick
             test_for_each_runs_body_per_item;
           Alcotest.test_case "forEach retry loops within one item" `Quick

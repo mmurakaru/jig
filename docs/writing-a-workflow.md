@@ -9,6 +9,8 @@ expressions.
 
 ```yaml
 name: bugfix                     # letters, digits, '.', '_', '-'
+context: |                       # optional: constant framing for every step
+  What this workflow always does and the invariants it holds.
 steps:
   - skill: reproduce-issue       # a plain step
     on_fail: escalate            # optional: escalate | abort
@@ -49,6 +51,10 @@ strings - jig never evaluates, inlines, or resolves them;
 
 - Steps run in order. Each step receives the previous step's handoff in its
   prompt.
+- The workflow's `context`, if set, renders as a constant preamble in every
+  step's prompt (every step, every forEach item) - it never varies and
+  never threads. Use it for the invariants the whole workflow holds; use
+  `with` for per-step facts and the `--task` for the run's specific goal.
 - A step's `with` map renders into its prompt as a "Step inputs" section,
   keys in file order. It is how a workflow binds repo facts (a spec path, a
   data file) so the skill itself stays reusable across repositories.
@@ -78,8 +84,9 @@ decision *inside a skill* and report the outcome via the handoff status. The
 workflow routes on outcomes; the agent decides within a step. Schema
 additions require a recorded design decision - the freeze is the feature.
 
-Recorded decision: `with` and `forEach` were added as *data*, not logic.
-`with` binds repo facts so skills stay pure; `forEach` is bounded fan-out
-over a checked-in list. There are still no expressions, conditionals, or
-branches in the schema - routing stays on handoff outcomes, decisions stay
-inside skills.
+Recorded decision: `context`, `with`, and `forEach` were added as *data*,
+not logic. `context` is the workflow's constant framing; `with` binds
+per-step repo facts so skills stay pure; `forEach` is bounded fan-out over a
+checked-in list. There are still no expressions, conditionals, or branches
+in the schema - routing stays on handoff outcomes, decisions stay inside
+skills.

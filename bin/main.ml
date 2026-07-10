@@ -59,8 +59,26 @@ let run_workflow workflow resume task guidance skip detach isolated =
     match (workflow, resume, task) with
     | _, None, _ when skip -> Error "--skip belongs to --resume"
     | Some workflow_name, None, Some task ->
-        Jig_core.Runner.Default.execute_run ~on_step:print_step_live ?run_id
-          ~root ~workflow_name ~task ~isolated ()
+        (* On a TTY, render a live in-place step tree; when piped or
+           detached (stdout is the log file) fall back to append-only. *)
+        if Unix.isatty Unix.stdout then
+          Result.bind
+            (Jig_core.Project.resolve_workflow
+               ~jig_dir:(Filename.concat root ".jig") ~name:workflow_name)
+            (fun (path, _) ->
+              Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
+                  let live = Live.create parsed.Jig_core.Workflow.entries in
+                  let result =
+                    Jig_core.Runner.Default.execute_run
+                      ~on_step:(fun _ -> ())
+                      ~on_event:(Live.on_event live) ?run_id ~root
+                      ~workflow_name ~task ~isolated ()
+                  in
+                  Live.finalize live;
+                  result))
+        else
+          Jig_core.Runner.Default.execute_run ~on_step:print_step_live ?run_id
+            ~root ~workflow_name ~task ~isolated ()
     | None, Some _, None when isolated ->
         Error "--isolated belongs to the original run; a resume reuses its workspace"
     | None, Some run_id, None ->

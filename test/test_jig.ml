@@ -2872,6 +2872,12 @@ let test_progress_renders_completed () =
     ]
     (Progress.render ~working:"@" t)
 
+let test_progress_spinner_cycles () =
+  Alcotest.(check string) "first frame" "⠋" (Progress.spinner_frame 0);
+  Alcotest.(check string) "mid frame" "⠸" (Progress.spinner_frame 3);
+  Alcotest.(check string) "wraps at length" (Progress.spinner_frame 0)
+    (Progress.spinner_frame 10)
+
 let test_progress_marks_failure () =
   let t = progress_plan () in
   let apply = Progress.apply t in
@@ -2962,6 +2968,8 @@ let () =
             test_progress_renders_completed;
           Alcotest.test_case "marks a failed step" `Quick
             test_progress_marks_failure;
+          Alcotest.test_case "spinner cycles and wraps" `Quick
+            test_progress_spinner_cycles;
         ] );
       ( "items",
         [

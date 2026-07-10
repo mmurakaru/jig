@@ -151,6 +151,9 @@ let finalize t =
             l.items)
     t.nodes
 
+let spinner_frames = [| "⠋"; "⠙"; "⠹"; "⠸"; "⠼"; "⠴"; "⠦"; "⠧"; "⠇"; "⠏" |]
+let spinner_frame tick = spinner_frames.(tick mod Array.length spinner_frames)
+
 let glyph ~working = function
   | Pending -> "○"
   | Working -> working

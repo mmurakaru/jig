@@ -12,15 +12,31 @@ type step_record = {
   handoff : Handoff.t option;
   handoff_error : string option;
   session_id : string option;
+  item_index : int option;
+  item_key : string option;
   started_at : string;
   finished_at : string;
 }
 
 type status = Running | Paused | Completed | Failed | Aborted
 
-(* Where the run is in the workflow: the entry being executed and, for a
-   retry entry, how many full iterations have been used. Enough to resume. *)
-type position = { entry_index : int; iterations_used : int }
+(* A forEach entry in flight. The items are snapshotted here when the entry
+   starts so a resume re-binds exactly the item it paused on - the items
+   file is never re-read mid-run. Cleared when the entry completes. *)
+type for_each_state = {
+  item_index : int;
+  body_index : int;
+  items : (string * string) list list;
+}
+
+(* Where the run is in the workflow: the entry being executed, how many
+   full iterations a retry has used and, for a forEach entry, the item
+   cursor and snapshot. Enough to resume. *)
+type position = {
+  entry_index : int;
+  iterations_used : int;
+  for_each : for_each_state option;
+}
 
 type t = {
   id : string;
@@ -96,6 +112,15 @@ let step_to_json step =
     | Some id -> [ ("session_id", `String id) ]
     | None -> []
   in
+  let item_fields =
+    (match step.item_index with
+    | Some index -> [ ("item_index", `Int index) ]
+    | None -> [])
+    @
+    match step.item_key with
+    | Some key -> [ ("item_key", `String key) ]
+    | None -> []
+  in
   `Assoc
     ([
        ("skill", `String step.skill);
@@ -103,7 +128,7 @@ let step_to_json step =
        ("exit_code", `Int step.exit_code);
        ("cost_usd", Metering.cost_to_json step.cost);
      ]
-    @ handoff_field @ handoff_error_field @ session_field
+    @ handoff_field @ handoff_error_field @ session_field @ item_fields
     @ [
         ("stdout", `String step.stdout);
         ("stderr", `String step.stderr);
@@ -138,10 +163,34 @@ let to_json run =
     @ [
         ( "position",
           `Assoc
-            [
-              ("entry_index", `Int run.position.entry_index);
-              ("iterations_used", `Int run.position.iterations_used);
-            ] );
+            ([
+               ("entry_index", `Int run.position.entry_index);
+               ("iterations_used", `Int run.position.iterations_used);
+             ]
+            @
+            (* Emitted only while a forEach entry is in flight, so runs that
+               never fan out serialize exactly as before. *)
+            match run.position.for_each with
+            | None -> []
+            | Some state ->
+                [
+                  ( "for_each",
+                    `Assoc
+                      [
+                        ("item_index", `Int state.item_index);
+                        ("body_index", `Int state.body_index);
+                        ( "items",
+                          `List
+                            (List.map
+                               (fun bindings ->
+                                 `Assoc
+                                   (List.map
+                                      (fun (key, value) ->
+                                        (key, `String value))
+                                      bindings))
+                               state.items) );
+                      ] );
+                ]) );
         ("steps", `List (List.map step_to_json run.steps));
         ("started_at", `String run.started_at);
       ]
@@ -178,6 +227,11 @@ let optional_string json key =
   | `String value -> Some value
   | _ -> None
 
+let optional_int json key =
+  match Yojson.Safe.Util.member key json with
+  | `Int value -> Some value
+  | _ -> None
+
 let step_of_json json =
   let* skill = member_string json "skill" in
   let* outcome_string = member_string json "outcome" in
@@ -206,6 +260,8 @@ let step_of_json json =
       handoff;
       handoff_error = optional_string json "handoff_error";
       session_id = optional_string json "session_id";
+      item_index = optional_int json "item_index";
+      item_key = optional_string json "item_key";
       started_at;
       finished_at;
     }
@@ -219,6 +275,41 @@ let of_json json =
   let position_json = Yojson.Safe.Util.member "position" json in
   let* entry_index = member_int position_json "entry_index" in
   let* iterations_used = member_int position_json "iterations_used" in
+  let* for_each =
+    match Yojson.Safe.Util.member "for_each" position_json with
+    | `Null -> Ok None
+    | state_json ->
+        let* item_index = member_int state_json "item_index" in
+        let* body_index = member_int state_json "body_index" in
+        let* items =
+          match Yojson.Safe.Util.member "items" state_json with
+          | `List item_entries ->
+              List.fold_right
+                (fun item accumulator ->
+                  let* items = accumulator in
+                  match item with
+                  | `Assoc pairs ->
+                      let* bindings =
+                        List.fold_right
+                          (fun (key, value) bindings ->
+                            let* bindings = bindings in
+                            match value with
+                            | `String text -> Ok ((key, text) :: bindings)
+                            | _ ->
+                                Error
+                                  (Printf.sprintf
+                                     "run: for_each item value %S must be a \
+                                      string"
+                                     key))
+                          pairs (Ok [])
+                      in
+                      Ok (bindings :: items)
+                  | _ -> Error "run: for_each items must be objects")
+                item_entries (Ok [])
+          | _ -> Error "run: for_each items must be a list"
+        in
+        Ok (Some { item_index; body_index; items })
+  in
   let* steps =
     match Yojson.Safe.Util.member "steps" json with
     | `List entries ->
@@ -238,7 +329,7 @@ let of_json json =
       task;
       status;
       error = optional_string json "error";
-      position = { entry_index; iterations_used };
+      position = { entry_index; iterations_used; for_each };
       workspace = optional_string json "workspace";
       steps;
       started_at;

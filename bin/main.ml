@@ -5,10 +5,19 @@ let cost_suffix step =
   | Jig_core.Metering.Cost_usd value -> Printf.sprintf " ($%.4f)" value
   | Jig_core.Metering.Unknown_cost -> " (cost unknown)"
 
+(* The same skill name repeats once per forEach item; the item key keeps
+   the listing legible. *)
+let item_suffix step =
+  match (step.Jig_core.Run.item_key, step.Jig_core.Run.item_index) with
+  | Some key, _ -> Printf.sprintf " [%s]" key
+  | None, Some index -> Printf.sprintf " [item %d]" (index + 1)
+  | None, None -> ""
+
 let print_steps_with_costs (run : Jig_core.Run.t) =
   List.iter
     (fun step ->
-      Printf.printf "  %s: %s%s\n" step.Jig_core.Run.skill
+      Printf.printf "  %s%s: %s%s\n" step.Jig_core.Run.skill
+        (item_suffix step)
         (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
         (cost_suffix step))
     run.Jig_core.Run.steps;
@@ -40,7 +49,7 @@ let report_run (run : Jig_core.Run.t) path =
   | _ -> exit 1
 
 let print_step_live step =
-  Printf.printf "  %s: %s%s\n%!" step.Jig_core.Run.skill
+  Printf.printf "  %s%s: %s%s\n%!" step.Jig_core.Run.skill (item_suffix step)
     (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
     (cost_suffix step)
 
@@ -87,7 +96,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
                     (fun () ->
                       Jig_core.Run.make_id ~workflow:name
                         ~time:(Unix.gettimeofday ()) ~pid:(Unix.getpid ()))
-                    (Jig_core.Validate.workflow ~jig_dir
+                    (Jig_core.Validate.workflow ~root ~jig_dir
                        ~skill_paths:config.Jig_core.Config.skill_paths parsed)))
       | None, Some run_id, None ->
           Result.map
@@ -140,7 +149,7 @@ let validate_workflow workflow =
           (fun skill_paths ->
             Result.map
               (fun () -> parsed.Jig_core.Workflow.name)
-              (Jig_core.Validate.workflow ~jig_dir ~skill_paths parsed)))
+              (Jig_core.Validate.workflow ~root ~jig_dir ~skill_paths parsed)))
   in
   match result with
   | Ok name -> Printf.printf "workflow %s: ok\n" name

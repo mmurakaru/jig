@@ -43,6 +43,19 @@ type item_context = {
   item_count : int;
 }
 
+(* Step-lifecycle events, for callers that render progress as a run
+   unfolds. `on_step` still fires on finish; these add the start of a step
+   and the moment a forEach resolves its items, each located precisely in
+   the plan by position + skill (+ item key inside a forEach). *)
+type run_event =
+  | Step_started of {
+      skill : string;
+      position : Run.position;
+      item_key : string option;
+    }
+  | Items_resolved of { entry_index : int; item_keys : string list }
+  | Step_finished of Run.step_record
+
 let position_line ~workflow_name ~entries ~entry_index ~skill ~item =
   let item_part =
     match item with
@@ -120,6 +133,7 @@ struct
     entries : Workflow.entry list;
     workspace : string;
     on_step : Run.step_record -> unit;
+    on_event : run_event -> unit;
   }
 
   type progress = {
@@ -203,6 +217,14 @@ struct
                   ~bindings:context.bindings value ))
             step.Workflow.inputs
     in
+    engine.on_event
+      (Step_started
+         {
+           skill = step.Workflow.skill;
+           position = progress.run.Run.position;
+           item_key =
+             Option.map (fun context -> Items.key context.bindings) item;
+         });
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* exec_result =
       Executor_port.execute ~command ~cwd:engine.workspace
@@ -267,6 +289,7 @@ struct
     in
     let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
     engine.on_step step_record;
+    engine.on_event (Step_finished step_record);
     Ok (step_record, progress)
 
   let stop_for_failure ~on_fail progress =
@@ -373,6 +396,12 @@ struct
           Ok { Run.item_index = 0; body_index = 0; items }
     in
     let items = state.Run.items in
+    engine.on_event
+      (Items_resolved
+         {
+           entry_index = progress.run.Run.position.Run.entry_index;
+           item_keys = List.map Items.key items;
+         });
     let item_count = List.length items in
     let body = for_each.Workflow.body in
     let body_count = List.length body in
@@ -513,7 +542,8 @@ struct
         | Ok _ | Error _ -> ());
         Error message
 
-  let execute_run ?(on_step = fun _ -> ()) ?run_id ~root ~workflow_name ~task
+  let execute_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
+      ?run_id ~root ~workflow_name ~task
       ~isolated () =
     let* jig_dir, workflow_dir, workflow, config = load_project ~root ~workflow_name in
     let started = Unix.gettimeofday () in
@@ -543,6 +573,7 @@ struct
         entries = workflow.Workflow.entries;
         workspace = Option.value workspace ~default:root;
         on_step;
+        on_event;
       }
     in
     let run =
@@ -682,7 +713,8 @@ struct
           position = advance_after_human_pass ~entries run.Run.position;
         } )
 
-  let resume_run ?(on_step = fun _ -> ()) ?(skip = false) ~root ~run_id
+  let resume_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
+      ?(skip = false) ~root ~run_id
       ~guidance () =
     let runs_directory = Project.runs_dir ~root in
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
@@ -720,6 +752,7 @@ struct
         entries = workflow.Workflow.entries;
         workspace = Option.value existing.Run.workspace ~default:root;
         on_step;
+        on_event;
       }
     in
     let last_handoff = Run.last_handoff existing in
@@ -736,7 +769,8 @@ struct
      asked for its handoff; that result completes the paused entry as if the
      step had just executed. An unparseable reply changes nothing - the run
      stays paused on disk and the caller reports the error. *)
-  let continue_attached ?(on_step = fun _ -> ()) ~root ~run_id
+  let continue_attached ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
+      ~root ~run_id
       ~(exec_result : Executor.exec_result) () =
     let runs_directory = Project.runs_dir ~root in
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
@@ -790,6 +824,7 @@ struct
         entries = workflow.Workflow.entries;
         workspace = Option.value existing.Run.workspace ~default:root;
         on_step;
+        on_event;
       }
     in
     let cost, usage = Metering.parse_cost exec_result.Executor.stdout in

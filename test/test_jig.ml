@@ -103,6 +103,105 @@ let expect_workflow_error ~mentions yaml =
         true
         (contains ~affix:mentions message)
 
+
+(* forEach items files *)
+
+let write_items root name content =
+  let path = Filename.concat root name in
+  write_file path content;
+  path
+
+let expect_items_error ~mentions path =
+  match Items.load ~path with
+  | Ok _ -> Alcotest.fail (Printf.sprintf "expected an error mentioning %S" mentions)
+  | Error message ->
+      Alcotest.(check bool)
+        (Printf.sprintf "error mentions %S" mentions)
+        true
+        (contains ~affix:mentions message)
+
+let test_items_parses_tsv () =
+  let root = make_temp_root () in
+  let path =
+    write_items root "ports.tsv" "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b.md\n"
+  in
+  match Items.load ~path with
+  | Error message -> Alcotest.fail message
+  | Ok items ->
+      Alcotest.(check int) "two items" 2 (List.length items);
+      Alcotest.(check (list (pair string string)))
+        "bindings keyed by header, in order"
+        [ ("name", "alpha"); ("spec", "specs/a.md") ]
+        (List.hd items);
+      Alcotest.(check string) "first column is the key" "alpha"
+        (Items.key (List.hd items))
+
+let test_items_parses_json () =
+  let root = make_temp_root () in
+  let path =
+    write_items root "ports.json"
+      {|[{"name": "alpha", "spec": "specs/a.md"}, {"name": "beta", "spec": "specs/b.md"}]|}
+  in
+  match Items.load ~path with
+  | Error message -> Alcotest.fail message
+  | Ok items ->
+      Alcotest.(check int) "two items" 2 (List.length items);
+      Alcotest.(check string) "key of the second" "beta"
+        (Items.key (List.nth items 1))
+
+let test_items_tolerates_crlf_tsv () =
+  let root = make_temp_root () in
+  let path =
+    write_items root "ports.tsv" "name\tspec\r\nalpha\tspecs/a.md\r\n"
+  in
+  match Items.load ~path with
+  | Error message -> Alcotest.fail message
+  | Ok items ->
+      Alcotest.(check (list (pair string string)))
+        "carriage returns trimmed"
+        [ ("name", "alpha"); ("spec", "specs/a.md") ]
+        (List.hd items)
+
+let test_items_rejects_header_only_tsv () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"no items"
+    (write_items root "ports.tsv" "name\tspec\n")
+
+let test_items_rejects_empty_json_array () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"no items" (write_items root "ports.json" "[]")
+
+let test_items_rejects_ragged_tsv_row () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"header has 2"
+    (write_items root "ports.tsv" "name\tspec\nalpha\n")
+
+let test_items_rejects_duplicate_columns () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"duplicate column"
+    (write_items root "ports.tsv" "name\tname\nalpha\tbeta\n")
+
+let test_items_rejects_duplicate_keys () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"duplicate item key"
+    (write_items root "ports.tsv" "name\tspec\nalpha\tone\nalpha\ttwo\n")
+
+let test_items_rejects_non_string_json_value () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"must be a string"
+    (write_items root "ports.json" {|[{"name": "alpha", "count": 3}]|})
+
+let test_items_rejects_ragged_json_objects () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:"same keys"
+    (write_items root "ports.json"
+       {|[{"name": "alpha", "spec": "a"}, {"name": "beta"}]|})
+
+let test_items_rejects_unknown_extension () =
+  let root = make_temp_root () in
+  expect_items_error ~mentions:".tsv"
+    (write_items root "ports.csv" "name\nalpha\n")
+
 let test_retry_requires_max_iterations () =
   expect_workflow_error ~mentions:"max_iterations"
     "name: x\nsteps:\n  - retry:\n      on_exhausted: escalate\n      steps:\n        - skill: a\n"
@@ -193,6 +292,128 @@ let test_with_rejects_duplicate_keys () =
   expect_workflow_error ~mentions:"duplicate"
     "name: x\nsteps:\n  - skill: a\n    with:\n      spec: one.md\n      spec: two.md\n"
 
+let for_each_yaml =
+  "name: fanout\n\
+   steps:\n\
+  \  - forEach:\n\
+  \      items: ports.tsv\n\
+  \      as: port\n\
+  \      steps:\n\
+  \        - retry:\n\
+  \            max_iterations: 3\n\
+  \            on_exhausted: escalate\n\
+  \            steps:\n\
+  \              - skill: implement-port\n\
+  \                with:\n\
+  \                  spec: \"{{ port.spec }}\"\n\
+  \              - skill: run-tests\n\
+  \                until: pass\n\
+  \  - skill: open-pr\n"
+
+let test_for_each_parses () =
+  match Workflow.of_string for_each_yaml with
+  | Error message -> Alcotest.fail message
+  | Ok workflow -> (
+      Alcotest.(check (list string))
+        "referenced skills recurse into the body"
+        [ "implement-port"; "run-tests"; "open-pr" ]
+        (Workflow.referenced_skills workflow);
+      match workflow.Workflow.entries with
+      | [ Workflow.For_each for_each; Workflow.Step _ ] ->
+          Alcotest.(check string) "items file" "ports.tsv"
+            for_each.Workflow.items_file;
+          Alcotest.(check string) "binding name" "port" for_each.Workflow.var;
+          Alcotest.(check (list string))
+            "referenced columns" [ "spec" ]
+            (Workflow.for_each_columns for_each)
+      | _ -> Alcotest.fail "expected forEach + step entries")
+
+let test_for_each_requires_items () =
+  expect_workflow_error ~mentions:"items"
+    "name: x\nsteps:\n  - forEach:\n      as: port\n      steps:\n        - skill: a\n"
+
+let test_for_each_requires_as () =
+  expect_workflow_error ~mentions:"as"
+    "name: x\nsteps:\n  - forEach:\n      items: p.tsv\n      steps:\n        - skill: a\n"
+
+let test_for_each_requires_steps () =
+  expect_workflow_error ~mentions:"steps"
+    "name: x\nsteps:\n  - forEach:\n      items: p.tsv\n      as: port\n"
+
+let test_for_each_rejects_nesting () =
+  expect_workflow_error ~mentions:"nest"
+    "name: x\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: p.tsv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - forEach:\n\
+    \            items: q.tsv\n\
+    \            as: other\n\
+    \            steps:\n\
+    \              - skill: a\n"
+
+let test_for_each_rejected_inside_retry () =
+  expect_workflow_error ~mentions:"forEach"
+    "name: x\n\
+     steps:\n\
+    \  - retry:\n\
+    \      max_iterations: 2\n\
+    \      on_exhausted: abort\n\
+    \      steps:\n\
+    \        - forEach:\n\
+    \            items: p.tsv\n\
+    \            as: port\n\
+    \            steps:\n\
+    \              - skill: a\n"
+
+let test_for_each_rejects_dotted_as () =
+  expect_workflow_error ~mentions:"letters"
+    "name: x\nsteps:\n  - forEach:\n      items: p.tsv\n      as: a.b\n      steps:\n        - skill: a\n"
+
+let test_for_each_rejects_bad_items_extension () =
+  expect_workflow_error ~mentions:".tsv"
+    "name: x\nsteps:\n  - forEach:\n      items: p.csv\n      as: port\n      steps:\n        - skill: a\n"
+
+let test_for_each_rejects_empty_steps () =
+  expect_workflow_error ~mentions:"empty"
+    "name: x\nsteps:\n  - forEach:\n      items: p.tsv\n      as: port\n      steps: []\n"
+
+let test_for_each_rejects_unbound_variable () =
+  expect_workflow_error ~mentions:"binds"
+    "name: x\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: p.tsv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - skill: a\n\
+    \          with:\n\
+    \            spec: \"{{ other.spec }}\"\n"
+
+let test_for_each_rejects_malformed_placeholder () =
+  expect_workflow_error ~mentions:"placeholder"
+    "name: x\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: p.tsv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - skill: a\n\
+    \          with:\n\
+    \            spec: \"{{ port }}\"\n"
+
+let test_for_each_rejects_interpolated_skill () =
+  expect_workflow_error ~mentions:"only allowed in with"
+    "name: x\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: p.tsv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - skill: \"{{ port.name }}\"\n"
+
 let test_non_positive_max_iterations_rejected () =
   expect_workflow_error ~mentions:"positive"
     "name: x\nsteps:\n  - retry:\n      max_iterations: 0\n      on_exhausted: abort\n      steps:\n        - skill: a\n"
@@ -247,7 +468,7 @@ let test_store_saves_run () =
       task = "test";
       status = Run.Paused;
       error = None;
-      position = { Run.entry_index = 2; iterations_used = 1 };
+      position = { Run.entry_index = 2; iterations_used = 1; for_each = None };
       workspace = Some "/somewhere/worktree";
       steps = [];
       started_at = "2026-07-02T12:00:00Z";
@@ -441,7 +662,7 @@ let test_validate_reports_missing_skills () =
   match
     Result.bind
       (Workflow.load ~path:(Filename.concat jig_dir "workflows/broken.yaml"))
-      (fun workflow -> Validate.workflow ~jig_dir ~skill_paths:[] workflow)
+      (fun workflow -> Validate.workflow ~root ~jig_dir ~skill_paths:[] workflow)
   with
   | Ok () -> Alcotest.fail "expected validation to fail"
   | Error message ->
@@ -686,6 +907,306 @@ let test_retry_steps_carry_their_own_inputs () =
       | prompts ->
           Alcotest.fail
             (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts)))
+
+
+(* forEach at runtime *)
+
+let fanout_workflow_yaml =
+  "name: fanout\n\
+   steps:\n\
+  \  - forEach:\n\
+  \      items: ports.tsv\n\
+  \      as: port\n\
+  \      steps:\n\
+  \        - skill: port-one\n\
+  \          with:\n\
+  \            spec: \"{{ port.spec }}\"\n\
+  \        - skill: port-two\n"
+
+let setup_fanout_project ?(items = "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b.md\n")
+    ?(workflow = fanout_workflow_yaml) root =
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file (Filename.concat root "ports.tsv") items;
+  write_file (Filename.concat root ".jig/workflows/fanout.yaml") workflow;
+  List.iter
+    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
+    [ "port-one"; "port-two" ]
+
+let step_item_keys run =
+  List.map (fun step -> step.Run.item_key) run.Run.steps
+
+let test_for_each_runs_body_per_item () =
+  let root = make_temp_root () in
+  setup_fanout_project root;
+  Scripted_executor.reset
+    ~outputs:
+      [ handoff_block (); handoff_block (); handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check (list (option string)))
+        "step provenance carries the item keys"
+        [ Some "alpha"; Some "alpha"; Some "beta"; Some "beta" ]
+        (step_item_keys run);
+      (match Yojson.Safe.Util.member "for_each"
+               (Yojson.Safe.Util.member "position" (Run.to_json run))
+       with
+      | `Null -> ()
+      | _ -> Alcotest.fail "completed run must carry no snapshot");
+      match Scripted_executor.prompts () with
+      | [ first; _; third; _ ] ->
+          Alcotest.(check bool) "first prompt binds item 1's value" true
+            (contains ~affix:"spec: specs/a.md" first);
+          Alcotest.(check bool) "first prompt states the item position" true
+            (contains ~affix:"item 1 of 2 (alpha)" first);
+          Alcotest.(check bool) "third prompt binds item 2's value" true
+            (contains ~affix:"spec: specs/b.md" third);
+          Alcotest.(check bool) "third prompt states the item position" true
+            (contains ~affix:"item 2 of 2 (beta)" third)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 4 prompts, got %d" (List.length prompts)))
+
+let retry_fanout_workflow_yaml =
+  "name: fanout\n\
+   steps:\n\
+  \  - forEach:\n\
+  \      items: ports.tsv\n\
+  \      as: port\n\
+  \      steps:\n\
+  \        - retry:\n\
+  \            max_iterations: 2\n\
+  \            on_exhausted: escalate\n\
+  \            steps:\n\
+  \              - skill: port-one\n\
+  \                with:\n\
+  \                  spec: \"{{ port.spec }}\"\n\
+  \              - skill: port-two\n\
+  \                until: pass\n"
+
+let test_for_each_retry_loops_within_one_item () =
+  let root = make_temp_root () in
+  setup_fanout_project ~workflow:retry_fanout_workflow_yaml root;
+  Scripted_executor.reset
+    ~outputs:
+      [
+        (* item 1, attempt 1: implement passes, gate fails *)
+        handoff_block ();
+        handoff_block ~status:"fail" ~summary:"gate red" ();
+        (* item 1, attempt 2: implement passes, gate passes *)
+        handoff_block ();
+        handoff_block ();
+        (* item 2, one attempt *)
+        handoff_block ();
+        handoff_block ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check (list (option string)))
+        "the retry looped within item 1 before item 2 ran"
+        [
+          Some "alpha";
+          Some "alpha";
+          Some "alpha";
+          Some "alpha";
+          Some "beta";
+          Some "beta";
+        ]
+        (step_item_keys run)
+
+let pause_fanout_at_item_two root =
+  setup_fanout_project root;
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ();
+        handoff_block ();
+        handoff_block ~status:"escalate" ~summary:"stuck on beta" ();
+      ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> run
+
+let test_for_each_escalate_pauses_at_the_item () =
+  let root = make_temp_root () in
+  let run = pause_fanout_at_item_two root in
+  Alcotest.(check string) "status" "paused"
+    (Run.string_of_status run.Run.status);
+  let position = Yojson.Safe.Util.member "position" (Run.to_json run) in
+  let state = Yojson.Safe.Util.member "for_each" position in
+  Alcotest.(check int) "paused at item 2" 1
+    (Yojson.Safe.Util.to_int (Yojson.Safe.Util.member "item_index" state));
+  Alcotest.(check int) "paused at the first body step" 0
+    (Yojson.Safe.Util.to_int (Yojson.Safe.Util.member "body_index" state))
+
+let test_for_each_resume_uses_the_snapshot () =
+  let root = make_temp_root () in
+  let paused = pause_fanout_at_item_two root in
+  (* Edit the items file while paused: the run must not notice. *)
+  write_file
+    (Filename.concat root "ports.tsv")
+    "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/CHANGED.md\n";
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      match Scripted_executor.prompts () with
+      | first :: _ ->
+          Alcotest.(check bool) "resumed at item 2" true
+            (contains ~affix:"item 2 of 2 (beta)" first);
+          Alcotest.(check bool) "snapshot value survives the file edit" true
+            (contains ~affix:"spec: specs/b.md" first);
+          Alcotest.(check bool) "edited value is not seen" false
+            (contains ~affix:"CHANGED" first)
+      | [] -> Alcotest.fail "expected the resume to execute steps")
+
+let test_for_each_skip_completes_the_item_step_only () =
+  let root = make_temp_root () in
+  let paused = pause_fanout_at_item_two root in
+  Scripted_executor.reset ~outputs:[ handoff_block () ];
+  match
+    Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None
+      ~skip:true ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      let skipped = List.nth run.Run.steps 3 in
+      Alcotest.(check string) "synthetic pass names the paused skill"
+        "port-one" skipped.Run.skill;
+      Alcotest.(check (option string))
+        "synthetic pass carries the item key" (Some "beta")
+        skipped.Run.item_key;
+      match Scripted_executor.prompts () with
+      | [ only ] ->
+          Alcotest.(check bool)
+            "automation continued with the item's next step" true
+            (contains ~affix:"item 2 of 2 (beta)" only)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
+
+let test_for_each_missing_column_fails_before_any_step () =
+  let root = make_temp_root () in
+  setup_fanout_project ~items:"name\nalpha\nbeta\n" root;
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
+  with
+  | Ok _ -> Alcotest.fail "expected validation to fail"
+  | Error message ->
+      Alcotest.(check bool) "names the missing column" true
+        (contains ~affix:"spec" message);
+      Alcotest.(check int) "no step executed" 0
+        (List.length (Scripted_executor.prompts ()))
+
+let test_for_each_missing_items_file_fails_validation () =
+  let root = make_temp_root () in
+  setup_fanout_project root;
+  Sys.remove (Filename.concat root "ports.tsv");
+  Scripted_executor.reset ~outputs:[];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
+  with
+  | Ok _ -> Alcotest.fail "expected validation to fail"
+  | Error message ->
+      Alcotest.(check bool) "names the items file" true
+        (contains ~affix:"ports.tsv" message)
+
+let test_run_json_roundtrips_for_each_position () =
+  let bindings = [ ("name", "alpha"); ("spec", "specs/a.md") ] in
+  let run =
+    {
+      Run.id = "roundtrip";
+      workflow = "fanout";
+      task = "port";
+      status = Run.Paused;
+      error = None;
+      position =
+        {
+          Run.entry_index = 0;
+          iterations_used = 1;
+          for_each =
+            Some { Run.item_index = 1; body_index = 0; items = [ bindings ] };
+        };
+      workspace = None;
+      steps =
+        [
+          {
+            Run.skill = "port-one";
+            outcome = Run.Pass;
+            exit_code = 0;
+            cost = Metering.Unknown_cost;
+            stdout = "";
+            stderr = "";
+            handoff = None;
+            handoff_error = None;
+            session_id = None;
+            item_index = Some 1;
+            item_key = Some "alpha";
+            started_at = "";
+            finished_at = "";
+          };
+        ];
+      started_at = "";
+      finished_at = None;
+    }
+  in
+  match Run.of_json (Run.to_json run) with
+  | Error message -> Alcotest.fail message
+  | Ok loaded -> (
+      (match loaded.Run.position.Run.for_each with
+      | Some state ->
+          Alcotest.(check int) "item cursor" 1 state.Run.item_index;
+          Alcotest.(check int) "body cursor" 0 state.Run.body_index;
+          Alcotest.(check bool) "snapshot round-trips" true
+            (state.Run.items = [ bindings ])
+      | None -> Alcotest.fail "expected the for_each state to survive");
+      let step = List.hd loaded.Run.steps in
+      Alcotest.(check (option int)) "step item_index" (Some 1)
+        step.Run.item_index;
+      Alcotest.(check (option string))
+        "step item_key" (Some "alpha") step.Run.item_key)
+
+let test_old_run_json_still_loads () =
+  let json =
+    Yojson.Safe.from_string
+      {|{"id": "old", "workflow": "hello", "task": "t", "status": "paused",
+         "position": {"entry_index": 1, "iterations_used": 0},
+         "steps": [{"skill": "say-hi", "outcome": "pass", "exit_code": 0,
+                    "cost_usd": "unknown", "stdout": "", "stderr": "",
+                    "started_at": "", "finished_at": ""}],
+         "started_at": ""}|}
+  in
+  match Run.of_json json with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check bool) "no for_each state" true
+        (run.Run.position.Run.for_each = None);
+      let step = List.hd run.Run.steps in
+      Alcotest.(check (option int)) "no item_index" None step.Run.item_index;
+      Alcotest.(check (option string)) "no item_key" None step.Run.item_key
 
 let test_handoffs_thread_between_steps () =
   let root = make_temp_root () in
@@ -1200,6 +1721,8 @@ let test_last_handoff_picks_latest () =
       handoff = h;
       handoff_error = None;
       session_id = None;
+      item_index = None;
+      item_key = None;
       started_at = "";
       finished_at = "";
     }
@@ -1211,7 +1734,7 @@ let test_last_handoff_picks_latest () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0 };
+      position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
       workspace = None;
       steps =
         [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
@@ -1348,7 +1871,7 @@ let test_resume_honors_recorded_workspace_location () =
       task = "iso";
       status = Run.Paused;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0 };
+      position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
       workspace = Some old_workspace;
       steps = [];
       started_at = "2026-07-03T00:00:00Z";
@@ -1593,7 +2116,7 @@ let test_init_scaffolds_valid_project () =
         Result.bind
           (Workflow.load
              ~path:(Filename.concat jig_dir "workflows/bugfix.yaml"))
-          (fun workflow -> Validate.workflow ~jig_dir ~skill_paths:[] workflow)
+          (fun workflow -> Validate.workflow ~root ~jig_dir ~skill_paths:[] workflow)
       with
       | Error message -> Alcotest.fail message
       | Ok () -> ())
@@ -1746,6 +2269,39 @@ let test_continue_attached_pass_drives_the_run () =
           Alcotest.(check bool) "elicited handoff threads onward" true
             (contains ~affix:"resolved with the human" first_after)
       | [] -> Alcotest.fail "expected the run to keep driving")
+
+
+let test_continue_attached_pass_advances_the_item_cursor () =
+  let root = make_temp_root () in
+  let paused = pause_fanout_at_item_two root in
+  Scripted_executor.reset ~outputs:[ handoff_block () ];
+  match
+    Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
+      ~exec_result:
+        (elicited_result
+           (claude_style_output
+              ~handoff:(handoff_block ~summary:"human fixed beta" ())
+              ~session:"sess-item" ()))
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check string) "run drove to completion" "completed"
+        (Run.string_of_status run.Run.status);
+      let elicited_step = List.nth run.Run.steps 3 in
+      Alcotest.(check string) "elicited record names the paused skill"
+        "port-one" elicited_step.Run.skill;
+      Alcotest.(check (option string))
+        "elicited record carries the item key" (Some "beta")
+        elicited_step.Run.item_key;
+      match Scripted_executor.prompts () with
+      | [ only ] ->
+          Alcotest.(check bool)
+            "automation continued with the item's next step" true
+            (contains ~affix:"item 2 of 2 (beta)" only)
+      | prompts ->
+          Alcotest.fail
+            (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
 
 let test_continue_attached_escalate_stays_paused () =
   let root = make_temp_root () in
@@ -1995,6 +2551,55 @@ let () =
             test_with_rejects_non_mapping;
           Alcotest.test_case "rejects duplicate with keys" `Quick
             test_with_rejects_duplicate_keys;
+          Alcotest.test_case "parses a forEach block" `Quick
+            test_for_each_parses;
+          Alcotest.test_case "forEach requires items" `Quick
+            test_for_each_requires_items;
+          Alcotest.test_case "forEach requires as" `Quick
+            test_for_each_requires_as;
+          Alcotest.test_case "forEach requires steps" `Quick
+            test_for_each_requires_steps;
+          Alcotest.test_case "rejects nested forEach" `Quick
+            test_for_each_rejects_nesting;
+          Alcotest.test_case "rejects forEach inside retry" `Quick
+            test_for_each_rejected_inside_retry;
+          Alcotest.test_case "rejects dotted forEach as name" `Quick
+            test_for_each_rejects_dotted_as;
+          Alcotest.test_case "rejects non-tsv-or-json items path" `Quick
+            test_for_each_rejects_bad_items_extension;
+          Alcotest.test_case "rejects empty forEach steps" `Quick
+            test_for_each_rejects_empty_steps;
+          Alcotest.test_case "rejects an unbound placeholder variable" `Quick
+            test_for_each_rejects_unbound_variable;
+          Alcotest.test_case "rejects a malformed placeholder" `Quick
+            test_for_each_rejects_malformed_placeholder;
+          Alcotest.test_case "rejects interpolation in a skill name" `Quick
+            test_for_each_rejects_interpolated_skill;
+        ] );
+      ( "items",
+        [
+          Alcotest.test_case "parses tsv with a header" `Quick
+            test_items_parses_tsv;
+          Alcotest.test_case "parses a json array of objects" `Quick
+            test_items_parses_json;
+          Alcotest.test_case "tolerates crlf tsv" `Quick
+            test_items_tolerates_crlf_tsv;
+          Alcotest.test_case "rejects a header-only tsv" `Quick
+            test_items_rejects_header_only_tsv;
+          Alcotest.test_case "rejects an empty json array" `Quick
+            test_items_rejects_empty_json_array;
+          Alcotest.test_case "rejects a ragged tsv row" `Quick
+            test_items_rejects_ragged_tsv_row;
+          Alcotest.test_case "rejects duplicate columns" `Quick
+            test_items_rejects_duplicate_columns;
+          Alcotest.test_case "rejects duplicate item keys" `Quick
+            test_items_rejects_duplicate_keys;
+          Alcotest.test_case "rejects non-string json values" `Quick
+            test_items_rejects_non_string_json_value;
+          Alcotest.test_case "rejects ragged json objects" `Quick
+            test_items_rejects_ragged_json_objects;
+          Alcotest.test_case "rejects an unknown extension" `Quick
+            test_items_rejects_unknown_extension;
         ] );
       ( "config",
         [
@@ -2057,6 +2662,24 @@ let () =
             test_prompt_carries_step_inputs;
           Alcotest.test_case "retry steps carry their own inputs" `Quick
             test_retry_steps_carry_their_own_inputs;
+          Alcotest.test_case "forEach runs the body once per item" `Quick
+            test_for_each_runs_body_per_item;
+          Alcotest.test_case "forEach retry loops within one item" `Quick
+            test_for_each_retry_loops_within_one_item;
+          Alcotest.test_case "escalate inside forEach pauses at the item"
+            `Quick test_for_each_escalate_pauses_at_the_item;
+          Alcotest.test_case "resume uses the snapshot, not the edited file"
+            `Quick test_for_each_resume_uses_the_snapshot;
+          Alcotest.test_case "skip completes the current item step only"
+            `Quick test_for_each_skip_completes_the_item_step_only;
+          Alcotest.test_case "missing referenced column fails before any step"
+            `Quick test_for_each_missing_column_fails_before_any_step;
+          Alcotest.test_case "missing items file fails validation" `Quick
+            test_for_each_missing_items_file_fails_validation;
+          Alcotest.test_case "run json round-trips a forEach position" `Quick
+            test_run_json_roundtrips_for_each_position;
+          Alcotest.test_case "old run json without for_each still loads"
+            `Quick test_old_run_json_still_loads;
           Alcotest.test_case "handoffs thread between steps" `Quick
             test_handoffs_thread_between_steps;
           Alcotest.test_case "fail handoff short-circuits" `Quick
@@ -2154,6 +2777,8 @@ let () =
             test_on_fail_abort_aborts;
           Alcotest.test_case "attached pass drives the run onward" `Quick
             test_continue_attached_pass_drives_the_run;
+          Alcotest.test_case "attached pass advances the item cursor" `Quick
+            test_continue_attached_pass_advances_the_item_cursor;
           Alcotest.test_case "attached escalate stays paused" `Quick
             test_continue_attached_escalate_stays_paused;
           Alcotest.test_case "unparseable elicitation leaves the run untouched"

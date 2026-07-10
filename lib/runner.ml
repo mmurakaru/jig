@@ -23,21 +23,42 @@ let handoff_protocol =
 (* One line of orientation: which workflow, how far along, what follows.
    The full step list stays out - it bloats every prompt and tempts a step
    into doing later steps' work early. *)
-let entry_lead_skill = function
+let rec entry_lead_skill = function
   | Workflow.Step step -> step.Workflow.skill
   | Workflow.Retry retry -> (
       match retry.Workflow.retry_steps with
       | first :: _ -> first.Workflow.skill
       | [] -> "retry")
+  | Workflow.For_each for_each -> (
+      match for_each.Workflow.body with
+      | first :: _ -> entry_lead_skill first
+      | [] -> "forEach")
 
-let position_line ~workflow_name ~entries ~entry_index ~skill =
+(* The item a forEach body step is currently bound to. The key (the item's
+   first column) is its identity for humans; the index drives the cursor. *)
+type item_context = {
+  var : string;
+  bindings : (string * string) list;
+  item_index : int;
+  item_count : int;
+}
+
+let position_line ~workflow_name ~entries ~entry_index ~skill ~item =
+  let item_part =
+    match item with
+    | Some context ->
+        Printf.sprintf ", item %d of %d (%s)" (context.item_index + 1)
+          context.item_count
+          (Items.key context.bindings)
+    | None -> ""
+  in
   let continuation =
     match List.nth_opt entries (entry_index + 1) with
     | Some entry -> Printf.sprintf "next: %s." (entry_lead_skill entry)
     | None -> "this is the final step."
   in
-  Printf.sprintf "Workflow: %s - step %d of %d (%s); %s" workflow_name
-    (entry_index + 1) (List.length entries) skill continuation
+  Printf.sprintf "Workflow: %s - step %d of %d (%s)%s; %s" workflow_name
+    (entry_index + 1) (List.length entries) skill item_part continuation
 
 (* Sent through attach_headless after an interactive attach ends; the
    session already carries the full protocol from its original envelope. *)
@@ -153,7 +174,7 @@ struct
 
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
-  let execute_step engine progress (step : Workflow.step) =
+  let execute_step engine progress ~item (step : Workflow.step) =
     let* skill_body =
       Skill.load ~jig_dir:engine.jig_dir
         ~skill_paths:engine.config.Config.skill_paths
@@ -162,6 +183,17 @@ struct
     let* command =
       Model_provider_port.resolve ~config:engine.config
         ~skill:step.Workflow.skill
+    in
+    let inputs =
+      match item with
+      | None -> step.Workflow.inputs
+      | Some context ->
+          List.map
+            (fun (key, value) ->
+              ( key,
+                Workflow.interpolate ~var:context.var
+                  ~bindings:context.bindings value ))
+            step.Workflow.inputs
     in
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* exec_result =
@@ -172,8 +204,8 @@ struct
                (position_line ~workflow_name:progress.run.Run.workflow
                   ~entries:engine.entries
                   ~entry_index:progress.run.Run.position.Run.entry_index
-                  ~skill:step.Workflow.skill)
-             ~inputs:step.Workflow.inputs ~skill_body
+                  ~skill:step.Workflow.skill ~item)
+             ~inputs ~skill_body
              ~previous_handoff:progress.last_handoff
              ~guidance:progress.guidance)
     in
@@ -202,6 +234,9 @@ struct
         handoff;
         handoff_error;
         session_id = Metering.parse_session_id exec_result.Executor.stdout;
+        item_index =
+          Option.map (fun context -> context.item_index) item;
+        item_key = Option.map (fun context -> Items.key context.bindings) item;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
@@ -232,8 +267,8 @@ struct
     | Some Workflow.Abort -> Stop (Run.Aborted, progress)
     | None -> Stop (Run.Failed, progress)
 
-  let execute_plain_entry engine progress step =
-    let* step_record, progress = execute_step engine progress step in
+  let execute_plain_entry engine progress ~item step =
+    let* step_record, progress = execute_step engine progress ~item step in
     match step_record.Run.outcome with
     | Run.Pass -> Ok (Proceed progress)
     | Run.Escalate -> Ok (Stop (Run.Paused, progress))
@@ -249,12 +284,14 @@ struct
     | Iteration_failed of progress
     | Interrupted of Run.status * progress
 
-  let execute_iteration engine progress (retry : Workflow.retry) =
+  let execute_iteration engine progress ~item (retry : Workflow.retry) =
     let rec loop progress remaining =
       match remaining with
       | [] -> Ok (Group_done progress)
       | (step : Workflow.step) :: rest -> (
-          let* step_record, progress = execute_step engine progress step in
+          let* step_record, progress =
+            execute_step engine progress ~item step
+          in
           match step_record.Run.outcome with
           | Run.Pass ->
               if step.Workflow.until_pass then Ok (Group_done progress)
@@ -265,7 +302,9 @@ struct
     in
     loop progress retry.Workflow.retry_steps
 
-  let execute_retry_entry engine progress (retry : Workflow.retry) =
+  let execute_retry_entry engine progress ~item (retry : Workflow.retry) =
+    (* A record update, so entry_index and any forEach cursor survive - a
+       pause inside a retry inside a forEach must keep all three. *)
     let update_iterations progress iterations_used =
       {
         progress with
@@ -283,7 +322,7 @@ struct
         | Workflow.Escalate -> Ok (Stop (Run.Paused, progress))
         | Workflow.Abort -> Ok (Stop (Run.Aborted, progress))
       else
-        let* result = execute_iteration engine progress retry in
+        let* result = execute_iteration engine progress ~item retry in
         match result with
         | Group_done progress -> Ok (Proceed progress)
         | Interrupted (status, progress) -> Ok (Stop (status, progress))
@@ -294,15 +333,74 @@ struct
     in
     attempt progress progress.run.Run.position.Run.iterations_used
 
+  let set_position progress position =
+    { progress with run = { progress.run with Run.position } }
+
   let set_entry_index progress entry_index =
-    {
-      progress with
-      run =
+    set_position progress
+      { progress.run.Run.position with Run.entry_index }
+
+  (* One forEach entry: the body runs once per item, in order. The item
+     snapshot and cursor live in the persisted position, so a resume
+     re-enters exactly the item and body entry that paused; the items file
+     is read once, when the entry first starts. *)
+  let execute_for_each_entry engine progress (for_each : Workflow.for_each) =
+    let* state =
+      match progress.run.Run.position.Run.for_each with
+      | Some state -> Ok state
+      | None ->
+          let path =
+            Filename.concat engine.root for_each.Workflow.items_file
+          in
+          let* items = Items.load ~path in
+          let* () =
+            Items.check_columns ~path
+              ~required:(Workflow.for_each_columns for_each)
+              items
+          in
+          Ok { Run.item_index = 0; body_index = 0; items }
+    in
+    let items = state.Run.items in
+    let item_count = List.length items in
+    let body = for_each.Workflow.body in
+    let body_count = List.length body in
+    let set_cursor progress item_index body_index =
+      set_position progress
         {
-          progress.run with
-          Run.position = { Run.entry_index; iterations_used = progress.run.Run.position.Run.iterations_used };
-        };
-    }
+          progress.run.Run.position with
+          Run.for_each = Some { Run.item_index; body_index; items };
+        }
+    in
+    let reset_iterations progress =
+      set_position progress
+        { progress.run.Run.position with Run.iterations_used = 0 }
+    in
+    let rec loop progress item_index body_index =
+      if item_index >= item_count then Ok (Proceed progress)
+      else if body_index >= body_count then
+        loop progress (item_index + 1) 0
+      else
+        let progress = set_cursor progress item_index body_index in
+        let bindings = List.nth items item_index in
+        let item =
+          Some
+            { var = for_each.Workflow.var; bindings; item_index; item_count }
+        in
+        let* verdict =
+          match List.nth body body_index with
+          | Workflow.Step step ->
+              execute_plain_entry engine progress ~item step
+          | Workflow.Retry retry ->
+              execute_retry_entry engine progress ~item retry
+          | Workflow.For_each _ ->
+              Error "run: forEach bodies cannot contain forEach"
+        in
+        match verdict with
+        | Proceed progress ->
+            loop (reset_iterations progress) item_index (body_index + 1)
+        | Stop (status, progress) -> Ok (Stop (status, progress))
+    in
+    loop progress state.Run.item_index state.Run.body_index
 
   let execute_entries engine progress =
     let entry_count = List.length engine.entries in
@@ -313,21 +411,20 @@ struct
         let progress = set_entry_index progress entry_index in
         let* verdict =
           match entry with
-          | Workflow.Step step -> execute_plain_entry engine progress step
-          | Workflow.Retry retry -> execute_retry_entry engine progress retry
+          | Workflow.Step step ->
+              execute_plain_entry engine progress ~item:None step
+          | Workflow.Retry retry ->
+              execute_retry_entry engine progress ~item:None retry
+          | Workflow.For_each for_each ->
+              execute_for_each_entry engine progress for_each
         in
         match verdict with
         | Proceed progress ->
+            (* Entry complete: reset the retry counter and clear any forEach
+               cursor, so finished runs carry no snapshot. *)
             let progress =
-              {
-                progress with
-                run =
-                  {
-                    progress.run with
-                    Run.position =
-                      { Run.entry_index; iterations_used = 0 };
-                  };
-              }
+              set_position progress
+                { Run.entry_index; iterations_used = 0; for_each = None }
             in
             loop progress (entry_index + 1)
         | Stop (status, progress) -> Ok (status, progress)
@@ -375,8 +472,8 @@ struct
     let* workflow = Workflow.load ~path:workflow_path in
     let* config = Config.load ~jig_dir in
     let* () =
-      Validate.workflow ~jig_dir ~skill_paths:config.Config.skill_paths
-        workflow
+      Validate.workflow ~root ~jig_dir
+        ~skill_paths:config.Config.skill_paths workflow
     in
     Ok (jig_dir, workflow, config)
 
@@ -438,7 +535,7 @@ struct
         task;
         status = Run.Running;
         error = None;
-        position = { Run.entry_index = 0; iterations_used = 0 };
+        position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
         workspace;
         steps = [];
         started_at = Run.iso8601 started;
@@ -447,32 +544,95 @@ struct
     in
     drive engine { run; last_handoff = None; guidance = None }
 
-  (* A human can complete the paused entry themselves: the pass is recorded
-     with no cost - the absent harness spend is the audit trail - and a
-     human-authored handoff threads onward. Entry granularity: skipping
-     inside a retry group marks the whole group done, gate included. *)
-  let skip_target_skill ~entries ~entry_index =
-    match List.nth_opt entries entry_index with
+  let retry_gate_skill (retry : Workflow.retry) =
+    let gate =
+      List.find_opt
+        (fun step -> step.Workflow.until_pass)
+        retry.Workflow.retry_steps
+    in
+    match (gate, retry.Workflow.retry_steps) with
+    | Some step, _ -> step.Workflow.skill
+    | None, first :: _ -> first.Workflow.skill
+    | None, [] -> "retry"
+
+  (* Inside a forEach the human-completed unit is the current body entry of
+     the current item; elsewhere it is the whole entry (a retry group is
+     skipped as a group, gate included). *)
+  let skip_target_skill ~entries ~(position : Run.position) =
+    match List.nth_opt entries position.Run.entry_index with
     | Some (Workflow.Step step) -> Ok step.Workflow.skill
-    | Some (Workflow.Retry retry) ->
-        let gate =
-          List.find_opt
-            (fun step -> step.Workflow.until_pass)
-            retry.Workflow.retry_steps
-        in
+    | Some (Workflow.Retry retry) -> Ok (retry_gate_skill retry)
+    | Some (Workflow.For_each for_each) ->
         Ok
-          (match (gate, retry.Workflow.retry_steps) with
-          | Some step, _ -> step.Workflow.skill
-          | None, first :: _ -> first.Workflow.skill
-          | None, [] -> "retry")
+          (match position.Run.for_each with
+          | Some state -> (
+              match
+                List.nth_opt for_each.Workflow.body state.Run.body_index
+              with
+              | Some (Workflow.Step step) -> step.Workflow.skill
+              | Some (Workflow.Retry retry) -> retry_gate_skill retry
+              | Some (Workflow.For_each _) | None ->
+                  entry_lead_skill (Workflow.For_each for_each))
+          | None -> entry_lead_skill (Workflow.For_each for_each))
     | None ->
         Error "run: position is past the workflow's entries; nothing to skip"
 
-  let human_skip ~entries ~guidance run =
-    let* skill =
-      skip_target_skill ~entries
-        ~entry_index:run.Run.position.Run.entry_index
+  (* The item the position is currently bound to, for step provenance. *)
+  let position_item (position : Run.position) =
+    match position.Run.for_each with
+    | Some state -> (
+        match List.nth_opt state.Run.items state.Run.item_index with
+        | Some bindings ->
+            (Some state.Run.item_index, Some (Items.key bindings))
+        | None -> (Some state.Run.item_index, None))
+    | None -> (None, None)
+
+  (* Advance past the body entry a human just completed: the next body
+     entry of the same item, else the first body entry of the next item,
+     else the next workflow entry. One helper for --skip and attach, so the
+     re-entry paths cannot drift. *)
+  let advance_after_human_pass ~entries (position : Run.position) =
+    let next_entry =
+      {
+        Run.entry_index = position.Run.entry_index + 1;
+        iterations_used = 0;
+        for_each = None;
+      }
     in
+    match
+      (List.nth_opt entries position.Run.entry_index, position.Run.for_each)
+    with
+    | Some (Workflow.For_each for_each), Some state ->
+        let body_count = List.length for_each.Workflow.body in
+        let item_count = List.length state.Run.items in
+        if state.Run.body_index + 1 < body_count then
+          {
+            position with
+            Run.iterations_used = 0;
+            for_each =
+              Some { state with Run.body_index = state.Run.body_index + 1 };
+          }
+        else if state.Run.item_index + 1 < item_count then
+          {
+            position with
+            Run.iterations_used = 0;
+            for_each =
+              Some
+                {
+                  state with
+                  Run.item_index = state.Run.item_index + 1;
+                  body_index = 0;
+                };
+          }
+        else next_entry
+    | _ -> next_entry
+
+  (* A human can complete the paused entry themselves: the pass is recorded
+     with no cost - the absent harness spend is the audit trail - and a
+     human-authored handoff threads onward. *)
+  let human_skip ~entries ~guidance run =
+    let* skill = skip_target_skill ~entries ~position:run.Run.position in
+    let item_index, item_key = position_item run.Run.position in
     let now = Run.iso8601 (Unix.gettimeofday ()) in
     let summary =
       match guidance with
@@ -491,6 +651,8 @@ struct
           Some { Handoff.status = Handoff.Pass; artifacts = []; summary };
         handoff_error = None;
         session_id = None;
+        item_index;
+        item_key;
         started_at = now;
         finished_at = now;
       }
@@ -500,11 +662,7 @@ struct
         {
           run with
           Run.steps = run.Run.steps @ [ record ];
-          position =
-            {
-              Run.entry_index = run.Run.position.Run.entry_index + 1;
-              iterations_used = 0;
-            };
+          position = advance_after_human_pass ~entries run.Run.position;
         } )
 
   let resume_run ?(on_step = fun _ -> ()) ?(skip = false) ~root ~run_id
@@ -599,7 +757,8 @@ struct
     in
     let entry_index = existing.Run.position.Run.entry_index in
     let* skill =
-      skip_target_skill ~entries:workflow.Workflow.entries ~entry_index
+      skip_target_skill ~entries:workflow.Workflow.entries
+        ~position:existing.Run.position
     in
     let engine =
       {
@@ -626,6 +785,7 @@ struct
           }
     in
     let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let item_index, item_key = position_item existing.Run.position in
     let record =
       {
         Run.skill;
@@ -637,6 +797,8 @@ struct
         handoff;
         handoff_error;
         session_id = Metering.parse_session_id exec_result.Executor.stdout;
+        item_index;
+        item_key;
         started_at = now;
         finished_at = now;
       }
@@ -655,15 +817,27 @@ struct
         let run =
           {
             run with
-            Run.position = { Run.entry_index = entry_index + 1; iterations_used = 0 };
+            Run.position =
+              advance_after_human_pass ~entries:workflow.Workflow.entries
+                existing.Run.position;
           }
         in
         drive engine { run; last_handoff = handoff; guidance = None }
     | Run.Escalate ->
         finish engine { run; last_handoff = handoff; guidance = None } Run.Paused
     | Run.Fail ->
+        (* Inside a forEach the failing unit is the current body entry. *)
+        let failing_entry =
+          match
+            ( List.nth_opt workflow.Workflow.entries entry_index,
+              existing.Run.position.Run.for_each )
+          with
+          | Some (Workflow.For_each for_each), Some state ->
+              List.nth_opt for_each.Workflow.body state.Run.body_index
+          | entry, _ -> entry
+        in
         let status =
-          match List.nth_opt workflow.Workflow.entries entry_index with
+          match failing_entry with
           | Some (Workflow.Step step) -> (
               match step.Workflow.on_fail with
               | Some Workflow.Escalate -> Run.Paused

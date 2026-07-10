@@ -15,7 +15,12 @@ type retry = {
   retry_steps : step list;
 }
 
-type entry = Step of step | Retry of retry
+type entry = Step of step | Retry of retry | For_each of for_each
+
+(* Bounded fan-out over a checked-in data file: the body runs once per
+   item, in order. The parser guarantees the body holds only Step/Retry. *)
+and for_each = { items_file : string; var : string; body : entry list }
+
 type t = { name : string; entries : entry list }
 
 let is_valid_name name =
@@ -38,8 +43,8 @@ let on_failure_of_string ~context = function
            other)
 
 (* The schema is frozen (recorded decision: on_fail + retry, plus `with`
-   as pure data binding); unknown keys are rejected so typos and schema
-   drift fail loudly. *)
+   as pure data binding and `forEach` as bounded fan-out over data);
+   unknown keys are rejected so typos and schema drift fail loudly. *)
 let check_no_unknown_keys ~context ~allowed fields =
   match
     List.find_opt (fun (key, _) -> not (List.mem key allowed)) fields
@@ -178,7 +183,193 @@ let retry_of_yaml yaml =
       Ok { max_iterations; on_exhausted; retry_steps }
   | _ -> Error "workflow: a retry block must be a mapping"
 
-let entry_of_yaml yaml =
+(* {{ <var>.<column> }} - the only interpolation jig will ever do: pure
+   textual substitution inside a forEach body's `with:` values. *)
+let is_valid_placeholder_part text =
+  text <> ""
+  && String.for_all
+       (fun character ->
+         (character >= 'a' && character <= 'z')
+         || (character >= 'A' && character <= 'Z')
+         || (character >= '0' && character <= '9')
+         || character = '-' || character = '_')
+       text
+
+let malformed_placeholder value =
+  Error
+    (Printf.sprintf
+       "workflow: malformed placeholder in with value %S; expected {{ \
+        <var>.<column> }}"
+       value)
+
+(* Scans one with: value; returns the referenced columns, or an error for a
+   malformed placeholder or one that names anything but [var]. *)
+let check_placeholders ~var value =
+  let length = String.length value in
+  let rec scan i columns =
+    if i + 1 >= length then Ok (List.rev columns)
+    else if value.[i] = '{' && value.[i + 1] = '{' then
+      match String.index_from_opt value (i + 2) '}' with
+      | Some close when close + 1 < length && value.[close + 1] = '}' -> (
+          let inner = String.trim (String.sub value (i + 2) (close - i - 2)) in
+          match String.index_opt inner '.' with
+          | Some dot ->
+              let name = String.sub inner 0 dot in
+              let column =
+                String.sub inner (dot + 1) (String.length inner - dot - 1)
+              in
+              if
+                not
+                  (is_valid_placeholder_part name
+                  && is_valid_placeholder_part column)
+              then malformed_placeholder value
+              else if name <> var then
+                Error
+                  (Printf.sprintf
+                     "workflow: with value references {{ %s.%s }} but \
+                      forEach binds %S"
+                     name column var)
+              else scan (close + 2) (column :: columns)
+          | None -> malformed_placeholder value)
+      | _ -> malformed_placeholder value
+    else scan (i + 1) columns
+  in
+  scan 0 []
+
+(* Substitutes {{ var.column }} placeholders; parse-time checking makes a
+   missing binding impossible by the time this runs. *)
+let interpolate ~var ~bindings value =
+  let length = String.length value in
+  let buffer = Buffer.create length in
+  let rec go i =
+    if i >= length then ()
+    else if i + 1 < length && value.[i] = '{' && value.[i + 1] = '{' then
+      match String.index_from_opt value (i + 2) '}' with
+      | Some close when close + 1 < length && value.[close + 1] = '}' -> (
+          let inner = String.trim (String.sub value (i + 2) (close - i - 2)) in
+          match String.index_opt inner '.' with
+          | Some dot when String.sub inner 0 dot = var -> (
+              let column =
+                String.sub inner (dot + 1) (String.length inner - dot - 1)
+              in
+              match List.assoc_opt column bindings with
+              | Some bound ->
+                  Buffer.add_string buffer bound;
+                  go (close + 2)
+              | None ->
+                  Buffer.add_char buffer value.[i];
+                  go (i + 1))
+          | _ ->
+              Buffer.add_char buffer value.[i];
+              go (i + 1))
+      | _ ->
+          Buffer.add_char buffer value.[i];
+          go (i + 1)
+    else (
+      Buffer.add_char buffer value.[i];
+      go (i + 1))
+  in
+  go 0;
+  Buffer.contents buffer
+
+let rec steps_of_entries entries =
+  List.concat_map
+    (function
+      | Step step -> [ step ]
+      | Retry retry -> retry.retry_steps
+      | For_each for_each -> steps_of_entries for_each.body)
+    entries
+
+(* The columns a forEach body actually references - what every item must
+   bind. *)
+let for_each_columns for_each =
+  List.sort_uniq compare
+    (List.concat_map
+       (fun step ->
+         List.concat_map
+           (fun (_, value) ->
+             match check_placeholders ~var:for_each.var value with
+             | Ok columns -> columns
+             | Error _ -> [])
+           step.inputs)
+       (steps_of_entries for_each.body))
+
+let validate_body_placeholders ~var body =
+  List.fold_left
+    (fun accumulator (step : step) ->
+      let* () = accumulator in
+      let* () =
+        (* Skills must stay static so validation can resolve them. *)
+        if
+          String.length step.skill >= 2
+          && String.index_opt step.skill '{' <> None
+        then Error "workflow: interpolation is only allowed in with values"
+        else Ok ()
+      in
+      List.fold_left
+        (fun accumulator (_, value) ->
+          let* () = accumulator in
+          let* _columns = check_placeholders ~var value in
+          Ok ())
+        (Ok ()) step.inputs)
+    (Ok ()) (steps_of_entries body)
+
+let rec for_each_of_yaml yaml =
+  match yaml with
+  | `O fields ->
+      let* () =
+        check_no_unknown_keys ~context:"a forEach block"
+          ~allowed:[ "items"; "as"; "steps" ] fields
+      in
+      let* items_file =
+        match List.assoc_opt "items" fields with
+        | Some (`String path)
+          when Filename.check_suffix path ".tsv"
+               || Filename.check_suffix path ".json" ->
+            Ok path
+        | Some _ ->
+            Error
+              "workflow: forEach items must be a string path ending in .tsv \
+               or .json"
+        | None -> Error "workflow: forEach block is missing required key: items"
+      in
+      let* var =
+        match List.assoc_opt "as" fields with
+        | Some (`String name) when is_valid_placeholder_part name -> Ok name
+        | Some (`String name) ->
+            Error
+              (Printf.sprintf
+                 "workflow: forEach as %S must contain only letters, digits, \
+                  '_' or '-'"
+                 name)
+        | Some _ -> Error "workflow: forEach as must be a string"
+        | None -> Error "workflow: forEach block is missing required key: as"
+      in
+      let* body =
+        match List.assoc_opt "steps" fields with
+        | Some (`A entries) -> (
+            let* body =
+              traverse
+                (fun entry ->
+                  match entry with
+                  | `O entry_fields when List.mem_assoc "forEach" entry_fields
+                    ->
+                      Error "workflow: forEach blocks cannot nest"
+                  | entry -> body_entry_of_yaml entry)
+                entries
+            in
+            match body with
+            | [] -> Error "workflow: forEach steps must not be empty"
+            | body -> Ok body)
+        | Some _ -> Error "workflow: forEach steps must be a list"
+        | None ->
+            Error "workflow: forEach block is missing required key: steps"
+      in
+      let* () = validate_body_placeholders ~var body in
+      Ok { items_file; var; body }
+  | _ -> Error "workflow: a forEach block must be a mapping"
+
+and body_entry_of_yaml yaml =
   match yaml with
   | `O fields when List.mem_assoc "retry" fields ->
       let* () =
@@ -190,6 +381,17 @@ let entry_of_yaml yaml =
   | yaml ->
       let* step = step_of_yaml ~inside_retry:false yaml in
       Ok (Step step)
+
+let entry_of_yaml yaml =
+  match yaml with
+  | `O fields when List.mem_assoc "forEach" fields ->
+      let* () =
+        check_no_unknown_keys ~context:"a forEach entry"
+          ~allowed:[ "forEach" ] fields
+      in
+      let* for_each = for_each_of_yaml (List.assoc "forEach" fields) in
+      Ok (For_each for_each)
+  | yaml -> body_entry_of_yaml yaml
 
 let of_yaml yaml =
   match yaml with
@@ -236,8 +438,4 @@ let load ~path =
   of_string content
 
 let referenced_skills workflow =
-  List.concat_map
-    (function
-      | Step step -> [ step.skill ]
-      | Retry retry -> List.map (fun step -> step.skill) retry.retry_steps)
-    workflow.entries
+  List.map (fun step -> step.skill) (steps_of_entries workflow.entries)

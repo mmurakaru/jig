@@ -91,7 +91,10 @@ strings - jig never evaluates, inlines, or resolves them;
   `jig status`, and step records - and must be non-empty and unique.
 - forEach items are resolved once, when the entry starts, and snapshotted
   into the run record: editing the items file while a run is paused has no
-  effect on that run. A pause resumes at the same item and body step;
+  effect on that run. The items file may be produced by an earlier step -
+  it is validated at the forEach entry (before the fan-out spends), so an
+  absent file is not an up-front error; a present one is still checked up
+  front as an early tripwire. A pause resumes at the same item and body step;
   `--skip` completes the current item's current step and automation
   continues with the rest. An empty items file is an error.
 - Items are isolated: each item starts fresh, with no handoff from the

@@ -10,7 +10,13 @@ let contains ~affix haystack =
   in
   scan 0
 
+let rec mkdir_p dir =
+  if not (Sys.file_exists dir) then (
+    mkdir_p (Filename.dirname dir);
+    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()))
+
 let write_file path content =
+  mkdir_p (Filename.dirname path);
   Out_channel.with_open_text path (fun channel ->
       Out_channel.output_string channel content)
 
@@ -685,7 +691,7 @@ let test_validate_reports_missing_skills () =
   match
     Result.bind
       (Workflow.load ~path:(Filename.concat jig_dir "workflows/broken.yaml"))
-      (fun workflow -> Validate.workflow ~root ~jig_dir ~skill_paths:[] workflow)
+      (fun workflow -> Validate.workflow ~workflow_dir:(Filename.concat jig_dir "workflows") ~jig_dir ~skill_paths:[] workflow)
   with
   | Ok () -> Alcotest.fail "expected validation to fail"
   | Error message ->
@@ -769,6 +775,77 @@ let test_executor_is_swappable () =
   | Ok (run, _) ->
       Alcotest.(check string) "status" "completed"
         (Run.string_of_status run.Run.status)
+
+let test_module_form_workflow_runs () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  (* A module-directory workflow with a co-located AGENTS.md and items. *)
+  write_file
+    (Filename.concat root ".jig/workflows/mod/workflow.yaml")
+    "name: mod\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: items.tsv\n\
+    \      as: it\n\
+    \      steps:\n\
+    \        - skill: say-hi\n";
+  write_file
+    (Filename.concat root ".jig/workflows/mod/items.tsv")
+    "name\nalpha\nbeta\n";
+  write_file
+    (Filename.concat root ".jig/workflows/mod/AGENTS.md")
+    "the constant framing\n";
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"mod" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "status" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "two items ran" 2 (List.length run.Run.steps);
+      List.iter
+        (fun prompt ->
+          Alcotest.(check bool) "AGENTS.md became the context" true
+            (contains ~affix:"Context:\nthe constant framing" prompt))
+        (Scripted_executor.prompts ())
+
+let test_list_shows_module_and_flat_forms () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/mod/workflow.yaml")
+    "name: mod\nsteps:\n  - skill: say-hi\n";
+  let jig_dir = Filename.concat root ".jig" in
+  match Project.list_workflows ~jig_dir with
+  | Error message -> Alcotest.fail message
+  | Ok entries ->
+      let names =
+        List.filter_map
+          (function
+            | Project.Listed { workflow_name; _ } -> Some workflow_name
+            | Project.Unparseable _ -> None)
+          entries
+      in
+      Alcotest.(check bool) "flat hello is listed" true
+        (List.mem "hello" names);
+      Alcotest.(check bool) "module mod is listed" true
+        (List.mem "mod" names)
+
+let test_agents_md_and_inline_context_conflict () =
+  let root = make_temp_root () in
+  write_file
+    (Filename.concat root ".jig/workflows/mod/workflow.yaml")
+    "name: mod\ncontext: inline\nsteps:\n  - skill: say-hi\n";
+  write_file (Filename.concat root ".jig/workflows/mod/AGENTS.md") "file\n";
+  match
+    Workflow.load ~path:(Filename.concat root ".jig/workflows/mod/workflow.yaml")
+  with
+  | Ok _ -> Alcotest.fail "expected a conflict error"
+  | Error message ->
+      Alcotest.(check bool) "names the double source" true
+        (contains ~affix:"AGENTS.md" message)
 
 let write_notify_config root ~notify_command =
   write_file
@@ -949,7 +1026,7 @@ let fanout_workflow_yaml =
 let setup_fanout_project ?(items = "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b.md\n")
     ?(workflow = fanout_workflow_yaml) root =
   setup_project root ~harness:[ "irrelevant" ];
-  write_file (Filename.concat root "ports.tsv") items;
+  write_file (Filename.concat root ".jig/workflows/ports.tsv") items;
   write_file (Filename.concat root ".jig/workflows/fanout.yaml") workflow;
   List.iter
     (fun name -> add_skill root name ("# " ^ name ^ "\n"))
@@ -1113,7 +1190,7 @@ let test_for_each_resume_uses_the_snapshot () =
   let paused = pause_fanout_at_item_two root in
   (* Edit the items file while paused: the run must not notice. *)
   write_file
-    (Filename.concat root "ports.tsv")
+    (Filename.concat root ".jig/workflows/ports.tsv")
     "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/CHANGED.md\n";
   Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
   match
@@ -1178,7 +1255,7 @@ let test_for_each_missing_column_fails_before_any_step () =
 let test_for_each_missing_items_file_fails_validation () =
   let root = make_temp_root () in
   setup_fanout_project root;
-  Sys.remove (Filename.concat root "ports.tsv");
+  Sys.remove (Filename.concat root ".jig/workflows/ports.tsv");
   Scripted_executor.reset ~outputs:[];
   match
     Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
@@ -1267,7 +1344,7 @@ let test_context_renders_into_every_prompt () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   write_file
-    (Filename.concat root "ports.tsv")
+    (Filename.concat root ".jig/workflows/ports.tsv")
     "name\tspec\nalpha\ta.md\nbeta\tb.md\n";
   write_file
     (Filename.concat root ".jig/workflows/framed.yaml")
@@ -2208,7 +2285,7 @@ let test_init_scaffolds_valid_project () =
         Result.bind
           (Workflow.load
              ~path:(Filename.concat jig_dir "workflows/bugfix.yaml"))
-          (fun workflow -> Validate.workflow ~root ~jig_dir ~skill_paths:[] workflow)
+          (fun workflow -> Validate.workflow ~workflow_dir:(Filename.concat jig_dir "workflows") ~jig_dir ~skill_paths:[] workflow)
       with
       | Error message -> Alcotest.fail message
       | Ok () -> ())
@@ -2744,6 +2821,12 @@ let () =
             test_step_output_is_recorded;
           Alcotest.test_case "executor port is swappable" `Quick
             test_executor_is_swappable;
+          Alcotest.test_case "a module-directory workflow runs" `Quick
+            test_module_form_workflow_runs;
+          Alcotest.test_case "list shows module and flat forms" `Quick
+            test_list_shows_module_and_flat_forms;
+          Alcotest.test_case "AGENTS.md and inline context conflict" `Quick
+            test_agents_md_and_inline_context_conflict;
           Alcotest.test_case "execute_run honors a pre-issued run id" `Quick
             test_execute_run_honors_given_run_id;
           Alcotest.test_case "notify fires when a run stops" `Quick

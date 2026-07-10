@@ -443,7 +443,24 @@ let load ~path =
   let* content =
     Result.map_error (fun message -> "workflow: " ^ message) (File.read path)
   in
-  of_string content
+  let* workflow = of_string content in
+  (* A sibling AGENTS.md (convention-based auto-discovery, like Terraform's
+     terraform.tfvars) supplies the workflow's context. It is one source of
+     truth: pairing it with an inline `context:` is an error. *)
+  let agents_path = Filename.concat (Filename.dirname path) "AGENTS.md" in
+  if Sys.file_exists agents_path && not (Sys.is_directory agents_path) then
+    match workflow.context with
+    | Some _ ->
+        Error
+          "workflow: context is set both inline and via AGENTS.md - use one"
+    | None ->
+        let* agents =
+          Result.map_error
+            (fun message -> "workflow: " ^ message)
+            (File.read agents_path)
+        in
+        Ok { workflow with context = Some agents }
+  else Ok workflow
 
 let referenced_skills workflow =
   List.map (fun step -> step.skill) (steps_of_entries workflow.entries)

@@ -3,12 +3,12 @@
    project it will run in, resolving skills exactly as the runner does and
    loading forEach items files so a data problem fails before any harness
    spend. *)
-let for_each_problems ~root (workflow : Workflow.t) =
+let for_each_problems ~workflow_dir (workflow : Workflow.t) =
   List.filter_map
     (function
       | Workflow.Step _ | Workflow.Retry _ -> None
       | Workflow.For_each for_each -> (
-          let path = Filename.concat root for_each.Workflow.items_file in
+          let path = Filename.concat workflow_dir for_each.Workflow.items_file in
           match Items.load ~path with
           | Error message -> Some message
           | Ok items -> (
@@ -21,7 +21,7 @@ let for_each_problems ~root (workflow : Workflow.t) =
               | Ok () -> None)))
     workflow.Workflow.entries
 
-let workflow ~root ~jig_dir ~skill_paths (workflow : Workflow.t) =
+let workflow ~workflow_dir ~jig_dir ~skill_paths (workflow : Workflow.t) =
   let missing =
     List.filter_map
       (fun skill ->
@@ -30,7 +30,7 @@ let workflow ~root ~jig_dir ~skill_paths (workflow : Workflow.t) =
         | Error message -> Some message)
       (Workflow.referenced_skills workflow)
   in
-  match missing @ for_each_problems ~root workflow with
+  match missing @ for_each_problems ~workflow_dir workflow with
   | [] -> Ok ()
   | problems ->
       Error

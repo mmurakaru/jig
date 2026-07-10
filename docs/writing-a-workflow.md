@@ -1,9 +1,27 @@
 # Writing a workflow
 
-A workflow binds an ordered list of skills to one task type. It lives in
-`.jig/workflows/<name>.yaml`, is validated by `jig validate <name>`, and is
-deliberately boring: the schema routes on step outcomes and never evaluates
-expressions.
+A workflow binds an ordered list of skills to one task type. It is
+validated by `jig validate <name>` and is deliberately boring: the schema
+routes on step outcomes and never evaluates expressions.
+
+It lives in one of two places:
+
+- **Flat**: `.jig/workflows/<name>.yaml` - a single file with an inline
+  `context:`.
+- **Module directory** (preferred when it has inputs):
+  `.jig/workflows/<name>/workflow.yaml`, co-locating everything it needs:
+
+  ```
+  .jig/workflows/css-module-migration/
+    workflow.yaml        # the config
+    AGENTS.md            # constant context, auto-loaded (no `context:` key)
+    items.tsv            # forEach data, referenced locally as `items.tsv`
+    guides/PORTING.md    # reference a skill reads via `with:`
+  ```
+
+  A sibling `AGENTS.md` becomes the workflow's context automatically -
+  setting both it and an inline `context:` is an error. `forEach items:`
+  resolves relative to the workflow's directory, so it stays local.
 
 ## The whole schema
 

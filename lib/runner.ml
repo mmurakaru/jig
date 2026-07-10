@@ -113,6 +113,7 @@ struct
   type engine = {
     root : string;
     jig_dir : string;
+    workflow_dir : string;
     config : Config.t;
     task : string;
     context : string option;
@@ -361,7 +362,7 @@ struct
       | Some state -> Ok state
       | None ->
           let path =
-            Filename.concat engine.root for_each.Workflow.items_file
+            Filename.concat engine.workflow_dir for_each.Workflow.items_file
           in
           let* items = Items.load ~path in
           let* () =
@@ -480,18 +481,16 @@ struct
 
   let load_project ~root ~workflow_name =
     let jig_dir = Filename.concat root ".jig" in
-    let workflow_path =
-      Filename.concat
-        (Filename.concat jig_dir "workflows")
-        (workflow_name ^ ".yaml")
+    let* workflow_path, workflow_dir =
+      Project.resolve_workflow ~jig_dir ~name:workflow_name
     in
     let* workflow = Workflow.load ~path:workflow_path in
     let* config = Config.load ~jig_dir in
     let* () =
-      Validate.workflow ~root ~jig_dir
+      Validate.workflow ~workflow_dir ~jig_dir
         ~skill_paths:config.Config.skill_paths workflow
     in
-    Ok (jig_dir, workflow, config)
+    Ok (jig_dir, workflow_dir, workflow, config)
 
   (* An infrastructure error (unreadable skill, spawn failure, store failure)
      still persists what executed, then propagates as an Error. *)
@@ -516,7 +515,7 @@ struct
 
   let execute_run ?(on_step = fun _ -> ()) ?run_id ~root ~workflow_name ~task
       ~isolated () =
-    let* jig_dir, workflow, config = load_project ~root ~workflow_name in
+    let* jig_dir, workflow_dir, workflow, config = load_project ~root ~workflow_name in
     let started = Unix.gettimeofday () in
     (* A detaching caller pre-issues the id so it can print it and name
        the log file before forking. *)
@@ -537,6 +536,7 @@ struct
       {
         root;
         jig_dir;
+        workflow_dir;
         config;
         task;
         context = workflow.Workflow.context;
@@ -697,7 +697,7 @@ struct
                run_id
                (Run.string_of_status status))
     in
-    let* jig_dir, workflow, config =
+    let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
     let* () =
@@ -713,6 +713,7 @@ struct
       {
         root;
         jig_dir;
+        workflow_dir;
         config;
         task = existing.Run.task;
         context = workflow.Workflow.context;
@@ -749,7 +750,7 @@ struct
                run_id
                (Run.string_of_status status))
     in
-    let* jig_dir, workflow, config =
+    let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
     let* () =
@@ -782,6 +783,7 @@ struct
       {
         root;
         jig_dir;
+        workflow_dir;
         config;
         task = existing.Run.task;
         context = workflow.Workflow.context;

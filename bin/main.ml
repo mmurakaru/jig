@@ -85,19 +85,18 @@ let run_workflow workflow resume task guidance skip detach isolated =
       match (workflow, resume, task) with
       | Some name, None, Some _ ->
           let jig_dir = Filename.concat root ".jig" in
-          let path =
-            Filename.concat
-              (Filename.concat jig_dir "workflows")
-              (name ^ ".yaml")
-          in
-          Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
-              Result.bind (Jig_core.Config.load ~jig_dir) (fun config ->
-                  Result.map
-                    (fun () ->
-                      Jig_core.Run.make_id ~workflow:name
-                        ~time:(Unix.gettimeofday ()) ~pid:(Unix.getpid ()))
-                    (Jig_core.Validate.workflow ~root ~jig_dir
-                       ~skill_paths:config.Jig_core.Config.skill_paths parsed)))
+          Result.bind
+            (Jig_core.Project.resolve_workflow ~jig_dir ~name)
+            (fun (path, workflow_dir) ->
+              Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
+                  Result.bind (Jig_core.Config.load ~jig_dir) (fun config ->
+                      Result.map
+                        (fun () ->
+                          Jig_core.Run.make_id ~workflow:name
+                            ~time:(Unix.gettimeofday ()) ~pid:(Unix.getpid ()))
+                        (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
+                           ~skill_paths:config.Jig_core.Config.skill_paths
+                           parsed))))
       | None, Some run_id, None ->
           Result.map
             (fun (_ : Jig_core.Run.t) -> run_id)
@@ -140,16 +139,17 @@ let run_workflow workflow resume task guidance skip detach isolated =
 let validate_workflow workflow =
   let root = Sys.getcwd () in
   let jig_dir = Filename.concat root ".jig" in
-  let path =
-    Filename.concat (Filename.concat jig_dir "workflows") (workflow ^ ".yaml")
-  in
   let result =
-    Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
-        Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
-          (fun skill_paths ->
-            Result.map
-              (fun () -> parsed.Jig_core.Workflow.name)
-              (Jig_core.Validate.workflow ~root ~jig_dir ~skill_paths parsed)))
+    Result.bind
+      (Jig_core.Project.resolve_workflow ~jig_dir ~name:workflow)
+      (fun (path, workflow_dir) ->
+        Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
+            Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
+              (fun skill_paths ->
+                Result.map
+                  (fun () -> parsed.Jig_core.Workflow.name)
+                  (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
+                     ~skill_paths parsed))))
   in
   match result with
   | Ok name -> Printf.printf "workflow %s: ok\n" name

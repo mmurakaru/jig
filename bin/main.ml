@@ -101,7 +101,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
           Result.map
             (fun (_ : Jig_core.Run.t) -> run_id)
             (Jig_core.Store.Filesystem.load
-               ~runs_dir:(Filename.concat root "runs")
+               ~runs_dir:(Jig_core.Project.runs_dir ~root)
                ~id:run_id)
       | _ -> Error "--detach needs a workflow with --task, or --resume <run-id>"
     in
@@ -110,7 +110,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
         Printf.eprintf "jig: %s\n" message;
         exit 1
     | Ok run_id ->
-        let runs_dir = Filename.concat root "runs" in
+        let runs_dir = Jig_core.Project.runs_dir ~root in
         (try Unix.mkdir runs_dir 0o755
          with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
         let log_path = Filename.concat runs_dir (run_id ^ ".log") in
@@ -165,7 +165,7 @@ let latest_run_id ~runs_dir =
 
 let show_status run_id latest json_output =
   let root = Sys.getcwd () in
-  let runs_dir = Filename.concat root "runs" in
+  let runs_dir = Jig_core.Project.runs_dir ~root in
   let resolved =
     match (run_id, latest) with
     | Some _, true -> Error "pass a run id or --latest, not both"
@@ -207,7 +207,7 @@ let show_status run_id latest json_output =
 let attach_run run_id latest step_number =
   let ( let* ) = Result.bind in
   let root = Sys.getcwd () in
-  let runs_dir = Filename.concat root "runs" in
+  let runs_dir = Jig_core.Project.runs_dir ~root in
   let session_of_step (step : Jig_core.Run.step_record) =
     match step.Jig_core.Run.session_id with
     | Some session -> Ok session
@@ -336,7 +336,7 @@ let attach_run run_id latest step_number =
                 exit 2))
 
 let list_runs json_output =
-  let runs_dir = Filename.concat (Sys.getcwd ()) "runs" in
+  let runs_dir = Jig_core.Project.runs_dir ~root:(Sys.getcwd ()) in
   match Jig_core.Store.Filesystem.list_runs ~runs_dir with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;

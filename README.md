@@ -63,7 +63,7 @@ jig validate <workflow>                     # lint before running
   config.yaml          # harness command (+ optional sandbox wrapper)
   skills/<name>/SKILL.md
   workflows/<name>.yaml
-runs/                  # one JSON record per run + metering.jsonl
+  runs/                # one JSON record per run + metering.jsonl
 ```
 
 Everything is a file: skills and workflows are versioned with the code they

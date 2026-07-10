@@ -9,6 +9,10 @@ type listing_entry =
 
 let workflows_dir ~jig_dir = Filename.concat jig_dir "workflows"
 
+(* Run records live under .jig so they inherit the same ignore rules as the
+   rest of jig's state and never pollute the repo's git status. *)
+let runs_dir ~root = Filename.concat (Filename.concat root ".jig") "runs"
+
 (* A workflow is either a module directory (<name>/workflow.yaml, preferred:
    it co-locates AGENTS.md and items) or a flat file (<name>.yaml).
    Resolve to the yaml path and the workflow's directory - the base for its

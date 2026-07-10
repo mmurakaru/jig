@@ -132,7 +132,7 @@ struct
      next entry, or it stops in a terminal-or-paused state. *)
   type verdict = Proceed of progress | Stop of Run.status * progress
 
-  let runs_dir engine = Filename.concat engine.root "runs"
+  let runs_dir engine = Project.runs_dir ~root:engine.root
 
   let persist engine progress ~status ~finished =
     let run =
@@ -684,7 +684,7 @@ struct
 
   let resume_run ?(on_step = fun _ -> ()) ?(skip = false) ~root ~run_id
       ~guidance () =
-    let runs_directory = Filename.concat root "runs" in
+    let runs_directory = Project.runs_dir ~root in
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
       match existing.Run.status with
@@ -738,7 +738,7 @@ struct
      stays paused on disk and the caller reports the error. *)
   let continue_attached ?(on_step = fun _ -> ()) ~root ~run_id
       ~(exec_result : Executor.exec_result) () =
-    let runs_directory = Filename.concat root "runs" in
+    let runs_directory = Project.runs_dir ~root in
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
       match existing.Run.status with

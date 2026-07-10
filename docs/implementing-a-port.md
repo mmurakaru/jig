@@ -39,7 +39,7 @@ provider could pick different harnesses or models per skill.
 val record : runs_dir:string -> event:Metering.event -> (unit, string) result
 ```
 
-The default appends JSONL to `runs/metering.jsonl`. A budget gate would
+The default appends JSONL to `.jig/runs/metering.jsonl`. A budget gate would
 return `Error` when spend crosses a cap - the run stops with that message.
 
 **Store** - persists and loads run records.

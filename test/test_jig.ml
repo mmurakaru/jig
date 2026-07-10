@@ -504,7 +504,7 @@ let test_store_saves_run () =
       finished_at = None;
     }
   in
-  let runs_dir = Filename.concat root "runs" in
+  let runs_dir = Project.runs_dir ~root in
   match Store.Filesystem.save ~runs_dir run with
   | Error message -> Alcotest.fail message
   | Ok path -> (
@@ -679,7 +679,7 @@ let test_missing_skill_fails_validation () =
       Alcotest.(check bool) "mentions the skill" true
         (contains ~affix:"does-not-exist" message);
       Alcotest.(check bool) "refused before running: no runs dir" false
-        (Sys.file_exists (Filename.concat root "runs"))
+        (Sys.file_exists (Project.runs_dir ~root))
 
 let test_validate_reports_missing_skills () =
   let root = make_temp_root () in
@@ -911,7 +911,7 @@ let test_execute_run_honors_given_run_id () =
         run.Run.id;
       Alcotest.(check bool) "record lands under the pre-issued id" true
         (Sys.file_exists
-           (Filename.concat root "runs/pre-issued-id.json"))
+           (Filename.concat root ".jig/runs/pre-issued-id.json"))
 
 let index_of ~affix text =
   let affix_length = String.length affix in
@@ -1849,7 +1849,7 @@ let test_record_persisted_incrementally () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      let runs_dir = Filename.concat root "runs" in
+      let runs_dir = Project.runs_dir ~root in
       match Store.Filesystem.load ~runs_dir ~id:run.Run.id with
       | Error message -> Alcotest.fail message
       | Ok loaded ->
@@ -1889,7 +1889,7 @@ let test_list_workflows_reports_valid_and_invalid () =
 
 let test_store_load_hints_version_on_garbage () =
   let root = make_temp_root () in
-  let runs_dir = Filename.concat root "runs" in
+  let runs_dir = Project.runs_dir ~root in
   Unix.mkdir runs_dir 0o755;
   write_file (Filename.concat runs_dir "old-record.json") "{\"id\": 42}";
   match Store.Filesystem.load ~runs_dir ~id:"old-record" with
@@ -2071,7 +2071,7 @@ let test_resume_honors_recorded_workspace_location () =
     }
   in
   (match
-     Store.Filesystem.save ~runs_dir:(Filename.concat root "runs") legacy_run
+     Store.Filesystem.save ~runs_dir:(Project.runs_dir ~root) legacy_run
    with
   | Error message -> Alcotest.fail message
   | Ok _ -> ());
@@ -2107,7 +2107,7 @@ module Probe_runner =
 let test_run_record_visible_during_first_step () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
-  probe_runs_dir := Filename.concat root "runs";
+  probe_runs_dir := Project.runs_dir ~root;
   probe_seen := [];
   match
     Probe_runner.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
@@ -2165,7 +2165,7 @@ let test_list_runs_newest_first () =
   in
   let first = run () in
   let second = run () in
-  match Store.Filesystem.list_runs ~runs_dir:(Filename.concat root "runs") with
+  match Store.Filesystem.list_runs ~runs_dir:(Project.runs_dir ~root) with
   | Error message -> Alcotest.fail message
   | Ok runs ->
       Alcotest.(check (list string))
@@ -2174,7 +2174,7 @@ let test_list_runs_newest_first () =
 
 let test_list_runs_empty_when_none () =
   let root = make_temp_root () in
-  match Store.Filesystem.list_runs ~runs_dir:(Filename.concat root "runs") with
+  match Store.Filesystem.list_runs ~runs_dir:(Project.runs_dir ~root) with
   | Error message -> Alcotest.fail message
   | Ok runs -> Alcotest.(check int) "no runs" 0 (List.length runs)
 
@@ -2532,7 +2532,7 @@ let test_continue_attached_invalid_leaves_run_untouched () =
         (contains ~affix:"handoff" message);
       match
         Store.Filesystem.load
-          ~runs_dir:(Filename.concat root "runs")
+          ~runs_dir:(Project.runs_dir ~root)
           ~id:paused.Run.id
       with
       | Error message -> Alcotest.fail message
@@ -2590,7 +2590,7 @@ let test_metering_end_to_end () =
       Alcotest.(check int) "one step unknown" 1 unknown;
       let metering_lines =
         In_channel.with_open_text
-          (Filename.concat root "runs/metering.jsonl")
+          (Filename.concat root ".jig/runs/metering.jsonl")
           In_channel.input_all
         |> String.split_on_char '\n'
         |> List.filter (fun line -> String.trim line <> "")
@@ -2612,7 +2612,7 @@ let test_cost_roundtrips_through_store () =
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
       match
-        Store.Filesystem.load ~runs_dir:(Filename.concat root "runs")
+        Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root)
           ~id:run.Run.id
       with
       | Error message -> Alcotest.fail message
@@ -2646,7 +2646,7 @@ let test_session_id_roundtrips_through_store () =
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
       match
-        Store.Filesystem.load ~runs_dir:(Filename.concat root "runs")
+        Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root)
           ~id:run.Run.id
       with
       | Error message -> Alcotest.fail message

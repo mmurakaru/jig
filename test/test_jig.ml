@@ -1252,7 +1252,7 @@ let test_for_each_missing_column_fails_before_any_step () =
       Alcotest.(check int) "no step executed" 0
         (List.length (Scripted_executor.prompts ()))
 
-let test_for_each_missing_items_file_fails_validation () =
+let test_for_each_missing_items_file_fails_at_entry () =
   let root = make_temp_root () in
   setup_fanout_project root;
   Sys.remove (Filename.concat root ".jig/workflows/ports.tsv");
@@ -1261,10 +1261,33 @@ let test_for_each_missing_items_file_fails_validation () =
     Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
       ~isolated:false ()
   with
-  | Ok _ -> Alcotest.fail "expected validation to fail"
+  | Ok _ -> Alcotest.fail "expected the run to fail"
   | Error message ->
       Alcotest.(check bool) "names the items file" true
-        (contains ~affix:"ports.tsv" message)
+        (contains ~affix:"ports.tsv" message);
+      Alcotest.(check int) "no body step ran" 0
+        (List.length (Scripted_executor.prompts ()))
+
+(* An absent items file is not an up-front validation error: a producing
+   step may create it before the forEach entry. *)
+let test_validate_defers_absent_items () =
+  let root = make_temp_root () in
+  setup_fanout_project root;
+  Sys.remove (Filename.concat root ".jig/workflows/ports.tsv");
+  let jig_dir = Filename.concat root ".jig" in
+  match Project.resolve_workflow ~jig_dir ~name:"fanout" with
+  | Error message -> Alcotest.fail message
+  | Ok (path, workflow_dir) -> (
+      match Workflow.load ~path with
+      | Error message -> Alcotest.fail message
+      | Ok workflow -> (
+          match
+            Validate.workflow ~workflow_dir ~jig_dir ~skill_paths:[] workflow
+          with
+          | Ok () -> ()
+          | Error message ->
+              Alcotest.fail
+                (Printf.sprintf "expected deferral, got: %s" message)))
 
 let test_run_json_roundtrips_for_each_position () =
   let bindings = [ ("name", "alpha"); ("spec", "specs/a.md") ] in
@@ -2859,8 +2882,10 @@ let () =
             `Quick test_for_each_skip_completes_the_item_step_only;
           Alcotest.test_case "missing referenced column fails before any step"
             `Quick test_for_each_missing_column_fails_before_any_step;
-          Alcotest.test_case "missing items file fails validation" `Quick
-            test_for_each_missing_items_file_fails_validation;
+          Alcotest.test_case "missing items file fails at entry" `Quick
+            test_for_each_missing_items_file_fails_at_entry;
+          Alcotest.test_case "validate defers an absent items file" `Quick
+            test_validate_defers_absent_items;
           Alcotest.test_case "run json round-trips a forEach position" `Quick
             test_run_json_roundtrips_for_each_position;
           Alcotest.test_case "old run json without for_each still loads"

@@ -6,6 +6,7 @@ type step = {
   skill : string;
   on_fail : on_failure option;
   until_pass : bool;
+  inputs : (string * string) list;
 }
 
 type retry = {
@@ -36,8 +37,9 @@ let on_failure_of_string ~context = function
            "workflow: %s must be \"escalate\" or \"abort\", got %S" context
            other)
 
-(* The schema is frozen (ADR: on_fail + retry only); unknown keys are
-   rejected so typos and schema drift fail loudly. *)
+(* The schema is frozen (recorded decision: on_fail + retry, plus `with`
+   as pure data binding); unknown keys are rejected so typos and schema
+   drift fail loudly. *)
 let check_no_unknown_keys ~context ~allowed fields =
   match
     List.find_opt (fun (key, _) -> not (List.mem key allowed)) fields
@@ -57,14 +59,46 @@ let traverse parse entries =
       Ok (value :: parsed))
     entries (Ok [])
 
+(* `with` binds literal strings into the step prompt (recorded decision:
+   data binding, not logic) - jig never evaluates, inlines, or resolves
+   the values. Order is preserved for rendering. *)
+let inputs_of_yaml fields =
+  match List.assoc_opt "with" fields with
+  | None -> Ok []
+  | Some (`O pairs) ->
+      let* () =
+        match
+          List.find_opt
+            (fun (key, _) ->
+              List.length (List.filter (fun (other, _) -> other = key) pairs)
+              > 1)
+            pairs
+        with
+        | Some (key, _) ->
+            Error (Printf.sprintf "workflow: duplicate with key %S" key)
+        | None -> Ok ()
+      in
+      traverse
+        (fun (key, value) ->
+          match value with
+          | `String text -> Ok (key, text)
+          | _ ->
+              Error
+                (Printf.sprintf
+                   "workflow: with value for %S must be a string (quote \
+                    numbers and booleans)"
+                   key))
+        pairs
+  | Some _ -> Error "workflow: with must be a mapping of strings to strings"
+
 let step_of_yaml ~inside_retry yaml =
   match yaml with
   | `O fields ->
       let* () =
         check_no_unknown_keys ~context:"a step"
           ~allowed:
-            (if inside_retry then [ "skill"; "on_fail"; "until" ]
-             else [ "skill"; "on_fail" ])
+            (if inside_retry then [ "skill"; "on_fail"; "until"; "with" ]
+             else [ "skill"; "on_fail"; "with" ])
           fields
       in
       let* skill =
@@ -90,7 +124,8 @@ let step_of_yaml ~inside_retry yaml =
         | Some _ ->
             Error "workflow: until only supports the value \"pass\""
       in
-      Ok { skill; on_fail; until_pass }
+      let* inputs = inputs_of_yaml fields in
+      Ok { skill; on_fail; until_pass; inputs }
   | _ -> Error "workflow: each step must be a mapping"
 
 let retry_of_yaml yaml =

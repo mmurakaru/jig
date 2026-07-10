@@ -13,6 +13,9 @@ For each step, jig composes one prompt for the harness:
 ```
 Task: <the --task description>
 
+Step inputs (bound by the workflow; treat each value as a literal):
+<key>: <value>             (only when the workflow binds `with:`)
+
 Human guidance:            (only on the first step after a resume)
 <the --guidance text>
 

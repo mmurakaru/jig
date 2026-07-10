@@ -2767,6 +2767,121 @@ let test_run_record_contains_handoffs_in_order () =
       Alcotest.(check (list string))
         "handoffs in order" [ "alpha"; "beta"; "gamma" ] summaries
 
+(* ---- progress renderer (pure) ---- *)
+
+let progress_plan () =
+  match
+    Workflow.of_string
+      "name: p\n\
+       steps:\n\
+      \  - skill: read-issue\n\
+      \  - skill: prepare\n\
+      \  - forEach:\n\
+      \      items: items.tsv\n\
+      \      as: it\n\
+      \      steps:\n\
+      \        - retry:\n\
+      \            max_iterations: 2\n\
+      \            on_exhausted: escalate\n\
+      \            steps:\n\
+      \              - skill: a\n\
+      \              - skill: b\n\
+      \                until: pass\n\
+      \  - skill: report\n"
+  with
+  | Ok w -> Progress.init w.Workflow.entries
+  | Error m -> Alcotest.fail m
+
+let pos ?for_each entry_index =
+  { Run.entry_index; iterations_used = 0; for_each }
+
+let started ?item_key skill position = Runner.Step_started { skill; position; item_key }
+let finished skill outcome =
+  Runner.Step_finished
+    {
+      Run.skill;
+      outcome;
+      exit_code = 0;
+      cost = Metering.Unknown_cost;
+      stdout = "";
+      stderr = "";
+      handoff = None;
+      handoff_error = None;
+      session_id = None;
+      item_index = None;
+      item_key = None;
+      started_at = "";
+      finished_at = "";
+    }
+
+let loop_pos ~item_index = pos ~for_each:{ Run.item_index; body_index = 0; items = [] } 2
+
+let test_progress_renders_mid_run () =
+  let t = progress_plan () in
+  let apply = Progress.apply t in
+  apply (started "read-issue" (pos 0));
+  apply (finished "read-issue" Run.Pass);
+  apply (started "prepare" (pos 1));
+  apply (finished "prepare" Run.Pass);
+  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ] });
+  apply (started ~item_key:"alpha" "a" (loop_pos ~item_index:0));
+  apply (finished "a" Run.Pass);
+  apply (started ~item_key:"alpha" "b" (loop_pos ~item_index:0));
+  Alcotest.(check (list string))
+    "done steps, active item expanded with its body, pending item collapsed"
+    [
+      "✓ read-issue";
+      "✓ prepare";
+      "@ forEach (0/2)";
+      "  @ alpha";
+      "    ✓ a";
+      "    @ b";
+      "  ○ beta";
+      "○ report";
+    ]
+    (Progress.render ~working:"@" t)
+
+let test_progress_renders_completed () =
+  let t = progress_plan () in
+  let apply = Progress.apply t in
+  apply (started "read-issue" (pos 0));
+  apply (finished "read-issue" Run.Pass);
+  apply (started "prepare" (pos 1));
+  apply (finished "prepare" Run.Pass);
+  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ] });
+  apply (started ~item_key:"alpha" "a" (loop_pos ~item_index:0));
+  apply (finished "a" Run.Pass);
+  apply (started ~item_key:"alpha" "b" (loop_pos ~item_index:0));
+  apply (finished "b" Run.Pass);
+  apply (started ~item_key:"beta" "a" (loop_pos ~item_index:1));
+  apply (finished "a" Run.Pass);
+  apply (started ~item_key:"beta" "b" (loop_pos ~item_index:1));
+  apply (finished "b" Run.Pass);
+  apply (started "report" (pos 3));
+  apply (finished "report" Run.Pass);
+  Progress.finalize t;
+  Alcotest.(check (list string))
+    "all done, items collapsed, no body expansion"
+    [
+      "✓ read-issue";
+      "✓ prepare";
+      "✓ forEach (2/2)";
+      "  ✓ alpha";
+      "  ✓ beta";
+      "✓ report";
+    ]
+    (Progress.render ~working:"@" t)
+
+let test_progress_marks_failure () =
+  let t = progress_plan () in
+  let apply = Progress.apply t in
+  apply (started "read-issue" (pos 0));
+  apply (finished "read-issue" Run.Fail);
+  Alcotest.(check (list string))
+    "a failed step shows the failure glyph"
+    [ "✗ read-issue"; "○ prepare"; "○ forEach"; "○ report" ]
+    (Progress.render ~working:"@" t)
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -2838,6 +2953,15 @@ let () =
             test_for_each_rejects_malformed_placeholder;
           Alcotest.test_case "rejects interpolation in a skill name" `Quick
             test_for_each_rejects_interpolated_skill;
+        ] );
+      ( "progress",
+        [
+          Alcotest.test_case "renders a mid-run tree" `Quick
+            test_progress_renders_mid_run;
+          Alcotest.test_case "renders a completed tree" `Quick
+            test_progress_renders_completed;
+          Alcotest.test_case "marks a failed step" `Quick
+            test_progress_marks_failure;
         ] );
       ( "items",
         [

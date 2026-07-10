@@ -66,8 +66,14 @@ let elicit_handoff_prompt =
   "The interactive session is over. Emit your handoff block for the current \
    state of this step."
 
-let build_prompt ~task ~position ~inputs ~skill_body ~previous_handoff
-    ~guidance =
+let build_prompt ~context ~task ~position ~inputs ~skill_body
+    ~previous_handoff ~guidance =
+  let context_section =
+    match context with
+    | Some text when String.trim text <> "" ->
+        Printf.sprintf "Context:\n%s\n\n" text
+    | _ -> ""
+  in
   let inputs_section =
     match inputs with
     | [] -> ""
@@ -92,8 +98,8 @@ let build_prompt ~task ~position ~inputs ~skill_body ~previous_handoff
         Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
-  Printf.sprintf "Task: %s\n\n%s\n\n%s%s%s%s\n\n%s" task position
-    inputs_section guidance_section handoff_section skill_body
+  Printf.sprintf "%sTask: %s\n\n%s\n\n%s%s%s%s\n\n%s" context_section task
+    position inputs_section guidance_section handoff_section skill_body
     handoff_protocol
 
 module Make
@@ -109,6 +115,7 @@ struct
     jig_dir : string;
     config : Config.t;
     task : string;
+    context : string option;
     entries : Workflow.entry list;
     workspace : string;
     on_step : Run.step_record -> unit;
@@ -199,7 +206,7 @@ struct
     let* exec_result =
       Executor_port.execute ~command ~cwd:engine.workspace
         ~prompt:
-          (build_prompt ~task:engine.task
+          (build_prompt ~context:engine.context ~task:engine.task
              ~position:
                (position_line ~workflow_name:progress.run.Run.workflow
                   ~entries:engine.entries
@@ -523,6 +530,7 @@ struct
         jig_dir;
         config;
         task;
+        context = workflow.Workflow.context;
         entries = workflow.Workflow.entries;
         workspace = Option.value workspace ~default:root;
         on_step;
@@ -698,6 +706,7 @@ struct
         jig_dir;
         config;
         task = existing.Run.task;
+        context = workflow.Workflow.context;
         entries = workflow.Workflow.entries;
         workspace = Option.value existing.Run.workspace ~default:root;
         on_step;
@@ -766,6 +775,7 @@ struct
         jig_dir;
         config;
         task = existing.Run.task;
+        context = workflow.Workflow.context;
         entries = workflow.Workflow.entries;
         workspace = Option.value existing.Run.workspace ~default:root;
         on_step;

@@ -84,6 +84,6 @@ filesystem. Isolation is Executor configuration (`--isolated` runs in a git
 worktree per run; an optional config `wrapper` prepends an OS sandbox to
 every invocation). The workflow schema is deliberately frozen at ordered
 steps + `on_fail` + bounded `retry`, extended by recorded decision with
-`with:` (literal step inputs) and `forEach:` (bounded fan-out over a
-checked-in items file) - data binding, not control flow; intelligence
-lives in skills, not in YAML.
+`context:` (constant per-workflow framing), `with:` (literal step inputs),
+and `forEach:` (bounded fan-out over a checked-in items file) - data
+binding, not control flow; intelligence lives in skills, not in YAML.

@@ -1035,6 +1035,71 @@ let setup_fanout_project ?(items = "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b
 let step_item_keys run =
   List.map (fun step -> step.Run.item_key) run.Run.steps
 
+let test_lifecycle_events_fire_across_step_kinds () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_file
+    (Filename.concat root ".jig/workflows/ports.tsv")
+    "name\tspec\nalpha\ta.md\nbeta\tb.md\n";
+  write_file
+    (Filename.concat root ".jig/workflows/mixed.yaml")
+    "name: mixed\n\
+     steps:\n\
+    \  - skill: one\n\
+    \  - retry:\n\
+    \      max_iterations: 2\n\
+    \      on_exhausted: escalate\n\
+    \      steps:\n\
+    \        - skill: two\n\
+    \          until: pass\n\
+    \  - forEach:\n\
+    \      items: ports.tsv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - skill: three\n";
+  List.iter
+    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
+    [ "one"; "two"; "three" ];
+  Scripted_executor.reset
+    ~outputs:
+      [ handoff_block (); handoff_block (); handoff_block (); handoff_block () ];
+  let events = ref [] in
+  let on_event e = events := e :: !events in
+  match
+    Scripted_runner.execute_run ~on_event ~root ~workflow_name:"mixed"
+      ~task:"t" ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ ->
+      let seq =
+        List.rev_map
+          (function
+            | Runner.Step_started { skill; item_key; _ } ->
+                Printf.sprintf "start:%s:%s" skill
+                  (Option.value item_key ~default:"-")
+            | Runner.Items_resolved { item_keys; _ } ->
+                "items:" ^ String.concat "," item_keys
+            | Runner.Step_finished record ->
+                Printf.sprintf "finish:%s:%s" record.Run.skill
+                  (Option.value record.Run.item_key ~default:"-"))
+          !events
+      in
+      Alcotest.(check (list string))
+        "started/finished per step, items before the forEach body, item keys \
+         on forEach steps"
+        [
+          "start:one:-";
+          "finish:one:-";
+          "start:two:-";
+          "finish:two:-";
+          "items:alpha,beta";
+          "start:three:alpha";
+          "finish:three:alpha";
+          "start:three:beta";
+          "finish:three:beta";
+        ]
+        seq
+
 let test_for_each_runs_body_per_item () =
   let root = make_temp_root () in
   setup_fanout_project root;
@@ -2870,6 +2935,8 @@ let () =
             test_context_renders_into_every_prompt;
           Alcotest.test_case "forEach runs the body once per item" `Quick
             test_for_each_runs_body_per_item;
+          Alcotest.test_case "lifecycle events fire across step kinds" `Quick
+            test_lifecycle_events_fire_across_step_kinds;
           Alcotest.test_case "forEach isolates handoffs between items" `Quick
             test_for_each_isolates_handoffs_between_items;
           Alcotest.test_case "forEach retry loops within one item" `Quick

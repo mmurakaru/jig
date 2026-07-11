@@ -30,8 +30,10 @@ name: bugfix                     # letters, digits, '.', '_', '-'
 context: |                       # optional: constant framing for every step
   What this workflow always does and the invariants it holds.
 steps:
-  - skill: reproduce-issue       # a plain step
+  - skill: reproduce-issue       # an agent step (runs the harness)
     on_fail: escalate            # optional: escalate | abort
+  - command: "make lint"         # a command step: runs a shell command,
+    on_fail: abort               # no agent. exit 0 = pass, nonzero = fail
   - skill: write-failing-test
     with:                        # optional: literal inputs, string -> string
       spec: docs/specs/login.md  # rendered into the prompt verbatim
@@ -69,6 +71,13 @@ strings - jig never evaluates, inlines, or resolves them;
 
 - Steps run in order. Each step receives the previous step's handoff in its
   prompt.
+- A step runs either a `skill` (an agent) or a `command` (a shell command),
+  never both. A command step is for deterministic, judgment-free work: its
+  exit status is the outcome (0 = pass, nonzero = fail), it runs no model
+  (recorded at $0), and on failure its output threads onward so a retry can
+  act on it. It takes `on_fail`/`until` like any step, and interpolates
+  `{{ item.* }}` in its command inside a forEach. Reserve agent steps for
+  the parts that need reasoning; let commands do capture, diff, lint, etc.
 - The workflow's `context`, if set, renders as a constant preamble in every
   step's prompt (every step, every forEach item) - it never varies and
   never threads. Use it for the invariants the whole workflow holds; use

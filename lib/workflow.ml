@@ -2,12 +2,25 @@ open Result_syntax
 
 type on_failure = Escalate | Abort
 
+(* A step either runs an agent skill or a plain shell command. A command
+   step carries no inputs - it interpolates {{ item.* }} directly in its
+   command string inside a forEach. *)
+type action = Skill_step of string | Command_step of string
+
 type step = {
-  skill : string;
+  action : action;
   on_fail : on_failure option;
   until_pass : bool;
   inputs : (string * string) list;
 }
+
+(* The human-facing name of a step: the skill name, or the command itself. *)
+let step_label step =
+  match step.action with Skill_step name -> name | Command_step cmd -> cmd
+
+(* The skill a step resolves, if it is a skill step. *)
+let step_skill step =
+  match step.action with Skill_step name -> Some name | Command_step _ -> None
 
 type retry = {
   max_iterations : int;
@@ -99,18 +112,26 @@ let inputs_of_yaml fields =
 let step_of_yaml ~inside_retry yaml =
   match yaml with
   | `O fields ->
+      let base = [ "on_fail" ] @ if inside_retry then [ "until" ] else [] in
       let* () =
         check_no_unknown_keys ~context:"a step"
-          ~allowed:
-            (if inside_retry then [ "skill"; "on_fail"; "until"; "with" ]
-             else [ "skill"; "on_fail"; "with" ])
+          ~allowed:([ "skill"; "command"; "with" ] @ base)
           fields
       in
-      let* skill =
-        match List.assoc_opt "skill" fields with
-        | Some (`String skill) -> Ok skill
-        | Some _ -> Error "workflow: step skill must be a string"
-        | None -> Error "workflow: step is missing required key: skill"
+      (* Exactly one of skill / command. `with` (inputs) is skill-only; a
+         command step interpolates its item bindings directly. *)
+      let* action =
+        match (List.assoc_opt "skill" fields, List.assoc_opt "command" fields) with
+        | Some (`String skill), None -> Ok (Skill_step skill)
+        | None, Some (`String command) ->
+            if List.mem_assoc "with" fields then
+              Error "workflow: with belongs to a skill step, not a command"
+            else Ok (Command_step command)
+        | Some _, None -> Error "workflow: step skill must be a string"
+        | None, Some _ -> Error "workflow: step command must be a string"
+        | Some _, Some _ ->
+            Error "workflow: a step sets either skill or command, not both"
+        | None, None -> Error "workflow: step is missing required key: skill or command"
       in
       let* on_fail =
         match List.assoc_opt "on_fail" fields with
@@ -130,7 +151,7 @@ let step_of_yaml ~inside_retry yaml =
             Error "workflow: until only supports the value \"pass\""
       in
       let* inputs = inputs_of_yaml fields in
-      Ok { skill; on_fail; until_pass; inputs }
+      Ok { action; on_fail; until_pass; inputs }
   | _ -> Error "workflow: each step must be a mapping"
 
 let retry_of_yaml yaml =
@@ -280,6 +301,14 @@ let rec steps_of_entries entries =
       | For_each for_each -> steps_of_entries for_each.body)
     entries
 
+(* The interpolatable strings of a step: its with-value list, plus the
+   command string for a command step (which interpolates directly). *)
+let step_interpolated step =
+  let input_values = List.map snd step.inputs in
+  match step.action with
+  | Skill_step _ -> input_values
+  | Command_step command -> command :: input_values
+
 (* The columns a forEach body actually references - what every item must
    bind. *)
 let for_each_columns for_each =
@@ -287,11 +316,11 @@ let for_each_columns for_each =
     (List.concat_map
        (fun step ->
          List.concat_map
-           (fun (_, value) ->
+           (fun value ->
              match check_placeholders ~var:for_each.var value with
              | Ok columns -> columns
              | Error _ -> [])
-           step.inputs)
+           (step_interpolated step))
        (steps_of_entries for_each.body))
 
 let validate_body_placeholders ~var body =
@@ -299,19 +328,19 @@ let validate_body_placeholders ~var body =
     (fun accumulator (step : step) ->
       let* () = accumulator in
       let* () =
-        (* Skills must stay static so validation can resolve them. *)
-        if
-          String.length step.skill >= 2
-          && String.index_opt step.skill '{' <> None
-        then Error "workflow: interpolation is only allowed in with values"
-        else Ok ()
+        (* A skill name must stay static so validation can resolve it; a
+           command, by contrast, is meant to interpolate. *)
+        match step_skill step with
+        | Some skill when String.index_opt skill '{' <> None ->
+            Error "workflow: interpolation is only allowed in with values and commands"
+        | _ -> Ok ()
       in
       List.fold_left
-        (fun accumulator (_, value) ->
+        (fun accumulator value ->
           let* () = accumulator in
           let* _columns = check_placeholders ~var value in
           Ok ())
-        (Ok ()) step.inputs)
+        (Ok ()) (step_interpolated step))
     (Ok ()) (steps_of_entries body)
 
 let rec for_each_of_yaml yaml =
@@ -463,4 +492,4 @@ let load ~path =
   else Ok workflow
 
 let referenced_skills workflow =
-  List.map (fun step -> step.skill) (steps_of_entries workflow.entries)
+  List.filter_map step_skill (steps_of_entries workflow.entries)

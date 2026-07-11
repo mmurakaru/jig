@@ -24,10 +24,10 @@ let handoff_protocol =
    The full step list stays out - it bloats every prompt and tempts a step
    into doing later steps' work early. *)
 let rec entry_lead_skill = function
-  | Workflow.Step step -> step.Workflow.skill
+  | Workflow.Step step -> Workflow.step_label step
   | Workflow.Retry retry -> (
       match retry.Workflow.retry_steps with
-      | first :: _ -> first.Workflow.skill
+      | first :: _ -> Workflow.step_label first
       | [] -> "retry")
   | Workflow.For_each for_each -> (
       match for_each.Workflow.body with
@@ -197,76 +197,136 @@ struct
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
   let execute_step engine progress ~item (step : Workflow.step) =
-    let* skill_body =
-      Skill.load ~jig_dir:engine.jig_dir
-        ~skill_paths:engine.config.Config.skill_paths
-        ~name:step.Workflow.skill
-    in
-    let* command =
-      Model_provider_port.resolve ~config:engine.config
-        ~skill:step.Workflow.skill
-    in
-    let inputs =
+    let label = Workflow.step_label step in
+    let item_key = Option.map (fun context -> Items.key context.bindings) item in
+    let interpolate value =
       match item with
-      | None -> step.Workflow.inputs
+      | None -> value
       | Some context ->
-          List.map
-            (fun (key, value) ->
-              ( key,
-                Workflow.interpolate ~var:context.var
-                  ~bindings:context.bindings value ))
-            step.Workflow.inputs
+          Workflow.interpolate ~var:context.var ~bindings:context.bindings value
     in
     engine.on_event
       (Step_started
-         {
-           skill = step.Workflow.skill;
-           position = progress.run.Run.position;
-           item_key =
-             Option.map (fun context -> Items.key context.bindings) item;
-         });
+         { skill = label; position = progress.run.Run.position; item_key });
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
-    let* exec_result =
-      Executor_port.execute ~command ~cwd:engine.workspace
-        ~prompt:
-          (build_prompt ~context:engine.context ~task:engine.task
-             ~position:
-               (position_line ~workflow_name:progress.run.Run.workflow
-                  ~entries:engine.entries
-                  ~entry_index:progress.run.Run.position.Run.entry_index
-                  ~skill:step.Workflow.skill ~item)
-             ~inputs ~skill_body
-             ~previous_handoff:progress.last_handoff
-             ~guidance:progress.guidance)
+    let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code, session_id
+        =
+      match step.Workflow.action with
+      | Workflow.Skill_step name ->
+          let* skill_body =
+            Skill.load ~jig_dir:engine.jig_dir
+              ~skill_paths:engine.config.Config.skill_paths ~name
+          in
+          let* command =
+            Model_provider_port.resolve ~config:engine.config ~skill:name
+          in
+          let inputs =
+            List.map (fun (key, value) -> (key, interpolate value))
+              step.Workflow.inputs
+          in
+          let* exec_result =
+            Executor_port.execute ~command ~cwd:engine.workspace
+              ~prompt:
+                (build_prompt ~context:engine.context ~task:engine.task
+                   ~position:
+                     (position_line ~workflow_name:progress.run.Run.workflow
+                        ~entries:engine.entries
+                        ~entry_index:progress.run.Run.position.Run.entry_index
+                        ~skill:label ~item)
+                   ~inputs ~skill_body
+                   ~previous_handoff:progress.last_handoff
+                   ~guidance:progress.guidance)
+          in
+          let cost, usage = Metering.parse_cost exec_result.Executor.stdout in
+          let* () =
+            Metering_port.record ~runs_dir:(runs_dir engine)
+              ~event:
+                {
+                  Metering.run_id = progress.run.Run.id;
+                  skill = name;
+                  command;
+                  cost;
+                  usage;
+                  recorded_at = Run.iso8601 (Unix.gettimeofday ());
+                }
+          in
+          let outcome, handoff, handoff_error = outcome_of_exec exec_result in
+          Ok
+            ( outcome,
+              handoff,
+              handoff_error,
+              cost,
+              exec_result.Executor.stdout,
+              exec_result.Executor.stderr,
+              exec_result.Executor.exit_code,
+              Metering.parse_session_id exec_result.Executor.stdout )
+      | Workflow.Command_step command ->
+          (* A command step is deterministic mechanical work: run the shell
+             command, let its exit status be the outcome (0 = pass), record
+             it at $0 (no model). *)
+          let command = interpolate command in
+          let* result =
+            Result.map_error
+              (fun message -> "command step: " ^ message)
+              (Subprocess.run ~cwd:engine.workspace
+                 ~argv:[ "sh"; "-c"; command ] ())
+          in
+          let exit_code = result.Subprocess.exit_code in
+          let stdout = result.Subprocess.stdout in
+          let stderr = result.Subprocess.stderr in
+          let cost = Metering.Cost_usd 0.0 in
+          let* () =
+            Metering_port.record ~runs_dir:(runs_dir engine)
+              ~event:
+                {
+                  Metering.run_id = progress.run.Run.id;
+                  skill = label;
+                  command = [ "sh"; "-c"; command ];
+                  cost;
+                  usage = None;
+                  recorded_at = Run.iso8601 (Unix.gettimeofday ());
+                }
+          in
+          let outcome = if exit_code = 0 then Run.Pass else Run.Fail in
+          (* On failure, thread the command's output onward so a retry (or
+             a following skill) can act on what went wrong. *)
+          let handoff =
+            if outcome = Run.Fail then
+              let combined = stdout ^ stderr in
+              let tail =
+                let length = String.length combined in
+                if length <= degraded_text_limit then combined
+                else
+                  "[earlier output truncated]\n"
+                  ^ String.sub combined
+                      (length - degraded_text_limit)
+                      degraded_text_limit
+              in
+              Some
+                {
+                  Handoff.status = Handoff.Fail;
+                  artifacts = [];
+                  summary =
+                    Printf.sprintf "Command failed (exit %d): %s\n%s" exit_code
+                      command tail;
+                }
+            else None
+          in
+          Ok (outcome, handoff, None, cost, stdout, stderr, exit_code, None)
     in
-    let cost, usage = Metering.parse_cost exec_result.Executor.stdout in
-    let* () =
-      Metering_port.record ~runs_dir:(runs_dir engine)
-        ~event:
-          {
-            Metering.run_id = progress.run.Run.id;
-            skill = step.Workflow.skill;
-            command;
-            cost;
-            usage;
-            recorded_at = Run.iso8601 (Unix.gettimeofday ());
-          }
-    in
-    let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     let step_record =
       {
-        Run.skill = step.Workflow.skill;
+        Run.skill = label;
         outcome;
-        exit_code = exec_result.Executor.exit_code;
+        exit_code;
         cost;
-        stdout = exec_result.Executor.stdout;
-        stderr = exec_result.Executor.stderr;
+        stdout;
+        stderr;
         handoff;
         handoff_error;
-        session_id = Metering.parse_session_id exec_result.Executor.stdout;
-        item_index =
-          Option.map (fun context -> context.item_index) item;
-        item_key = Option.map (fun context -> Items.key context.bindings) item;
+        session_id;
+        item_index = Option.map (fun context -> context.item_index) item;
+        item_key;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
@@ -281,8 +341,7 @@ struct
         last_handoff =
           (match (handoff, outcome) with
           | Some _, _ -> handoff
-          | None, Run.Invalid_handoff ->
-              Some (degraded_handoff exec_result.Executor.stdout)
+          | None, Run.Invalid_handoff -> Some (degraded_handoff stdout)
           | None, _ -> progress.last_handoff);
         guidance = None;
       }
@@ -599,8 +658,8 @@ struct
         retry.Workflow.retry_steps
     in
     match (gate, retry.Workflow.retry_steps) with
-    | Some step, _ -> step.Workflow.skill
-    | None, first :: _ -> first.Workflow.skill
+    | Some step, _ -> Workflow.step_label step
+    | None, first :: _ -> Workflow.step_label first
     | None, [] -> "retry"
 
   (* Inside a forEach the human-completed unit is the current body entry of
@@ -608,7 +667,7 @@ struct
      skipped as a group, gate included). *)
   let skip_target_skill ~entries ~(position : Run.position) =
     match List.nth_opt entries position.Run.entry_index with
-    | Some (Workflow.Step step) -> Ok step.Workflow.skill
+    | Some (Workflow.Step step) -> Ok (Workflow.step_label step)
     | Some (Workflow.Retry retry) -> Ok (retry_gate_skill retry)
     | Some (Workflow.For_each for_each) ->
         Ok
@@ -617,7 +676,7 @@ struct
               match
                 List.nth_opt for_each.Workflow.body state.Run.body_index
               with
-              | Some (Workflow.Step step) -> step.Workflow.skill
+              | Some (Workflow.Step step) -> Workflow.step_label step
               | Some (Workflow.Retry retry) -> retry_gate_skill retry
               | Some (Workflow.For_each _) | None ->
                   entry_lead_skill (Workflow.For_each for_each))

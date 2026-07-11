@@ -2888,6 +2888,107 @@ let test_progress_marks_failure () =
     [ "✗ read-issue"; "○ prepare"; "○ forEach"; "○ report" ]
     (Progress.render ~working:"@" t)
 
+(* ---- command steps ---- *)
+
+let test_command_step_parses () =
+  match Workflow.of_string "name: x\nsteps:\n  - command: \"echo hi\"\n" with
+  | Error m -> Alcotest.fail m
+  | Ok w -> (
+      match w.Workflow.entries with
+      | [ Workflow.Step { action = Workflow.Command_step c; _ } ] ->
+          Alcotest.(check string) "command parsed" "echo hi" c
+      | _ -> Alcotest.fail "expected a single command step")
+
+let test_step_rejects_skill_and_command () =
+  expect_workflow_error ~mentions:"not both"
+    "name: x\nsteps:\n  - skill: a\n    command: b\n"
+
+let test_step_rejects_neither () =
+  expect_workflow_error ~mentions:"skill or command"
+    "name: x\nsteps:\n  - on_fail: escalate\n"
+
+let test_command_step_rejects_with () =
+  expect_workflow_error ~mentions:"with belongs"
+    "name: x\nsteps:\n  - command: b\n    with:\n      x: y\n"
+
+let setup_command_project root ~yaml =
+  setup_project root ~harness:[ "unused-by-command-steps" ];
+  write_file (Filename.concat root ".jig/workflows/cmd.yaml") yaml
+
+let run_cmd root =
+  Scripted_executor.reset ~outputs:[];
+  Scripted_runner.execute_run ~root ~workflow_name:"cmd" ~task:"t"
+    ~isolated:false ()
+
+let test_command_step_passes_and_costs_nothing () =
+  let root = make_temp_root () in
+  setup_command_project root ~yaml:"name: cmd\nsteps:\n  - command: \"true\"\n";
+  match run_cmd root with
+  | Error m -> Alcotest.fail m
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      let step = List.hd run.Run.steps in
+      Alcotest.(check int) "exit 0" 0 step.Run.exit_code;
+      Alcotest.(check bool) "metered at $0" true
+        (step.Run.cost = Metering.Cost_usd 0.0);
+      Alcotest.(check int) "no agent was invoked" 0
+        (List.length (Scripted_executor.prompts ()))
+
+let test_command_step_fails_on_nonzero () =
+  let root = make_temp_root () in
+  setup_command_project root
+    ~yaml:"name: cmd\nsteps:\n  - command: \"exit 3\"\n";
+  match run_cmd root with
+  | Error m -> Alcotest.fail m
+  | Ok (run, _) ->
+      Alcotest.(check string) "failed" "failed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "exit code recorded" 3
+        (List.hd run.Run.steps).Run.exit_code
+
+let test_command_step_until_pass_in_retry () =
+  let root = make_temp_root () in
+  (* fails the first attempt (dropping a marker), passes the second *)
+  setup_command_project root
+    ~yaml:
+      "name: cmd\n\
+       steps:\n\
+      \  - retry:\n\
+      \      max_iterations: 3\n\
+      \      on_exhausted: abort\n\
+      \      steps:\n\
+      \        - command: \"test -f m || { touch m; exit 1; }\"\n\
+      \          until: pass\n";
+  match run_cmd root with
+  | Error m -> Alcotest.fail m
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed after the retry" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "two attempts recorded" 2
+        (List.length run.Run.steps)
+
+let test_command_step_interpolates_foreach_item () =
+  let root = make_temp_root () in
+  write_file (Filename.concat root ".jig/workflows/items.tsv")
+    "name\nalpha\nbeta\n";
+  setup_command_project root
+    ~yaml:
+      "name: cmd\n\
+       steps:\n\
+      \  - forEach:\n\
+      \      items: items.tsv\n\
+      \      as: m\n\
+      \      steps:\n\
+      \        - command: \"touch done-{{ m.name }}\"\n";
+  match run_cmd root with
+  | Error m -> Alcotest.fail m
+  | Ok _ ->
+      Alcotest.(check bool) "alpha command ran with its interpolated name" true
+        (Sys.file_exists (Filename.concat root "done-alpha"));
+      Alcotest.(check bool) "beta command ran with its interpolated name" true
+        (Sys.file_exists (Filename.concat root "done-beta"))
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -2959,6 +3060,25 @@ let () =
             test_for_each_rejects_malformed_placeholder;
           Alcotest.test_case "rejects interpolation in a skill name" `Quick
             test_for_each_rejects_interpolated_skill;
+        ] );
+      ( "command",
+        [
+          Alcotest.test_case "command step parses" `Quick
+            test_command_step_parses;
+          Alcotest.test_case "rejects skill and command together" `Quick
+            test_step_rejects_skill_and_command;
+          Alcotest.test_case "rejects neither skill nor command" `Quick
+            test_step_rejects_neither;
+          Alcotest.test_case "rejects with on a command step" `Quick
+            test_command_step_rejects_with;
+          Alcotest.test_case "passes on exit 0 and costs nothing" `Quick
+            test_command_step_passes_and_costs_nothing;
+          Alcotest.test_case "fails on nonzero exit" `Quick
+            test_command_step_fails_on_nonzero;
+          Alcotest.test_case "until:pass gates a command in a retry" `Quick
+            test_command_step_until_pass_in_retry;
+          Alcotest.test_case "interpolates a forEach item" `Quick
+            test_command_step_interpolates_foreach_item;
         ] );
       ( "progress",
         [

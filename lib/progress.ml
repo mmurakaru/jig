@@ -25,11 +25,11 @@ type t = { nodes : node array }
 
 let init (entries : Workflow.entry list) =
   let node_of_entry = function
-    | Workflow.Step step -> Step_node { skill = step.Workflow.skill; status = Pending }
+    | Workflow.Step step -> Step_node { skill = Workflow.step_label step; status = Pending }
     | Workflow.Retry retry ->
         let skill =
           match retry.Workflow.retry_steps with
-          | step :: _ -> step.Workflow.skill
+          | step :: _ -> Workflow.step_label step
           | [] -> "retry"
         in
         Step_node { skill; status = Pending }
@@ -38,7 +38,7 @@ let init (entries : Workflow.entry list) =
           {
             body_skills =
               List.map
-                (fun step -> step.Workflow.skill)
+                (fun step -> Workflow.step_label step)
                 (Workflow.steps_of_entries for_each.Workflow.body);
             items = [];
             lstatus = Pending;

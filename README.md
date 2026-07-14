@@ -78,7 +78,7 @@ orchestrates workers in-process. jig moves the plan out of the harness and
 into a file.
 
 |                     | Prompt the agent      | Harness-native orchestration | jig                                   |
-| :------------------ | :-------------------- | :--------------------------- | :------------------------------------ |
+| :------------------: | :--------------------: | :---------------------------: | :------------------------------------: |
 | Who holds the plan  | the model, turn by turn | the harness              | files you own                         |
 | What runs a step    | the agent             | one or more agents, in-process | any agent CLI, as a subprocess    |
 | Where run state lives | the context window  | harness memory, session-scoped | files on disk                       |

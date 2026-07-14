@@ -70,6 +70,25 @@ Everything is a file: skills and workflows are versioned with the code they
 operate on, run records are plain JSON a GUI could be built against, and the
 binary has no other state.
 
+## Where jig fits
+
+Most ways to run a multi-step agent task keep the plan inside the harness:
+the model picks the next step turn by turn, or a harness-native script
+orchestrates workers in-process. jig moves the plan out of the harness and
+into a file.
+
+|                     | Prompt the agent      | Harness-native orchestration | jig                                   |
+| :------------------ | :-------------------- | :--------------------------- | :------------------------------------ |
+| Who holds the plan  | the model, turn by turn | the harness              | files you own                         |
+| What runs a step    | the agent             | one or more agents, in-process | any agent CLI, as a subprocess    |
+| Where run state lives | the context window  | harness memory, session-scoped | files on disk                       |
+| Human mid-run       | reprompt and retry    | not until it returns         | pauses for a human, then resumes      |
+| Repeatable artifact | none                  | a script tied to one harness | a workflow file you can commit and reuse |
+
+The trade: jig gives up in-process speed and large parallel fan-out for a
+portable definition, durable run history, and a human-in-the-loop pause that
+survives the terminal.
+
 ## Docs
 
 - [Writing a skill](docs/writing-a-skill.md)

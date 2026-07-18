@@ -41,6 +41,16 @@ marked `escalate` pauses the run for you:
 jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lexer"
 ```
 
+## The live view
+
+On a TTY, `jig run` draws the run in place: the pipeline with a spinner on
+the active step and per-step durations and costs, and beneath it a live
+tail of what the running step's agent is doing.
+When the run ends, the completed pipeline stays in the scrollback above the
+run report; each step's full output lives in the run record.
+
+![jig run rendering a workflow mid-run](docs/run-live.png)
+
 ## The verbs
 
 ```

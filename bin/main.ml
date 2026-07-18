@@ -67,14 +67,26 @@ let run_workflow workflow resume task guidance skip detach isolated =
                ~jig_dir:(Filename.concat root ".jig") ~name:workflow_name)
             (fun (path, _) ->
               Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
-                  let live = Live.create parsed.Jig_core.Workflow.entries in
+                  let live =
+                    Live.create ~workflow:workflow_name
+                      parsed.Jig_core.Workflow.entries
+                  in
                   let result =
                     Jig_core.Runner.Default.execute_run
                       ~on_step:(fun _ -> ())
                       ~on_event:(Live.on_event live) ?run_id ~root
                       ~workflow_name ~task ~isolated ()
                   in
-                  Live.finalize live;
+                  let state =
+                    match result with
+                    | Ok (run, _) -> (
+                        match run.Jig_core.Run.status with
+                        | Jig_core.Run.Completed -> Jig_core.Boxes.Passed
+                        | Jig_core.Run.Paused -> Jig_core.Boxes.Paused
+                        | _ -> Jig_core.Boxes.Failed)
+                    | Error _ -> Jig_core.Boxes.Failed
+                  in
+                  Live.finalize live ~state;
                   result))
         else
           Jig_core.Runner.Default.execute_run ~on_step:print_step_live ?run_id

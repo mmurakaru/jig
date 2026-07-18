@@ -440,7 +440,7 @@ let init_project preset skill_paths =
       Printf.eprintf "jig: %s\n" message;
       exit 1
   | Ok written ->
-      List.iter (fun path -> Printf.printf "  .jig/%s\n" path) written;
+      List.iter (fun path -> Printf.printf "  %s\n" path) written;
       (match preset with
       | Jig_core.Init.Custom ->
           print_endline

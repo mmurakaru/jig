@@ -10,11 +10,27 @@
 
 type status = Pending | Working | Done | Failed | Paused
 
-type body_step = { bskill : string; mutable bstatus : status }
-type item = { key : string; mutable istatus : status; body : body_step list }
+(* [detail] is the right-aligned annotation a renderer may show next to a
+   finished step: its duration, and its cost when the step spent money. *)
+type body_step = {
+  bskill : string;
+  mutable bstatus : status;
+  mutable bdetail : string option;
+}
+
+type item = {
+  key : string;
+  mutable istatus : status;
+  mutable idetail : string option;
+  body : body_step list;
+}
 
 type node =
-  | Step_node of { skill : string; mutable status : status }
+  | Step_node of {
+      skill : string;
+      mutable status : status;
+      mutable detail : string option;
+    }
   | Loop_node of {
       body_skills : string list;
       mutable items : item list;
@@ -25,14 +41,16 @@ type t = { nodes : node array }
 
 let init (entries : Workflow.entry list) =
   let node_of_entry = function
-    | Workflow.Step step -> Step_node { skill = Workflow.step_label step; status = Pending }
+    | Workflow.Step step ->
+        Step_node
+          { skill = Workflow.step_label step; status = Pending; detail = None }
     | Workflow.Retry retry ->
         let skill =
           match retry.Workflow.retry_steps with
           | step :: _ -> Workflow.step_label step
           | [] -> "retry"
         in
-        Step_node { skill; status = Pending }
+        Step_node { skill; status = Pending; detail = None }
     | Workflow.For_each for_each ->
         Loop_node
           {
@@ -60,6 +78,37 @@ let mark_before_done nodes entry_index =
           l.items
   done
 
+let format_duration seconds =
+  if seconds < 60.0 then Printf.sprintf "%.1fs" seconds
+  else
+    let whole = int_of_float seconds in
+    Printf.sprintf "%dm%02ds" (whole / 60) (whole mod 60)
+
+(* Duration always (when both timestamps parse); cost only when the step
+   spent money - "$0.00" on every command step would be noise. *)
+let detail_of_record (record : Run.step_record) =
+  let duration =
+    match
+      ( Run.epoch_of_iso8601 record.Run.started_at,
+        Run.epoch_of_iso8601 record.Run.finished_at )
+    with
+    | Some started, Some finished when finished >= started ->
+        Some (format_duration (finished -. started))
+    | _ -> None
+  in
+  let cost =
+    match record.Run.cost with
+    | Metering.Cost_usd value when value > 0.0 ->
+        Some (Printf.sprintf "$%.2f" value)
+    | _ -> None
+  in
+  match (duration, cost) with
+  | None, None -> None
+  | parts, cost_part ->
+      Some
+        (String.concat "  "
+           (List.filter_map Fun.id [ parts; cost_part ]))
+
 let apply t (event : Runner.run_event) =
   match event with
   (* Output paths matter to a log tail, not to the step tree. *)
@@ -73,9 +122,10 @@ let apply t (event : Runner.run_event) =
                 {
                   key;
                   istatus = Pending;
+                  idetail = None;
                   body =
                     List.map
-                      (fun bskill -> { bskill; bstatus = Pending })
+                      (fun bskill -> { bskill; bstatus = Pending; bdetail = None })
                       l.body_skills;
                 })
               item_keys
@@ -118,18 +168,29 @@ let apply t (event : Runner.run_event) =
         | Run.Fail | Run.Invalid_handoff -> Failed
         | Run.Escalate -> Paused
       in
+      let detail = detail_of_record record in
       (* Apply to the leaf currently working; the run is sequential, so
          exactly one leaf is Working when a step finishes. *)
       Array.iter
         (fun node ->
           match node with
-          | Step_node s -> if s.status = Working then s.status <- outcome_status
+          | Step_node s ->
+              if s.status = Working then (
+                s.status <- outcome_status;
+                s.detail <- detail)
           | Loop_node l ->
               List.iter
                 (fun it ->
                   if it.istatus = Working then
                     List.iter
-                      (fun b -> if b.bstatus = Working then b.bstatus <- outcome_status)
+                      (fun b ->
+                        if b.bstatus = Working then (
+                          b.bstatus <- outcome_status;
+                          b.bdetail <- detail;
+                          (* A single-step body collapses to the item line
+                             when done; carry the detail up so it stays
+                             visible. *)
+                          if List.length it.body = 1 then it.idetail <- detail))
                       it.body)
                 l.items;
               if is_terminal outcome_status && l.lstatus = Working then
@@ -164,17 +225,25 @@ let glyph ~working = function
   | Paused -> "◉"
 
 (* One row of the tree: how far to indent, the status (for glyph + colour),
-   and the label. The caller turns these into terminal output; [render]
-   below is the plain-string form used by tests. *)
-type row = { indent : int; status : status; label : string }
+   the label, and an optional right-aligned annotation (duration/cost). The
+   caller turns these into terminal output; [render] below is the
+   plain-string form used by tests. *)
+type row = {
+  indent : int;
+  status : status;
+  label : string;
+  detail : string option;
+}
 
 let rows t =
   let out = ref [] in
-  let add indent status label = out := { indent; status; label } :: !out in
+  let add ?detail indent status label =
+    out := { indent; status; label; detail } :: !out
+  in
   Array.iter
     (fun node ->
       match node with
-      | Step_node s -> add 0 s.status s.skill
+      | Step_node s -> add ?detail:s.detail 0 s.status s.skill
       | Loop_node l ->
           let total = List.length l.items in
           let done_count =
@@ -187,9 +256,11 @@ let rows t =
           add 0 l.lstatus head;
           List.iter
             (fun it ->
-              add 2 it.istatus it.key;
+              add ?detail:it.idetail 2 it.istatus it.key;
               if it.istatus = Working then
-                List.iter (fun b -> add 4 b.bstatus b.bskill) it.body)
+                List.iter
+                  (fun b -> add ?detail:b.bdetail 4 b.bstatus b.bskill)
+                  it.body)
             l.items)
     t.nodes;
   List.rev !out
@@ -198,6 +269,6 @@ let rows t =
    spinner frame the caller advances. Returns one line per rendered row. *)
 let render ~working t =
   List.map
-    (fun { indent; status; label } ->
+    (fun { indent; status; label; detail = _ } ->
       Printf.sprintf "%*s%s %s" indent "" (glyph ~working status) label)
     (rows t)

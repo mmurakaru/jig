@@ -3080,6 +3080,230 @@ let test_sanitize_width_and_truncate () =
   Alcotest.(check string) "truncate respects multibyte boundaries" "✓✓"
     (Sanitize.truncate 2 "✓✓✓")
 
+(* ---- run timestamps ---- *)
+
+let test_epoch_of_iso8601 () =
+  Alcotest.(check (option (float 0.001))) "epoch zero" (Some 0.0)
+    (Run.epoch_of_iso8601 "1970-01-01T00:00:00Z");
+  let diff later earlier =
+    match (Run.epoch_of_iso8601 later, Run.epoch_of_iso8601 earlier) with
+    | Some a, Some b -> a -. b
+    | _ -> Alcotest.fail "timestamps did not parse"
+  in
+  Alcotest.(check (float 0.001))
+    "difference across a minute boundary" 90.0
+    (diff "2026-07-18T12:00:30Z" "2026-07-18T11:59:00Z");
+  Alcotest.(check (float 0.001))
+    "leap-year february" 172800.0
+    (diff "2024-03-01T00:00:00Z" "2024-02-28T00:00:00Z");
+  Alcotest.(check (option (float 0.001))) "garbage is none" None
+    (Run.epoch_of_iso8601 "not-a-timestamp")
+
+(* ---- progress details (duration + cost) ---- *)
+
+let finished_with ~started_at ~finished_at ~cost skill outcome =
+  Runner.Step_finished
+    {
+      Run.skill;
+      outcome;
+      exit_code = 0;
+      cost;
+      stdout = "";
+      stderr = "";
+      handoff = None;
+      handoff_error = None;
+      session_id = None;
+      item_index = None;
+      item_key = None;
+      started_at;
+      finished_at;
+    }
+
+let test_progress_detail_records_duration_and_cost () =
+  let t = progress_plan () in
+  let apply = Progress.apply t in
+  apply (started "read-issue" (pos 0));
+  apply
+    (finished_with ~started_at:"2026-01-01T00:00:00Z"
+       ~finished_at:"2026-01-01T00:00:12Z" ~cost:(Metering.Cost_usd 0.08)
+       "read-issue" Run.Pass);
+  match Progress.rows t with
+  | first :: _ ->
+      Alcotest.(check (option string)) "duration and cost annotated"
+        (Some "12.0s  $0.08") first.Progress.detail
+  | [] -> Alcotest.fail "expected rows"
+
+let test_progress_detail_survives_item_collapse () =
+  let plan =
+    match
+      Workflow.of_string
+        "name: p\n\
+         steps:\n\
+        \  - forEach:\n\
+        \      items: items.tsv\n\
+        \      as: it\n\
+        \      steps:\n\
+        \        - skill: work\n"
+    with
+    | Ok w -> Progress.init w.Workflow.entries
+    | Error m -> Alcotest.fail m
+  in
+  let apply = Progress.apply plan in
+  apply (Runner.Items_resolved { entry_index = 0; item_keys = [ "alpha"; "beta" ] });
+  apply
+    (started ~item_key:"alpha" "work"
+       (pos ~for_each:{ Run.item_index = 0; body_index = 0; items = [] } 0));
+  apply
+    (finished_with ~started_at:"2026-01-01T00:01:00Z"
+       ~finished_at:"2026-01-01T00:02:02Z" ~cost:Metering.Unknown_cost "work"
+       Run.Pass);
+  apply
+    (started ~item_key:"beta" "work"
+       (pos ~for_each:{ Run.item_index = 1; body_index = 0; items = [] } 0));
+  let alpha_row =
+    List.find (fun r -> r.Progress.label = "alpha") (Progress.rows plan)
+  in
+  Alcotest.(check (option string))
+    "single-step body's duration carried onto the collapsed item"
+    (Some "1m02s") alpha_row.Progress.detail
+
+(* ---- box layout (pure) ---- *)
+
+let dashes count = String.concat "" (List.init count (fun _ -> "─"))
+let spaces count = String.make count ' '
+
+let box_row indent status label detail : Progress.row =
+  { Progress.indent; status; label; detail }
+
+let demo_rows =
+  [
+    box_row 0 Progress.Done "plan" (Some "1.2s");
+    box_row 0 Progress.Working "build" None;
+    box_row 0 Progress.Pending "report" None;
+  ]
+
+let view_plain ~columns ~height ~state ~log_lines rows =
+  List.map Boxes.plain
+    (Boxes.view ~columns ~height ~workflow:"demo.yaml" ~state ~spinner:"@"
+       ~elapsed:(Some "3s") ~log_title:(Some "build") ~log_lines rows)
+
+let test_boxes_render_mid_run_exactly () =
+  Alcotest.(check (list string))
+    "two boxes, connectors, right-aligned details"
+    [
+      "╭─ Pipeline " ^ dashes 33 ^ "╮";
+      "│ demo.yaml" ^ spaces 26 ^ "running │";
+      "│ " ^ spaces 42 ^ " │";
+      "│ ✓ plan" ^ spaces 32 ^ "1.2s │";
+      "│ │" ^ spaces 41 ^ " │";
+      "│ @ build" ^ spaces 33 ^ "3s │";
+      "│ │" ^ spaces 41 ^ " │";
+      "│ ○ report" ^ spaces 34 ^ " │";
+      "╰" ^ dashes 44 ^ "╯";
+      "";
+      "╭─ Log ─ build " ^ dashes 30 ^ "╮";
+      "│ hello" ^ spaces 37 ^ " │";
+      "│ PASS ok" ^ spaces 35 ^ " │";
+      "╰──── tail of step output " ^ dashes 19 ^ "╯";
+    ]
+    (view_plain ~columns:46 ~height:100 ~state:Boxes.Running
+       ~log_lines:[ "hello"; "PASS ok" ] demo_rows)
+
+let eight_log_lines =
+  List.init 8 (fun index -> Printf.sprintf "line-%d" (index + 1))
+
+let line_has needle line =
+  let rec scan from =
+    from + String.length needle <= String.length line
+    && (String.sub line from (String.length needle) = needle || scan (from + 1))
+  in
+  String.length needle = 0 || scan 0
+
+let test_boxes_degrade_with_height () =
+  let contains needle lines = List.exists (line_has needle) lines in
+  let tall =
+    view_plain ~columns:46 ~height:25 ~state:Boxes.Running
+      ~log_lines:eight_log_lines demo_rows
+  in
+  Alcotest.(check bool) "tall terminal keeps connectors" true
+    (contains "│ │" tall);
+  let medium =
+    view_plain ~columns:46 ~height:17 ~state:Boxes.Running
+      ~log_lines:eight_log_lines demo_rows
+  in
+  Alcotest.(check bool) "medium drops connectors" false
+    (contains "│ │" medium);
+  Alcotest.(check bool) "medium still shows the log" true
+    (contains "line-8" medium);
+  let short =
+    view_plain ~columns:46 ~height:14 ~state:Boxes.Running
+      ~log_lines:eight_log_lines demo_rows
+  in
+  Alcotest.(check bool) "short shrinks the log to the newest lines" true
+    (contains "line-8" short);
+  Alcotest.(check bool) "short drops older log lines" false
+    (contains "line-5" short);
+  let tiny =
+    view_plain ~columns:46 ~height:10 ~state:Boxes.Running
+      ~log_lines:eight_log_lines demo_rows
+  in
+  Alcotest.(check bool) "tiny hides the log box" false (contains "Log" tiny)
+
+let test_boxes_final_frame_drops_log () =
+  let final =
+    view_plain ~columns:46 ~height:100 ~state:Boxes.Passed
+      ~log_lines:eight_log_lines demo_rows
+  in
+  let starts_with prefix line =
+    String.length line >= String.length prefix
+    && String.sub line 0 (String.length prefix) = prefix
+  in
+  Alcotest.(check int) "only the pipeline box remains" 1
+    (List.length (List.filter (starts_with "╭") final));
+  Alcotest.(check bool) "banner flips to passed" true
+    (List.exists (line_has "passed") final)
+
+let test_boxes_sanitize_hostile_labels () =
+  let rows =
+    [ box_row 0 Progress.Done "printf 'ok\n' && \ttest" None ]
+  in
+  List.iter
+    (fun line ->
+      if line <> "" then
+        Alcotest.(check int) "newline/tab in a label cannot break the row" 46
+          (Sanitize.width line))
+    (view_plain ~columns:46 ~height:100 ~state:Boxes.Running ~log_lines:[] rows)
+
+let test_boxes_every_line_is_box_width () =
+  List.iter
+    (fun height ->
+      List.iter
+        (fun line ->
+          if line <> "" then
+            Alcotest.(check int)
+              (Printf.sprintf "line width at height %d" height)
+              46 (Sanitize.width line))
+        (view_plain ~columns:46 ~height ~state:Boxes.Running
+           ~log_lines:eight_log_lines demo_rows))
+    [ 100; 17; 14; 10 ]
+
+let test_boxes_elapsed_lands_on_deepest_working_row () =
+  let rows =
+    [
+      box_row 0 Progress.Working "forEach (0/2)" None;
+      box_row 2 Progress.Working "alpha" None;
+    ]
+  in
+  let lines =
+    view_plain ~columns:46 ~height:100 ~state:Boxes.Running ~log_lines:[] rows
+  in
+  let has_elapsed label =
+    List.exists (fun line -> line_has label line && line_has "3s" line) lines
+  in
+  Alcotest.(check bool) "item row carries the live elapsed" true
+    (has_elapsed "alpha");
+  Alcotest.(check bool) "loop head does not" false (has_elapsed "forEach")
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -3181,6 +3405,26 @@ let () =
             test_progress_marks_failure;
           Alcotest.test_case "spinner cycles and wraps" `Quick
             test_progress_spinner_cycles;
+          Alcotest.test_case "annotates duration and cost" `Quick
+            test_progress_detail_records_duration_and_cost;
+          Alcotest.test_case "detail survives item collapse" `Quick
+            test_progress_detail_survives_item_collapse;
+        ] );
+      ( "boxes",
+        [
+          Alcotest.test_case "renders the mid-run frame exactly" `Quick
+            test_boxes_render_mid_run_exactly;
+          Alcotest.test_case "degrades with terminal height" `Quick
+            test_boxes_degrade_with_height;
+          Alcotest.test_case "final frame keeps only the pipeline box" `Quick
+            test_boxes_final_frame_drops_log;
+          Alcotest.test_case "every line is exactly box width" `Quick
+            test_boxes_every_line_is_box_width;
+          Alcotest.test_case "hostile labels cannot break a row" `Quick
+            test_boxes_sanitize_hostile_labels;
+          Alcotest.test_case "elapsed lands on the deepest working row" `Quick
+            test_boxes_elapsed_lands_on_deepest_working_row;
+          Alcotest.test_case "epoch of iso8601" `Quick test_epoch_of_iso8601;
         ] );
       ( "sanitize",
         [

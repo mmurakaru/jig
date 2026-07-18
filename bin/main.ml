@@ -338,7 +338,8 @@ let attach_run run_id latest step_number =
             let continued =
               Result.bind
                 (Jig_core.Executor.Local.execute ~command:headless_command
-                   ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt)
+                   ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
+                   ())
                 (fun exec_result ->
                   Jig_core.Runner.Default.continue_attached
                     ~on_step:print_step_live ~root ~run_id:id ~exec_result ())

@@ -24,8 +24,10 @@ let read_and_remove path =
 
 (* Capture into temp files instead of pipes: a child that fills a pipe buffer
    on one stream while we drain the other would deadlock. Fork/exec by hand
-   because Unix.create_process cannot change the child's working directory. *)
-let run ?cwd ~argv () =
+   because Unix.create_process cannot change the child's working directory.
+   [on_spawn] fires in the parent once the child is running, with the capture
+   paths - a live view can tail them while this call blocks in waitpid. *)
+let run ?cwd ?on_spawn ~argv () =
   match argv with
   | [] -> Error "subprocess: empty command"
   | program :: _ -> (
@@ -54,6 +56,9 @@ let run ?cwd ~argv () =
           Unix.close stdin_fd;
           Unix.close stdout_fd;
           Unix.close stderr_fd;
+          Option.iter
+            (fun notify -> notify ~stdout_path ~stderr_path)
+            on_spawn;
           let _, status = Unix.waitpid [] child_pid in
           let stdout = read_and_remove stdout_path in
           let stderr = read_and_remove stderr_path in

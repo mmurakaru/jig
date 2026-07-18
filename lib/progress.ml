@@ -197,6 +197,103 @@ let apply t (event : Runner.run_event) =
                 l.lstatus <- outcome_status)
         t.nodes
 
+(* Rebuild the model of an existing run from its persisted record - the
+   watcher's entry point, where no live events exist. Each recorded step is
+   replayed through [apply] as a started/finished pair; the step's entry is
+   re-derived by walking the entries in order, since the run itself is
+   sequential. Adjacent entries sharing a skill label are ambiguous (the
+   record carries no entry index); their steps can replay onto the earlier
+   entry, a display-only blemish. *)
+let restore ~(entries : Workflow.entry list) (run : Run.t) =
+  let t = init entries in
+  let entry_array = Array.of_list entries in
+  let entry_count = Array.length entry_array in
+  let labels_of_entry = function
+    | Workflow.Step step -> [ Workflow.step_label step ]
+    | Workflow.Retry retry ->
+        List.map Workflow.step_label retry.Workflow.retry_steps
+    | Workflow.For_each for_each ->
+        List.map
+          (fun step -> Workflow.step_label step)
+          (Workflow.steps_of_entries for_each.Workflow.body)
+  in
+  let is_loop = function Workflow.For_each _ -> true | _ -> false in
+  let belongs entry_index (record : Run.step_record) =
+    let entry = entry_array.(entry_index) in
+    List.mem record.Run.skill (labels_of_entry entry)
+    && is_loop entry = Option.is_some record.Run.item_index
+  in
+  (* Pass 1: assign each recorded step to an entry with a forward cursor. *)
+  let assigned =
+    let cursor = ref 0 in
+    List.map
+      (fun (record : Run.step_record) ->
+        (if not (belongs !cursor record) then
+           let rec advance candidate =
+             if candidate >= entry_count then ()
+             else if belongs candidate record then cursor := candidate
+             else advance (candidate + 1)
+           in
+           advance (!cursor + 1));
+        (!cursor, record))
+      run.Run.steps
+  in
+  (* Pass 2: item keys per loop entry - the in-flight snapshot when the run
+     is paused or working inside it (it knows the pending items too),
+     otherwise the keys the records mention, in first-seen order. *)
+  let loop_keys entry_index =
+    match run.Run.position.Run.for_each with
+    | Some state when run.Run.position.Run.entry_index = entry_index ->
+        List.map Items.key state.Run.items
+    | _ ->
+        List.rev
+          (List.fold_left
+             (fun keys (assigned_index, (record : Run.step_record)) ->
+               match record.Run.item_key with
+               | Some key
+                 when assigned_index = entry_index
+                      && not (List.mem key keys) ->
+                   key :: keys
+               | _ -> keys)
+             [] assigned)
+  in
+  (* Pass 3: replay. Items must be resolved before a loop's first step. *)
+  let announced = Hashtbl.create 4 in
+  let announce entry_index =
+    if
+      is_loop entry_array.(entry_index)
+      && not (Hashtbl.mem announced entry_index)
+    then (
+      Hashtbl.add announced entry_index ();
+      apply t
+        (Runner.Items_resolved
+           { entry_index; item_keys = loop_keys entry_index }))
+  in
+  List.iter
+    (fun (entry_index, (record : Run.step_record)) ->
+      announce entry_index;
+      let for_each =
+        Option.map
+          (fun item_index -> { Run.item_index; body_index = 0; items = [] })
+          record.Run.item_index
+      in
+      apply t
+        (Runner.Step_started
+           {
+             skill = record.Run.skill;
+             position = { Run.entry_index; iterations_used = 0; for_each };
+             item_key = record.Run.item_key;
+           });
+      apply t (Runner.Step_finished record))
+    assigned;
+  (* A run standing inside a loop that has produced no step yet still knows
+     its items - show them as pending rather than an empty forEach line. *)
+  (if run.Run.position.Run.entry_index < entry_count then
+     match run.Run.position.Run.for_each with
+     | Some _ -> announce run.Run.position.Run.entry_index
+     | None -> ());
+  t
+
 (* Called when the run completes: anything still Working actually finished. *)
 let finalize t =
   Array.iter

@@ -144,7 +144,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
         (try Unix.mkdir runs_dir 0o755
          with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
         let log_path = Filename.concat runs_dir (run_id ^ ".log") in
-        Printf.printf "detached: %s\nlog: %s\nwatch: jig status %s\n%!" run_id
+        Printf.printf "detached: %s\nlog: %s\nwatch: jig watch %s\n%!" run_id
           log_path run_id;
         if Unix.fork () > 0 then exit 0
         else (
@@ -521,6 +521,36 @@ let status_cmd =
   Cmd.v (Cmd.info "status" ~doc)
     Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
 
+let watch_run run_id latest =
+  let root = Sys.getcwd () in
+  let runs_dir = Jig_core.Project.runs_dir ~root in
+  let result =
+    if not (Unix.isatty Unix.stdout) then
+      Error "watch draws a live view; it needs a terminal (use status --json)"
+    else
+      Result.bind
+        (match (run_id, latest) with
+        | Some _, true -> Error "pass a run id or --latest, not both"
+        | Some id, false -> Ok id
+        | None, true -> latest_run_id ~runs_dir
+        | None, false -> Error "pass a run id or --latest")
+        (fun id -> Watch.watch ~root ~run_id:id)
+  in
+  match result with
+  | Ok () -> ()
+  | Error message ->
+      Printf.eprintf "jig: %s\n" message;
+      exit 1
+
+let watch_cmd =
+  let doc =
+    "Attach the live Pipeline + Log view to an existing run - typically one \
+     started with --detach. A pure viewer: quitting (q or Ctrl-C) never \
+     affects the run."
+  in
+  Cmd.v (Cmd.info "watch" ~doc)
+    Term.(const watch_run $ run_id_arg $ latest_flag)
+
 let attach_step_arg =
   let doc =
     "Attach to this step number (1-based). Default: the newest step that \
@@ -591,4 +621,7 @@ let () =
   exit
     (Cmd.eval
        (Cmd.group info
-          [ init_cmd; run_cmd; validate_cmd; status_cmd; attach_cmd; list_cmd ]))
+          [
+            init_cmd; run_cmd; validate_cmd; status_cmd; watch_cmd;
+            attach_cmd; list_cmd;
+          ]))

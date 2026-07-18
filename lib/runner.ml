@@ -211,10 +211,14 @@ struct
     engine.on_event
       (Step_started
          { skill = label; position = progress.run.Run.position; item_key });
+    let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let announce_output ~stdout_path ~stderr_path =
+      Current.write ~runs_dir:(runs_dir engine)
+        ~run_id:progress.run.Run.id
+        { Current.skill = label; item_key; stdout_path; stderr_path;
+          started_at };
       engine.on_event (Step_output { stdout_path; stderr_path })
     in
-    let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code, session_id
         =
       match step.Workflow.action with
@@ -322,6 +326,7 @@ struct
           in
           Ok (outcome, handoff, None, cost, stdout, stderr, exit_code, None)
     in
+    Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
     let step_record =
       {
         Run.skill = label;
@@ -564,6 +569,8 @@ struct
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
      finds the work in progress exactly where the agent left it. *)
   let finish engine progress status =
+    (* A step that died in infrastructure never reached its own removal. *)
+    Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
     let finished = status <> Run.Running && status <> Run.Paused in
     let* progress, path = persist engine progress ~status ~finished in
     let* () =

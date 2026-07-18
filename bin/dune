@@ -1,4 +1,7 @@
 (executable
  (name main)
  (public_name jig)
- (libraries jig_core cmdliner unix threads.posix))
+ (libraries jig_core cmdliner unix threads.posix)
+ (foreign_stubs
+  (language c)
+  (names term_width_stubs)))

@@ -32,6 +32,21 @@ let format_elapsed seconds =
 let tick_interval = 0.1 (* ~10 fps while working *)
 let tail_capacity = 32
 
+(* Overwrite the previous frame in place. Every Boxes line is padded to the
+   full box width, so an erase-to-end-of-line per line repaints without the
+   flicker of clearing the whole block first; the final erase-below handles
+   a block that shrank. Returns the new frame height. *)
+let repaint ~previous_height lines =
+  if previous_height > 0 then Printf.printf "\027[%dA" previous_height;
+  List.iter
+    (fun line ->
+      List.iter print_segment line;
+      print_string "\027[K\n")
+    lines;
+  print_string "\027[0J";
+  flush stdout;
+  List.length lines
+
 type t = {
   model : Progress.t;
   workflow : string;
@@ -47,10 +62,7 @@ type t = {
   mutable ticker : Thread.t option;
 }
 
-(* Assumes the mutex is held. Every Boxes line is padded to the full box
-   width, so overwriting with an erase-to-end-of-line per line repaints
-   without the flicker of clearing the whole block first; the final
-   erase-below handles a block that shrank. *)
+(* Assumes the mutex is held. *)
 let redraw_locked t ~state =
   Option.iter Tail.poll t.tail;
   let elapsed =
@@ -66,15 +78,7 @@ let redraw_locked t ~state =
       ~log_lines:(match t.tail with Some tail -> Tail.lines tail | None -> [])
       (Progress.rows t.model)
   in
-  if t.height > 0 then Printf.printf "\027[%dA" t.height;
-  List.iter
-    (fun line ->
-      List.iter print_segment line;
-      print_string "\027[K\n")
-    lines;
-  print_string "\027[0J";
-  t.height <- List.length lines;
-  flush stdout
+  t.height <- repaint ~previous_height:t.height lines
 
 let ticker_loop t =
   Mutex.lock t.mutex;

@@ -2822,7 +2822,7 @@ let test_run_record_contains_handoffs_in_order () =
 
 (* ---- progress renderer (pure) ---- *)
 
-let progress_plan () =
+let plan_entries () =
   match
     Workflow.of_string
       "name: p\n\
@@ -2842,8 +2842,10 @@ let progress_plan () =
       \                until: pass\n\
       \  - skill: report\n"
   with
-  | Ok w -> Progress.init w.Workflow.entries
+  | Ok w -> w.Workflow.entries
   | Error m -> Alcotest.fail m
+
+let progress_plan () = Progress.init (plan_entries ())
 
 let pos ?for_each entry_index =
   { Run.entry_index; iterations_used = 0; for_each }
@@ -3219,6 +3221,191 @@ let test_progress_detail_survives_item_collapse () =
     "single-step body's duration carried onto the collapsed item"
     (Some "1m02s") alpha_row.Progress.detail
 
+(* ---- restoring progress from a persisted record (jig watch) ---- *)
+
+let recorded ?item_index ?item_key ?(outcome = Run.Pass) skill =
+  {
+    Run.skill;
+    outcome;
+    exit_code = 0;
+    cost = Metering.Unknown_cost;
+    stdout = "";
+    stderr = "";
+    handoff = None;
+    handoff_error = None;
+    session_id = None;
+    item_index;
+    item_key;
+    started_at = "";
+    finished_at = "";
+  }
+
+let persisted_run ~steps ~status ~position =
+  {
+    Run.id = "r";
+    workflow = "p";
+    task = "t";
+    status;
+    error = None;
+    position;
+    workspace = None;
+    steps;
+    started_at = "";
+    finished_at = None;
+  }
+
+let test_progress_restore_mid_run () =
+  (* Two steps done, the run standing at the loop with items resolved but
+     no loop step recorded yet: the snapshot supplies the pending items. *)
+  let run =
+    persisted_run
+      ~steps:[ recorded "read-issue"; recorded "prepare" ]
+      ~status:Run.Running
+      ~position:
+        (pos
+           ~for_each:
+             {
+               Run.item_index = 0;
+               body_index = 0;
+               items = [ [ ("it", "alpha") ]; [ ("it", "beta") ] ];
+             }
+           2)
+  in
+  Alcotest.(check (list string))
+    "finished steps done, resolved items pending"
+    [
+      "✓ read-issue";
+      "✓ prepare";
+      "○ forEach (0/2)";
+      "  ○ alpha";
+      "  ○ beta";
+      "○ report";
+    ]
+    (Progress.render ~working:"@" (Progress.restore ~entries:(plan_entries ()) run))
+
+let test_progress_restore_completed_loop_from_records () =
+  (* A finished run carries no forEach snapshot; the item keys come back
+     from the step records themselves. *)
+  let loop_step skill index key =
+    recorded ~item_index:index ~item_key:key skill
+  in
+  let run =
+    persisted_run
+      ~steps:
+        [
+          recorded "read-issue";
+          recorded "prepare";
+          loop_step "a" 0 "alpha";
+          loop_step "b" 0 "alpha";
+          loop_step "a" 1 "beta";
+          loop_step "b" 1 "beta";
+          recorded "report";
+        ]
+      ~status:Run.Completed ~position:(pos 3)
+  in
+  let model = Progress.restore ~entries:(plan_entries ()) run in
+  Progress.finalize model;
+  Alcotest.(check (list string))
+    "everything done, items recovered from records"
+    [
+      "✓ read-issue";
+      "✓ prepare";
+      "✓ forEach (2/2)";
+      "  ✓ alpha";
+      "  ✓ beta";
+      "✓ report";
+    ]
+    (Progress.render ~working:"@" model)
+
+let test_progress_restore_paused_leaf () =
+  let run =
+    persisted_run
+      ~steps:
+        [ recorded "read-issue"; recorded ~outcome:Run.Escalate "prepare" ]
+      ~status:Run.Paused ~position:(pos 1)
+  in
+  Alcotest.(check (list string))
+    "the escalated step shows paused"
+    [ "✓ read-issue"; "◉ prepare"; "○ forEach"; "○ report" ]
+    (Progress.render ~working:"@" (Progress.restore ~entries:(plan_entries ()) run))
+
+let test_progress_restore_retry_repeats_stay_on_entry () =
+  (* A retry records the same skills repeatedly; the last outcome wins. *)
+  let run =
+    persisted_run
+      ~steps:
+        [
+          recorded "read-issue";
+          recorded ~outcome:Run.Fail "prepare";
+          recorded "prepare";
+        ]
+      ~status:Run.Running ~position:(pos 2)
+  in
+  Alcotest.(check (list string))
+    "the retried step ends done, the cursor did not run ahead"
+    [ "✓ read-issue"; "✓ prepare"; "○ forEach"; "○ report" ]
+    (Progress.render ~working:"@" (Progress.restore ~entries:(plan_entries ()) run))
+
+(* ---- the active-step pointer (runs/<id>.current) ---- *)
+
+let test_current_round_trip () =
+  let runs_dir = make_temp_root () in
+  let pointer =
+    {
+      Current.skill = "implement-fix";
+      item_key = Some "alpha";
+      stdout_path = "/tmp/out";
+      stderr_path = "/tmp/err";
+      started_at = "2026-01-01T00:00:00Z";
+    }
+  in
+  Current.write ~runs_dir ~run_id:"r1" pointer;
+  (match Current.read ~runs_dir ~run_id:"r1" with
+  | Some read_back ->
+      Alcotest.(check string) "skill" pointer.Current.skill read_back.Current.skill;
+      Alcotest.(check (option string))
+        "item key" pointer.Current.item_key read_back.Current.item_key;
+      Alcotest.(check string)
+        "stdout path" pointer.Current.stdout_path read_back.Current.stdout_path;
+      Alcotest.(check string)
+        "started at" pointer.Current.started_at read_back.Current.started_at
+  | None -> Alcotest.fail "pointer did not read back");
+  Current.remove ~runs_dir ~run_id:"r1";
+  Alcotest.(check bool) "gone after remove" true
+    (Current.read ~runs_dir ~run_id:"r1" = None)
+
+let test_current_tolerates_absence_and_garbage () =
+  let runs_dir = make_temp_root () in
+  Alcotest.(check bool) "absent reads as none" true
+    (Current.read ~runs_dir ~run_id:"missing" = None);
+  write_file (Filename.concat runs_dir "broken.current") "{not json";
+  Alcotest.(check bool) "garbage reads as none" true
+    (Current.read ~runs_dir ~run_id:"broken" = None);
+  (* removing what does not exist is a no-op, not a crash *)
+  Current.remove ~runs_dir ~run_id:"missing"
+
+let test_current_written_during_step_removed_after () =
+  let root = make_temp_root () in
+  setup_command_project root
+    ~yaml:
+      "name: cmd\n\
+       steps:\n\
+      \  - command: \"ls .jig/runs | grep -c 'current$' > seen-current\"\n";
+  match run_cmd root with
+  | Error m -> Alcotest.fail m
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check string)
+        "the pointer existed while the step ran" "1"
+        (String.trim
+           (In_channel.with_open_text
+              (Filename.concat root "seen-current")
+              In_channel.input_all));
+      Alcotest.(check bool) "and is gone once the run finished" true
+        (Current.read ~runs_dir:(Project.runs_dir ~root) ~run_id:run.Run.id
+        = None)
+
 (* ---- box layout (pure) ---- *)
 
 let dashes count = String.concat "" (List.init count (fun _ -> "─"))
@@ -3461,6 +3648,23 @@ let () =
             test_progress_detail_records_duration_and_cost;
           Alcotest.test_case "detail survives item collapse" `Quick
             test_progress_detail_survives_item_collapse;
+          Alcotest.test_case "restores a mid-run record" `Quick
+            test_progress_restore_mid_run;
+          Alcotest.test_case "restores a completed loop from records" `Quick
+            test_progress_restore_completed_loop_from_records;
+          Alcotest.test_case "restores a paused leaf" `Quick
+            test_progress_restore_paused_leaf;
+          Alcotest.test_case "restore keeps retry repeats on their entry"
+            `Quick test_progress_restore_retry_repeats_stay_on_entry;
+        ] );
+      ( "current",
+        [
+          Alcotest.test_case "pointer round-trips" `Quick
+            test_current_round_trip;
+          Alcotest.test_case "tolerates absence and garbage" `Quick
+            test_current_tolerates_absence_and_garbage;
+          Alcotest.test_case "written during a step, removed after" `Quick
+            test_current_written_during_step_removed_after;
         ] );
       ( "boxes",
         [

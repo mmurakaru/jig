@@ -90,3 +90,6 @@ deps, create a directory), resume; leave the rest to the user.
 
 Always end with: run id, outcome, total cost, artifacts (PR link, changed
 paths from the last handoff), and the run record path (`.jig/runs/<id>.json`).
+While a run is still executing, also mention `jig watch <run-id>` - it
+attaches the live pipeline view in the user's terminal, and quitting it
+never affects the run.

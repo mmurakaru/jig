@@ -61,6 +61,7 @@ jig run <workflow> --task "<description>"   # execute a workflow against a task
 jig run --resume <run-id> [--guidance "…"]  # continue a paused run
   [--skip]                                  #   a human finished the paused step; record it and move on
 jig attach <run-id>                         # open the paused step's session; exiting the chat hands back
+jig watch <run-id>                          # attach the live view to a running (or finished) run
 jig status <run-id> [--json]                # inspect a run
 jig list workflows|runs [--json]            # discover what is runnable, and what ran
 jig validate <workflow>                     # lint before running

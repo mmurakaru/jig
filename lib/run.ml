@@ -57,6 +57,32 @@ let iso8601 time =
     (utc.Unix.tm_mon + 1) utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min
     utc.Unix.tm_sec
 
+(* Inverse of [iso8601], for durations between recorded timestamps without
+   depending on the environment's timezone (civil-date day arithmetic). *)
+let epoch_of_iso8601 text =
+  let days_from_civil year month day =
+    let year = if month <= 2 then year - 1 else year in
+    let era = (if year >= 0 then year else year - 399) / 400 in
+    let year_of_era = year - (era * 400) in
+    let day_of_year =
+      ((153 * (if month > 2 then month - 3 else month + 9)) + 2) / 5 + day - 1
+    in
+    let day_of_era =
+      (year_of_era * 365) + (year_of_era / 4) - (year_of_era / 100)
+      + day_of_year
+    in
+    (era * 146097) + day_of_era - 719468
+  in
+  match
+    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2dZ"
+      (fun year month day hour minute second ->
+        float_of_int
+          ((((days_from_civil year month day * 24) + hour) * 60 + minute) * 60
+          + second))
+  with
+  | seconds -> Some seconds
+  | exception _ -> None
+
 (* pid separates concurrent jig processes; the sequence separates runs
    started by one process within the same second. *)
 let sequence = ref 0

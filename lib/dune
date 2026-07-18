@@ -58,3 +58,28 @@
     (cat ../template/skills/capture-evidence/SKILL.md)
     (echo "|tmpl});\n")
     (echo "]\n")))))
+
+; The harness skill jig init --harness claude installs into the consuming
+; repo's .claude/skills/jig/. skills/ at the repo root is the single source;
+; adding a skill file requires listing it here AND in the sequence below.
+(rule
+ (targets harness_skill_data.ml)
+ (deps
+  ../skills/jig/SKILL.md
+  ../skills/jig/references/scaffolding.md
+  ../skills/jig/references/authoring.md)
+ (action
+  (with-stdout-to
+   %{targets}
+   (progn
+    (echo "let files = [\n")
+    (echo "(\"SKILL.md\", {tmpl|")
+    (cat ../skills/jig/SKILL.md)
+    (echo "|tmpl});\n")
+    (echo "(\"references/scaffolding.md\", {tmpl|")
+    (cat ../skills/jig/references/scaffolding.md)
+    (echo "|tmpl});\n")
+    (echo "(\"references/authoring.md\", {tmpl|")
+    (cat ../skills/jig/references/authoring.md)
+    (echo "|tmpl});\n")
+    (echo "]\n")))))

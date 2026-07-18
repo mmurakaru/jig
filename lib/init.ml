@@ -75,16 +75,39 @@ let rec ensure_directory path =
     try Unix.mkdir path 0o755
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
-(* Scaffold the embedded starter set into <root>/.jig. Refuses to touch an
-   existing .jig - init bootstraps, it never merges or overwrites. *)
+(* Where the claude preset installs the harness skill, relative to root. *)
+let harness_skill_dir =
+  Filename.concat ".claude" (Filename.concat "skills" "jig")
+
+let write_tree ~directory files =
+  List.iter
+    (fun (relative_path, content) ->
+      let path = Filename.concat directory relative_path in
+      ensure_directory (Filename.dirname path);
+      Out_channel.with_open_text path (fun channel ->
+          Out_channel.output_string channel content))
+    files
+
+(* Scaffold the embedded starter set into <root>/.jig - and, for the claude
+   preset, the harness skill into <root>/.claude/skills/jig. Refuses to
+   touch either tree if it exists - init bootstraps, it never merges or
+   overwrites. Returns the written paths relative to root. *)
 let scaffold ~root ~preset ~skill_paths =
   let jig_dir = Filename.concat root ".jig" in
+  let skill_dir = Filename.concat root harness_skill_dir in
+  let installs_harness_skill = preset = Claude in
   if Sys.file_exists jig_dir then
     Error
       (Printf.sprintf
          "%s already exists; jig init only bootstraps a repository that has \
           no .jig yet"
          jig_dir)
+  else if installs_harness_skill && Sys.file_exists skill_dir then
+    Error
+      (Printf.sprintf
+         "%s already exists; jig init only bootstraps a repository that has \
+          no harness skill installed yet"
+         skill_dir)
   else (
     try
       let files =
@@ -95,14 +118,22 @@ let scaffold ~root ~preset ~skill_paths =
             else (relative_path, content))
           Template_data.files
       in
-      List.iter
-        (fun (relative_path, content) ->
-          let path = Filename.concat jig_dir relative_path in
-          ensure_directory (Filename.dirname path);
-          Out_channel.with_open_text path (fun channel ->
-              Out_channel.output_string channel content))
-        files;
-      Ok (List.map fst files)
+      write_tree ~directory:jig_dir files;
+      if installs_harness_skill then
+        write_tree ~directory:skill_dir Harness_skill_data.files;
+      let written =
+        List.map
+          (fun (relative_path, _) -> Filename.concat ".jig" relative_path)
+          files
+        @
+        if installs_harness_skill then
+          List.map
+            (fun (relative_path, _) ->
+              Filename.concat harness_skill_dir relative_path)
+            Harness_skill_data.files
+        else []
+      in
+      Ok written
     with
     | Sys_error message -> Error (Printf.sprintf "init: %s" message)
     | Unix.Unix_error (error, _, _) ->

@@ -6,7 +6,8 @@
 jig init --harness claude --skill-paths ~/.claude/skills
 ```
 
-- `--harness claude|codex` writes a known-good config for that harness;
+- `--harness claude|codex` writes a known-good config for that harness
+  (`claude` also installs this skill into the repo's `.claude/skills/jig/`);
   `custom` (default) writes a commented template the user must edit.
 - `--skill-paths DIR` (repeatable) points workflows at external skill
   libraries; repo-local `.jig/skills/` always wins on name clashes.

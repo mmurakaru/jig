@@ -2448,6 +2448,58 @@ let test_init_codex_preset_is_well_formed () =
             [ "codex"; "exec"; "--sandbox"; "workspace-write"; "--json" ]
             config.Config.harness)
 
+let test_init_claude_installs_harness_skill () =
+  let root = make_bare_temp_dir () in
+  match Init.scaffold ~root ~preset:Init.Claude ~skill_paths:[] with
+  | Error message -> Alcotest.fail message
+  | Ok written ->
+      List.iter
+        (fun relative_path ->
+          let path =
+            Filename.concat root
+              (Filename.concat ".claude/skills/jig" relative_path)
+          in
+          Alcotest.(check bool)
+            (relative_path ^ " installed") true (Sys.file_exists path);
+          Alcotest.(check string)
+            (relative_path ^ " matches the embedded source")
+            (List.assoc relative_path Harness_skill_data.files)
+            (In_channel.with_open_text path In_channel.input_all))
+        [ "SKILL.md"; "references/scaffolding.md"; "references/authoring.md" ];
+      Alcotest.(check bool)
+        "written paths report the skill install" true
+        (List.mem
+           (Filename.concat ".claude/skills/jig" "SKILL.md")
+           written)
+
+let test_init_refuses_existing_harness_skill () =
+  let root = make_bare_temp_dir () in
+  let skill_dir = Filename.concat root ".claude/skills/jig" in
+  let rec make_all path =
+    if not (Sys.file_exists path) then (
+      make_all (Filename.dirname path);
+      Unix.mkdir path 0o755)
+  in
+  make_all skill_dir;
+  match Init.scaffold ~root ~preset:Init.Claude ~skill_paths:[] with
+  | Ok _ -> Alcotest.fail "expected init to refuse an existing harness skill"
+  | Error message ->
+      Alcotest.(check bool) "names the conflict" true
+        (contains ~affix:".claude" message);
+      Alcotest.(check bool) "wrote nothing" false
+        (Sys.file_exists (Filename.concat root ".jig"))
+
+let test_init_non_claude_presets_skip_harness_skill () =
+  List.iter
+    (fun preset ->
+      let root = make_bare_temp_dir () in
+      match Init.scaffold ~root ~preset ~skill_paths:[] with
+      | Error message -> Alcotest.fail message
+      | Ok _ ->
+          Alcotest.(check bool) "no .claude tree" false
+            (Sys.file_exists (Filename.concat root ".claude")))
+    [ Init.Codex; Init.Custom ]
+
 let test_init_custom_matches_template () =
   let root = make_bare_temp_dir () in
   match Init.scaffold ~root ~preset:Init.Custom ~skill_paths:[] with
@@ -3619,6 +3671,12 @@ let () =
             test_init_codex_preset_is_well_formed;
           Alcotest.test_case "bare init matches the template" `Quick
             test_init_custom_matches_template;
+          Alcotest.test_case "claude preset installs the harness skill" `Quick
+            test_init_claude_installs_harness_skill;
+          Alcotest.test_case "refuses an existing harness skill" `Quick
+            test_init_refuses_existing_harness_skill;
+          Alcotest.test_case "other presets skip the harness skill" `Quick
+            test_init_non_claude_presets_skip_harness_skill;
         ] );
       ( "metering",
         [

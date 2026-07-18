@@ -741,7 +741,7 @@ end = struct
 
   let prompts () = !recorded_prompts
 
-  let execute ~command:_ ~cwd:_ ~prompt =
+  let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt () =
     recorded_prompts := !recorded_prompts @ [ prompt ];
     let stdout =
       match !queued_outputs with
@@ -1079,6 +1079,7 @@ let test_lifecycle_events_fire_across_step_kinds () =
                   (Option.value item_key ~default:"-")
             | Runner.Items_resolved { item_keys; _ } ->
                 "items:" ^ String.concat "," item_keys
+            | Runner.Step_output _ -> "output"
             | Runner.Step_finished record ->
                 Printf.sprintf "finish:%s:%s" record.Run.skill
                   (Option.value record.Run.item_key ~default:"-"))
@@ -2158,7 +2159,7 @@ let probe_runs_dir = ref ""
 let probe_seen : Run.t list ref = ref []
 
 module Probe_executor : Executor.S = struct
-  let execute ~command:_ ~cwd:_ ~prompt:_ =
+  let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt:_ () =
     (match Store.Filesystem.list_runs ~runs_dir:!probe_runs_dir with
     | Ok runs -> probe_seen := runs
     | Error _ -> probe_seen := []);
@@ -2989,6 +2990,57 @@ let test_command_step_interpolates_foreach_item () =
       Alcotest.(check bool) "beta command ran with its interpolated name" true
         (Sys.file_exists (Filename.concat root "done-beta"))
 
+(* ---- tail reader ---- *)
+
+let append_file path text =
+  let channel =
+    open_out_gen [ Open_append; Open_creat ] 0o644 path
+  in
+  output_string channel text;
+  close_out channel
+
+let test_tail_reads_and_stitches () =
+  let root = make_temp_root () in
+  let path = Filename.concat root "out.log" in
+  append_file path "one\ntwo\npart";
+  let tail = Tail.create ~capacity:8 [ path ] in
+  Tail.poll tail;
+  Alcotest.(check (list string))
+    "complete lines plus the in-progress partial"
+    [ "one"; "two"; "part" ] (Tail.lines tail);
+  append_file path "ial\nthree\n";
+  Tail.poll tail;
+  Alcotest.(check (list string))
+    "partial stitched across reads"
+    [ "one"; "two"; "partial"; "three" ]
+    (Tail.lines tail)
+
+let test_tail_keeps_only_capacity () =
+  let root = make_temp_root () in
+  let path = Filename.concat root "out.log" in
+  append_file path "a\nb\nc\nd\n";
+  let tail = Tail.create ~capacity:2 [ path ] in
+  Tail.poll tail;
+  Alcotest.(check (list string)) "newest lines win" [ "c"; "d" ]
+    (Tail.lines tail)
+
+let test_tail_tolerates_missing_file () =
+  let tail = Tail.create ~capacity:4 [ "/nonexistent/jig-tail-test" ] in
+  Tail.poll tail;
+  Alcotest.(check (list string)) "no file, no lines" [] (Tail.lines tail)
+
+let test_tail_resets_on_truncation () =
+  let root = make_temp_root () in
+  let path = Filename.concat root "out.log" in
+  append_file path "old-line\n";
+  let tail = Tail.create ~capacity:8 [ path ] in
+  Tail.poll tail;
+  Sys.remove path;
+  append_file path "new\n";
+  Tail.poll tail;
+  Alcotest.(check (list string)) "shrunk file re-read from the start"
+    [ "old-line"; "new" ] (Tail.lines tail)
+
 (* ---- sanitize (pure) ---- *)
 
 let test_sanitize_strips_ansi () =
@@ -3141,6 +3193,17 @@ let () =
             test_sanitize_replaces_wide_and_invalid;
           Alcotest.test_case "width and truncate count scalars" `Quick
             test_sanitize_width_and_truncate;
+        ] );
+      ( "tail",
+        [
+          Alcotest.test_case "reads and stitches partial lines" `Quick
+            test_tail_reads_and_stitches;
+          Alcotest.test_case "keeps only the newest lines" `Quick
+            test_tail_keeps_only_capacity;
+          Alcotest.test_case "tolerates a missing file" `Quick
+            test_tail_tolerates_missing_file;
+          Alcotest.test_case "resets on truncation" `Quick
+            test_tail_resets_on_truncation;
         ] );
       ( "items",
         [

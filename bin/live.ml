@@ -89,7 +89,7 @@ let on_event t event =
   (match event with
   | Jig_core.Runner.Step_started _ -> t.working <- true
   | Jig_core.Runner.Step_finished _ -> t.working <- false
-  | Jig_core.Runner.Items_resolved _ -> ());
+  | Jig_core.Runner.Items_resolved _ | Jig_core.Runner.Step_output _ -> ());
   redraw_locked t;
   Condition.signal t.wake;
   Mutex.unlock t.mutex

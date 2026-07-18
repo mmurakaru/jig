@@ -62,6 +62,8 @@ let mark_before_done nodes entry_index =
 
 let apply t (event : Runner.run_event) =
   match event with
+  (* Output paths matter to a log tail, not to the step tree. *)
+  | Runner.Step_output _ -> ()
   | Runner.Items_resolved { entry_index; item_keys } -> (
       match t.nodes.(entry_index) with
       | Loop_node l ->

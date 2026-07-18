@@ -99,6 +99,19 @@ The trade: jig gives up in-process speed and large parallel fan-out for a
 portable definition, durable run history, and a human-in-the-loop pause that
 survives the terminal.
 
+## The harness skill
+
+[`skills/jig/`](skills/jig/SKILL.md) teaches an agent harness to operate the binary instead of you typing the verbs.
+Install by copying it where your harness discovers skills - for Claude Code:
+
+```sh
+mkdir -p ~/.claude/skills && cp -R skills/jig ~/.claude/skills/          # every project
+mkdir -p <repo>/.claude/skills && cp -R skills/jig <repo>/.claude/skills/   # one project
+```
+
+The skill turns a ticket into a supervised run: condense the ticket into a task, validate, launch with `--detach`, poll `jig status --json`, triage pauses (answer derivable questions itself, surface the rest verbatim), and report the outcome with cost and artifacts.
+It never executes a workflow's YAML by hand - the run record, metering, and resume semantics exist only through the binary.
+
 ## Docs
 
 - [Writing a skill](docs/writing-a-skill.md)

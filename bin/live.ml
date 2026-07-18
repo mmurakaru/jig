@@ -1,57 +1,79 @@
-(* In-place live step tree for a TTY run. Consumes the runner's lifecycle
-   events and redraws the block in place. A background ticker animates the
-   active step's spinner while a step runs (the main thread is blocked in
-   the step's subprocess); the ticker is gated to only spin while something
-   is working, so an idle or paused run costs nothing. All redraws take the
-   mutex, so the two threads never interleave terminal output. *)
+(* In-place live view for a TTY run: the Pipeline box over the Log box,
+   redrawn in place as lifecycle events arrive. A background ticker
+   animates the spinner and polls the running step's output tail while the
+   main thread is blocked in the step's subprocess; it is gated to only
+   run while something is working, so an idle or paused run costs nothing.
+   All terminal writes and model mutations happen under the mutex. Layout
+   lives in Jig_core.Boxes; this module is only ANSI, clocks, and threads. *)
 
 module Progress = Jig_core.Progress
+module Boxes = Jig_core.Boxes
+module Tail = Jig_core.Tail
 
-let color_of : Progress.status -> string = function
-  | Pending -> "90" (* dim *)
-  | Working -> "33" (* yellow *)
-  | Done -> "32" (* green *)
-  | Failed -> "31" (* red *)
-  | Paused -> "35" (* magenta *)
+let sgr_of_style : Boxes.style -> string option = function
+  | Boxes.Plain -> None
+  | Boxes.Dim -> Some "90"
+  | Boxes.Green -> Some "32"
+  | Boxes.Red -> Some "31"
+  | Boxes.Yellow -> Some "33"
+  | Boxes.Magenta -> Some "35"
+  | Boxes.Title -> Some "1;36"
 
-let cols () =
-  match Sys.getenv_opt "COLUMNS" with
-  | Some s -> ( try max 40 (int_of_string s) with _ -> 120)
-  | None -> 120
+let print_segment (segment : Boxes.segment) =
+  match sgr_of_style segment.Boxes.style with
+  | None -> print_string segment.Boxes.text
+  | Some code -> Printf.printf "\027[%sm%s\027[0m" code segment.Boxes.text
 
-let truncate limit s = if String.length s <= limit then s else String.sub s 0 limit
+let format_elapsed seconds =
+  let whole = int_of_float seconds in
+  if whole < 60 then Printf.sprintf "%ds" whole
+  else Printf.sprintf "%dm%02ds" (whole / 60) (whole mod 60)
 
 let tick_interval = 0.1 (* ~10 fps while working *)
+let tail_capacity = 32
 
 type t = {
   model : Progress.t;
+  workflow : string;
   mutex : Mutex.t;
   wake : Condition.t;
   mutable tick : int;
   mutable working : bool;
   mutable stopped : bool;
   mutable height : int;
+  mutable tail : Tail.t option;
+  mutable step_label : string option;
+  mutable step_started : float;
   mutable ticker : Thread.t option;
 }
 
-(* Assumes the mutex is held. Move to the top of the previously drawn block,
-   clear it, and reprint. Labels are truncated to the terminal width so a
-   long line cannot wrap and throw off the cursor-up count. *)
-let redraw_locked t =
+(* Assumes the mutex is held. Every Boxes line is padded to the full box
+   width, so overwriting with an erase-to-end-of-line per line repaints
+   without the flicker of clearing the whole block first; the final
+   erase-below handles a block that shrank. *)
+let redraw_locked t ~state =
+  Option.iter Tail.poll t.tail;
+  let elapsed =
+    if t.working then
+      Some (format_elapsed (Unix.gettimeofday () -. t.step_started))
+    else None
+  in
+  let lines =
+    Boxes.view ~columns:(Term_size.columns ()) ~height:(Term_size.rows ())
+      ~workflow:t.workflow ~state
+      ~spinner:(Progress.spinner_frame t.tick)
+      ~elapsed ~log_title:t.step_label
+      ~log_lines:(match t.tail with Some tail -> Tail.lines tail | None -> [])
+      (Progress.rows t.model)
+  in
   if t.height > 0 then Printf.printf "\027[%dA" t.height;
-  print_string "\027[0J";
-  let width = cols () in
-  let working = Progress.spinner_frame t.tick in
-  let rows = Progress.rows t.model in
   List.iter
-    (fun (r : Progress.row) ->
-      let glyph = Progress.glyph ~working r.Progress.status in
-      let avail = max 8 (width - r.Progress.indent - 2) in
-      let label = truncate avail r.Progress.label in
-      Printf.printf "%*s\027[%sm%s\027[0m %s\n" r.Progress.indent ""
-        (color_of r.Progress.status) glyph label)
-    rows;
-  t.height <- List.length rows;
+    (fun line ->
+      List.iter print_segment line;
+      print_string "\027[K\n")
+    lines;
+  print_string "\027[0J";
+  t.height <- List.length lines;
   flush stdout
 
 let ticker_loop t =
@@ -59,7 +81,7 @@ let ticker_loop t =
   while not t.stopped do
     if t.working then (
       t.tick <- t.tick + 1;
-      redraw_locked t;
+      redraw_locked t ~state:Boxes.Running;
       Mutex.unlock t.mutex;
       Thread.delay tick_interval;
       Mutex.lock t.mutex)
@@ -67,16 +89,20 @@ let ticker_loop t =
   done;
   Mutex.unlock t.mutex
 
-let create entries =
+let create ~workflow entries =
   let t =
     {
       model = Progress.init entries;
+      workflow;
       mutex = Mutex.create ();
       wake = Condition.create ();
       tick = 0;
       working = false;
       stopped = false;
       height = 0;
+      tail = None;
+      step_label = None;
+      step_started = 0.0;
       ticker = None;
     }
   in
@@ -87,19 +113,37 @@ let on_event t event =
   Mutex.lock t.mutex;
   Progress.apply t.model event;
   (match event with
-  | Jig_core.Runner.Step_started _ -> t.working <- true
-  | Jig_core.Runner.Step_finished _ -> t.working <- false
-  | Jig_core.Runner.Items_resolved _ | Jig_core.Runner.Step_output _ -> ());
-  redraw_locked t;
+  | Jig_core.Runner.Step_started { skill; item_key; _ } ->
+      t.working <- true;
+      t.step_started <- Unix.gettimeofday ();
+      t.step_label <-
+        Some
+          (match item_key with
+          | Some key -> skill ^ " · " ^ key
+          | None -> skill);
+      t.tail <- None
+  | Jig_core.Runner.Step_output { stdout_path; stderr_path } ->
+      t.tail <- Some (Tail.create ~capacity:tail_capacity [ stdout_path; stderr_path ])
+  | Jig_core.Runner.Step_finished _ ->
+      t.working <- false;
+      t.tail <- None;
+      t.step_label <- None
+  | Jig_core.Runner.Items_resolved _ -> ());
+  redraw_locked t ~state:Boxes.Running;
   Condition.signal t.wake;
   Mutex.unlock t.mutex
 
-let finalize t =
+(* The last frame is the durable one: the completed Pipeline box stays in
+   the scrollback (the log tail was transient working info; full logs live
+   on disk) and the run report prints below it. *)
+let finalize t ~state =
   Mutex.lock t.mutex;
   Progress.finalize t.model;
   t.working <- false;
   t.stopped <- true;
-  redraw_locked t;
+  t.tail <- None;
+  t.step_label <- None;
+  redraw_locked t ~state;
   Condition.signal t.wake;
   Mutex.unlock t.mutex;
-  match t.ticker with Some th -> Thread.join th | None -> ()
+  match t.ticker with Some thread -> Thread.join thread | None -> ()

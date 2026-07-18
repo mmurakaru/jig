@@ -2989,6 +2989,45 @@ let test_command_step_interpolates_foreach_item () =
       Alcotest.(check bool) "beta command ran with its interpolated name" true
         (Sys.file_exists (Filename.concat root "done-beta"))
 
+(* ---- sanitize (pure) ---- *)
+
+let test_sanitize_strips_ansi () =
+  Alcotest.(check string) "CSI stripped" "ared"
+    (Sanitize.line "a\027[31mred\027[0m");
+  Alcotest.(check string) "OSC stripped (BEL-terminated)" "x"
+    (Sanitize.line "\027]2;title\007x");
+  Alcotest.(check string) "OSC stripped (ST-terminated)" "x"
+    (Sanitize.line "\027]8;;link\027\\x");
+  Alcotest.(check string) "dangling escape at end of chunk" "a"
+    (Sanitize.line "a\027[3")
+
+let test_sanitize_expands_tabs () =
+  Alcotest.(check string) "tab to the next 8-column stop" "a       b"
+    (Sanitize.line "a\tb");
+  Alcotest.(check string) "tab at a stop advances a full stop"
+    "12345678        x"
+    (Sanitize.line "12345678\tx")
+
+let test_sanitize_drops_control_chars () =
+  Alcotest.(check string) "CR and BEL dropped" "ab" (Sanitize.line "a\rb\007")
+
+let test_sanitize_replaces_wide_and_invalid () =
+  Alcotest.(check string) "CJK becomes placeholders" "??"
+    (Sanitize.line "日本");
+  Alcotest.(check string) "emoji becomes a placeholder" "?"
+    (Sanitize.line "🎉");
+  Alcotest.(check string) "invalid utf-8 becomes a placeholder" "?!"
+    (Sanitize.line "\xff!");
+  Alcotest.(check string) "accented text passes through" "café"
+    (Sanitize.line "café")
+
+let test_sanitize_width_and_truncate () =
+  Alcotest.(check int) "width counts scalars" 3 (Sanitize.width "✓ a");
+  Alcotest.(check string) "truncate by scalars" "abc"
+    (Sanitize.truncate 3 "abcdef");
+  Alcotest.(check string) "truncate respects multibyte boundaries" "✓✓"
+    (Sanitize.truncate 2 "✓✓✓")
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -3090,6 +3129,18 @@ let () =
             test_progress_marks_failure;
           Alcotest.test_case "spinner cycles and wraps" `Quick
             test_progress_spinner_cycles;
+        ] );
+      ( "sanitize",
+        [
+          Alcotest.test_case "strips ansi escapes" `Quick
+            test_sanitize_strips_ansi;
+          Alcotest.test_case "expands tabs" `Quick test_sanitize_expands_tabs;
+          Alcotest.test_case "drops control chars" `Quick
+            test_sanitize_drops_control_chars;
+          Alcotest.test_case "replaces wide and invalid chars" `Quick
+            test_sanitize_replaces_wide_and_invalid;
+          Alcotest.test_case "width and truncate count scalars" `Quick
+            test_sanitize_width_and_truncate;
         ] );
       ( "items",
         [

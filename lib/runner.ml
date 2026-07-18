@@ -54,6 +54,9 @@ type run_event =
       item_key : string option;
     }
   | Items_resolved of { entry_index : int; item_keys : string list }
+  (* The running step's captured-output files, the moment its subprocess
+     spawns - a live view can tail them while the step executes. *)
+  | Step_output of { stdout_path : string; stderr_path : string }
   | Step_finished of Run.step_record
 
 let position_line ~workflow_name ~entries ~entry_index ~skill ~item =
@@ -208,6 +211,9 @@ struct
     engine.on_event
       (Step_started
          { skill = label; position = progress.run.Run.position; item_key });
+    let announce_output ~stdout_path ~stderr_path =
+      engine.on_event (Step_output { stdout_path; stderr_path })
+    in
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code, session_id
         =
@@ -225,7 +231,8 @@ struct
               step.Workflow.inputs
           in
           let* exec_result =
-            Executor_port.execute ~command ~cwd:engine.workspace
+            Executor_port.execute ~on_spawn:announce_output ~command
+              ~cwd:engine.workspace
               ~prompt:
                 (build_prompt ~context:engine.context ~task:engine.task
                    ~position:
@@ -236,6 +243,7 @@ struct
                    ~inputs ~skill_body
                    ~previous_handoff:progress.last_handoff
                    ~guidance:progress.guidance)
+              ()
           in
           let cost, usage = Metering.parse_cost exec_result.Executor.stdout in
           let* () =
@@ -268,7 +276,7 @@ struct
           let* result =
             Result.map_error
               (fun message -> "command step: " ^ message)
-              (Subprocess.run ~cwd:engine.workspace
+              (Subprocess.run ~cwd:engine.workspace ~on_spawn:announce_output
                  ~argv:[ "sh"; "-c"; command ] ())
           in
           let exit_code = result.Subprocess.exit_code in

@@ -52,6 +52,9 @@ type run_event =
       skill : string;
       position : Run.position;
       item_key : string option;
+      (* The effective tier the step will run on; None is the default
+         harness. A live view shows it next to the running step. *)
+      tier : string option;
     }
   | Items_resolved of { entry_index : int; item_keys : string list }
   (* The running step's captured-output files, the moment its subprocess
@@ -208,32 +211,42 @@ struct
       | Some context ->
           Workflow.interpolate ~var:context.var ~bindings:context.bindings value
     in
+    (* The skill is loaded before the start event so the event can carry
+       the effective tier (the skill's frontmatter is one of its sources). *)
+    let* loaded_skill =
+      match step.Workflow.action with
+      | Workflow.Skill_step name ->
+          let* skill =
+            Skill.load ~jig_dir:engine.jig_dir
+              ~skill_paths:engine.config.Config.skill_paths ~name
+          in
+          Ok (Some skill)
+      | Workflow.Command_step _ -> Ok None
+    in
+    (* Precedence: the workflow step's tier wins over the skill's own
+       default; neither set means the default harness. *)
+    let tier =
+      match (step.Workflow.tier, loaded_skill) with
+      | (Some _ as step_tier), _ -> step_tier
+      | None, Some skill -> skill.Skill.tier
+      | None, None -> None
+    in
     engine.on_event
       (Step_started
-         { skill = label; position = progress.run.Run.position; item_key });
+         { skill = label; position = progress.run.Run.position; item_key; tier });
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let announce_output ~stdout_path ~stderr_path =
       Current.write ~runs_dir:(runs_dir engine)
         ~run_id:progress.run.Run.id
-        { Current.skill = label; item_key; stdout_path; stderr_path;
+        { Current.skill = label; item_key; tier; stdout_path; stderr_path;
           started_at };
       engine.on_event (Step_output { stdout_path; stderr_path })
     in
     let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code,
          session_id, tier
         =
-      match step.Workflow.action with
-      | Workflow.Skill_step name ->
-          let* skill = Skill.load ~jig_dir:engine.jig_dir
-              ~skill_paths:engine.config.Config.skill_paths ~name
-          in
-          (* Precedence: the workflow step's tier wins over the skill's own
-             default; neither set means the default harness. *)
-          let tier =
-            match step.Workflow.tier with
-            | Some _ as step_tier -> step_tier
-            | None -> skill.Skill.tier
-          in
+      match (step.Workflow.action, loaded_skill) with
+      | Workflow.Skill_step name, Some skill ->
           let* command =
             Model_provider_port.resolve ~config:engine.config ~skill:name ~tier
           in
@@ -281,7 +294,10 @@ struct
               exec_result.Executor.exit_code,
               Metering.parse_session_id exec_result.Executor.stdout,
               tier )
-      | Workflow.Command_step command ->
+      | Workflow.Skill_step name, None ->
+          Error
+            (Printf.sprintf "run: skill %s failed to load - unreachable" name)
+      | Workflow.Command_step command, _ ->
           (* A command step is deterministic mechanical work: run the shell
              command, let its exit status be the outcome (0 = pass), record
              it at $0 (no model). *)

@@ -117,14 +117,14 @@ let on_event t event =
   Mutex.lock t.mutex;
   Progress.apply t.model event;
   (match event with
-  | Jig_core.Runner.Step_started { skill; item_key; _ } ->
+  | Jig_core.Runner.Step_started { skill; item_key; tier; _ } ->
       t.working <- true;
       t.step_started <- Unix.gettimeofday ();
+      (* skill · item · tier: where the step runs and what it costs to. *)
       t.step_label <-
         Some
-          (match item_key with
-          | Some key -> skill ^ " · " ^ key
-          | None -> skill);
+          (String.concat " · "
+             (skill :: Option.to_list item_key @ Option.to_list tier));
       t.tail <- None
   | Jig_core.Runner.Step_output { stdout_path; stderr_path } ->
       t.tail <- Some (Tail.create ~capacity:tail_capacity [ stdout_path; stderr_path ])

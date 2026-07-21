@@ -37,31 +37,37 @@ let build_model ~entries ~entry_count (record : Run.t) pointer =
      record.Run.status = Run.Running
      && record.Run.position.Run.entry_index < entry_count
    then
-     let skill, item_key =
+     let skill, item_key, tier =
        match pointer with
-       | Some current -> (Some current.Current.skill, current.Current.item_key)
+       | Some current ->
+           ( Some current.Current.skill,
+             current.Current.item_key,
+             current.Current.tier )
        | None -> (
            match
              Jig_core.Runner.Default.skip_target_skill ~entries
                ~position:record.Run.position
            with
-           | Ok skill -> (Some skill, item_key_of_position record.Run.position)
-           | Error _ -> (None, None))
+           | Ok skill ->
+               (Some skill, item_key_of_position record.Run.position, None)
+           | Error _ -> (None, None, None))
      in
      match skill with
      | Some skill ->
          Progress.apply model
            (Jig_core.Runner.Step_started
-              { skill; position = record.Run.position; item_key })
+              { skill; position = record.Run.position; item_key; tier })
      | None -> ());
   model
 
+(* skill · item · tier - the same title the foreground live view shows. *)
 let log_title pointer =
   Option.map
     (fun current ->
-      match current.Current.item_key with
-      | Some key -> current.Current.skill ^ " · " ^ key
-      | None -> current.Current.skill)
+      String.concat " · "
+        (current.Current.skill
+         :: Option.to_list current.Current.item_key
+        @ Option.to_list current.Current.tier))
     pointer
 
 let elapsed_of_pointer pointer =

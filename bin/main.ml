@@ -5,6 +5,30 @@ let cost_suffix step =
   | Jig_core.Metering.Cost_usd value -> Printf.sprintf " ($%.4f)" value
   | Jig_core.Metering.Unknown_cost -> " (cost unknown)"
 
+let tier_suffix step =
+  match step.Jig_core.Run.tier with
+  | Some tier -> Printf.sprintf " [%s]" tier
+  | None -> ""
+
+let tier_name = function Some tier -> tier | None -> "default"
+
+(* One line per tier, only when some step declared one - a run on a single
+   harness has nothing to break down. *)
+let print_tier_breakdown (run : Jig_core.Run.t) =
+  let by_tier = Jig_core.Run.cost_by_tier run in
+  if List.exists (fun (tier, _, _, _) -> tier <> None) by_tier then
+    Printf.printf "by tier: %s\n"
+      (String.concat "; "
+         (List.map
+            (fun (tier, total, steps, unknown) ->
+              Printf.sprintf "%s $%.4f (%d step%s%s)" (tier_name tier) total
+                steps
+                (if steps = 1 then "" else "s")
+                (if unknown > 0 then
+                   Printf.sprintf ", %d unknown" unknown
+                 else ""))
+            by_tier))
+
 (* The same skill name repeats once per forEach item; the item key keeps
    the listing legible. *)
 let item_suffix step =
@@ -16,8 +40,8 @@ let item_suffix step =
 let print_steps_with_costs (run : Jig_core.Run.t) =
   List.iter
     (fun step ->
-      Printf.printf "  %s%s: %s%s\n" step.Jig_core.Run.skill
-        (item_suffix step)
+      Printf.printf "  %s%s%s: %s%s\n" step.Jig_core.Run.skill
+        (item_suffix step) (tier_suffix step)
         (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
         (cost_suffix step))
     run.Jig_core.Run.steps;
@@ -27,7 +51,8 @@ let print_steps_with_costs (run : Jig_core.Run.t) =
       (if unknown > 0 then
          Printf.sprintf " (+%d step%s with unknown cost)" unknown
            (if unknown = 1 then "" else "s")
-       else "")
+       else "");
+  print_tier_breakdown run
 
 let report_run (run : Jig_core.Run.t) path =
   Printf.printf "run %s: %s\n" run.Jig_core.Run.id
@@ -49,7 +74,8 @@ let report_run (run : Jig_core.Run.t) path =
   | _ -> exit 1
 
 let print_step_live step =
-  Printf.printf "  %s%s: %s%s\n%!" step.Jig_core.Run.skill (item_suffix step)
+  Printf.printf "  %s%s%s: %s%s\n%!" step.Jig_core.Run.skill (item_suffix step)
+    (tier_suffix step)
     (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
     (cost_suffix step)
 

@@ -24,6 +24,25 @@ let claude_config =
    \  - --output-format\n\
    \  - json\n\
    \n\
+   # Steps that declare `tier: mechanical` (the starter workflows tier\n\
+   # their test, PR, and evidence steps) run on the cheaper model below;\n\
+   # judgment steps stay on the default harness above. The model name is\n\
+   # the full slug - `haiku` is not a CLI alias.\n\
+   tiers:\n\
+   \  mechanical:\n\
+   \    - claude\n\
+   \    - -p\n\
+   \    - --model\n\
+   \    - claude-haiku-4-5-20251001\n\
+   \    - --allowedTools\n\
+   \    - \"Bash(git:*),Bash(gh:*)\"\n\
+   \    - --disallowedTools\n\
+   \    - \"EnterWorktree,ExitWorktree\"\n\
+   \    - --permission-mode\n\
+   \    - acceptEdits\n\
+   \    - --output-format\n\
+   \    - json\n\
+   \n\
    # jig attach <run-id> reopens a step's recorded session interactively;\n\
    # {session_id} is replaced with the id from the step record.\n\
    attach:\n\
@@ -53,7 +72,20 @@ let codex_config =
    \  - exec\n\
    \  - --sandbox\n\
    \  - workspace-write\n\
-   \  - --json\n"
+   \  - --json\n\
+   \n\
+   # Steps that declare `tier: mechanical` (the starter workflows tier\n\
+   # their test, PR, and evidence steps) run on the fast/affordable model;\n\
+   # judgment steps stay on the default harness above.\n\
+   tiers:\n\
+   \  mechanical:\n\
+   \    - codex\n\
+   \    - exec\n\
+   \    - --model\n\
+   \    - gpt-5.6-luna\n\
+   \    - --sandbox\n\
+   \    - workspace-write\n\
+   \    - --json\n"
 
 let config_content ~preset ~skill_paths =
   let base =

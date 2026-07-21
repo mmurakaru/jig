@@ -25,6 +25,39 @@ let for_each_problems ~workflow_dir (workflow : Workflow.t) =
               | Ok () -> None)))
     workflow.Workflow.entries
 
+(* Tiers a run would fall back to the default harness for: referenced by a
+   step or declared by a resolvable skill, but absent from the config's
+   tiers map. A warning, not an error - the tier is a local cost concern
+   and the fallback keeps foreign workflows runnable - but a typo'd tier
+   silently paying frontier rates is exactly what validate exists to
+   catch. [tiers] is None when there is no config to check against. *)
+let tier_warnings ~jig_dir ~skill_paths ~tiers (workflow : Workflow.t) =
+  match tiers with
+  | None -> []
+  | Some mapped ->
+      let step_tiers = Workflow.referenced_tiers workflow in
+      let skill_tiers =
+        List.filter_map
+          (fun name ->
+            match Skill.resolve_path ~jig_dir ~skill_paths ~name with
+            | Error _ -> None
+            | Ok path -> (
+                match File.read path with
+                | Error _ -> None
+                | Ok content -> (Skill.parse content).Skill.tier))
+          (Workflow.referenced_skills workflow)
+      in
+      List.filter_map
+        (fun tier ->
+          if List.mem_assoc tier mapped then None
+          else
+            Some
+              (Printf.sprintf
+                 "tier %S is not mapped in config tiers; its steps will run \
+                  on the default harness"
+                 tier))
+        (List.sort_uniq compare (step_tiers @ skill_tiers))
+
 let workflow ~workflow_dir ~jig_dir ~skill_paths (workflow : Workflow.t) =
   let missing =
     List.filter_map

@@ -7,6 +7,9 @@ type step_record = {
   outcome : outcome;
   exit_code : int;
   cost : Metering.cost;
+  (* The tier the step asked for (workflow step, else skill default); None
+     means the default harness. *)
+  tier : string option;
   stdout : string;
   stderr : string;
   handoff : Handoff.t option;
@@ -138,6 +141,11 @@ let step_to_json step =
     | Some id -> [ ("session_id", `String id) ]
     | None -> []
   in
+  let tier_field =
+    match step.tier with
+    | Some tier -> [ ("tier", `String tier) ]
+    | None -> []
+  in
   let item_fields =
     (match step.item_index with
     | Some index -> [ ("item_index", `Int index) ]
@@ -154,7 +162,8 @@ let step_to_json step =
        ("exit_code", `Int step.exit_code);
        ("cost_usd", Metering.cost_to_json step.cost);
      ]
-    @ handoff_field @ handoff_error_field @ session_field @ item_fields
+    @ tier_field @ handoff_field @ handoff_error_field @ session_field
+    @ item_fields
     @ [
         ("stdout", `String step.stdout);
         ("stderr", `String step.stderr);
@@ -281,6 +290,7 @@ let step_of_json json =
       outcome;
       exit_code;
       cost;
+      tier = optional_string json "tier";
       stdout;
       stderr;
       handoff;

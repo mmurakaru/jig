@@ -219,16 +219,23 @@ struct
           started_at };
       engine.on_event (Step_output { stdout_path; stderr_path })
     in
-    let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code, session_id
+    let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code,
+         session_id, tier
         =
       match step.Workflow.action with
       | Workflow.Skill_step name ->
-          let* skill_body =
-            Skill.load ~jig_dir:engine.jig_dir
+          let* skill = Skill.load ~jig_dir:engine.jig_dir
               ~skill_paths:engine.config.Config.skill_paths ~name
           in
+          (* Precedence: the workflow step's tier wins over the skill's own
+             default; neither set means the default harness. *)
+          let tier =
+            match step.Workflow.tier with
+            | Some _ as step_tier -> step_tier
+            | None -> skill.Skill.tier
+          in
           let* command =
-            Model_provider_port.resolve ~config:engine.config ~skill:name
+            Model_provider_port.resolve ~config:engine.config ~skill:name ~tier
           in
           let inputs =
             List.map (fun (key, value) -> (key, interpolate value))
@@ -244,7 +251,7 @@ struct
                         ~entries:engine.entries
                         ~entry_index:progress.run.Run.position.Run.entry_index
                         ~skill:label ~item)
-                   ~inputs ~skill_body
+                   ~inputs ~skill_body:skill.Skill.body
                    ~previous_handoff:progress.last_handoff
                    ~guidance:progress.guidance)
               ()
@@ -257,6 +264,7 @@ struct
                   Metering.run_id = progress.run.Run.id;
                   skill = name;
                   command;
+                  tier;
                   cost;
                   usage;
                   recorded_at = Run.iso8601 (Unix.gettimeofday ());
@@ -271,7 +279,8 @@ struct
               exec_result.Executor.stdout,
               exec_result.Executor.stderr,
               exec_result.Executor.exit_code,
-              Metering.parse_session_id exec_result.Executor.stdout )
+              Metering.parse_session_id exec_result.Executor.stdout,
+              tier )
       | Workflow.Command_step command ->
           (* A command step is deterministic mechanical work: run the shell
              command, let its exit status be the outcome (0 = pass), record
@@ -294,6 +303,7 @@ struct
                   Metering.run_id = progress.run.Run.id;
                   skill = label;
                   command = [ "sh"; "-c"; command ];
+                  tier = None;
                   cost;
                   usage = None;
                   recorded_at = Run.iso8601 (Unix.gettimeofday ());
@@ -324,7 +334,7 @@ struct
                 }
             else None
           in
-          Ok (outcome, handoff, None, cost, stdout, stderr, exit_code, None)
+          Ok (outcome, handoff, None, cost, stdout, stderr, exit_code, None, None)
     in
     Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
     let step_record =
@@ -333,6 +343,7 @@ struct
         outcome;
         exit_code;
         cost;
+        tier;
         stdout;
         stderr;
         handoff;
@@ -767,6 +778,7 @@ struct
         outcome = Run.Pass;
         exit_code = 0;
         cost = Metering.Unknown_cost;
+        tier = None;
         stdout = "";
         stderr = "";
         handoff =
@@ -909,6 +921,7 @@ struct
             Metering.run_id = existing.Run.id;
             skill;
             command = config.Config.attach_headless;
+            tier = None;
             cost;
             usage;
             recorded_at = Run.iso8601 (Unix.gettimeofday ());
@@ -922,6 +935,7 @@ struct
         outcome;
         exit_code = exec_result.Executor.exit_code;
         cost;
+        tier = None;
         stdout = exec_result.Executor.stdout;
         stderr = exec_result.Executor.stderr;
         handoff;

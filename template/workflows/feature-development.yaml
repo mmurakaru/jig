@@ -9,5 +9,8 @@ steps:
         - skill: implement-feature
         - skill: run-tests
           until: pass
+          tier: mechanical
   - skill: capture-evidence
+    tier: mechanical
   - skill: open-pr
+    tier: mechanical

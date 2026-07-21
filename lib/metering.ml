@@ -4,6 +4,8 @@ type event = {
   run_id : string;
   skill : string;
   command : string list;
+  (* The tier that selected the command; None means the default harness. *)
+  tier : string option;
   cost : cost;
   usage : Yojson.Safe.t option;
   recorded_at : string;
@@ -57,6 +59,9 @@ let event_to_json event =
        ("harness", `List (List.map (fun part -> `String part) event.command));
        ("cost_usd", cost_to_json event.cost);
      ]
+    @ (match event.tier with
+      | Some tier -> [ ("tier", `String tier) ]
+      | None -> [])
     @ (match event.usage with
       | Some usage -> [ ("usage", usage) ]
       | None -> [])

@@ -44,6 +44,7 @@ steps:
         - skill: implement-fix
         - skill: run-tests
           until: pass            # passing this step completes the group
+          tier: mechanical       # optional: the cost tier this step runs on
   - forEach:                     # bounded fan-out over a data file
       items: specs/ports.tsv     # .tsv with a header row, or a .json array of objects
       as: port                   # binds {{ port.<column> }} in this block's with: values
@@ -89,6 +90,16 @@ strings - jig never evaluates, inlines, or resolves them;
   pauses it for a human; `on_fail: abort` ends it as aborted.
 - A step's `escalate` always pauses the run. Resume with
   `jig run --resume <run-id> [--guidance "..."]`.
+- A skill step's `tier` names the cost tier it runs on; `config.yaml` maps
+  each tier to a concrete harness command (`tiers:`), so the workflow
+  stays portable while the economics stay a local deployment concern.
+  Only the moments that need judgment - diagnosis, design, tradeoffs -
+  need the default (frontier) harness; mechanical steps like running
+  tests or opening a PR run fine on a cheaper tier. Precedence: the
+  step's `tier` wins over the skill's own frontmatter `tier`, which wins
+  over the default harness. A tier the local config does not map falls
+  back to the default harness; `jig validate` warns about it. A command
+  step runs no harness, so `tier` is rejected there.
 - Inside a retry block, any failing step fails the *iteration*, and its
   handoff threads into the next attempt - that is the self-correction loop.
   The group completes when its `until: pass` step passes (or when all steps

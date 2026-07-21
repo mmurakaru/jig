@@ -10,4 +10,6 @@ steps:
         - skill: implement-fix
         - skill: run-tests
           until: pass
+          tier: mechanical
   - skill: open-pr
+    tier: mechanical

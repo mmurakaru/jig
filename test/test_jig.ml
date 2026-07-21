@@ -1379,6 +1379,7 @@ let test_run_json_roundtrips_for_each_position () =
             outcome = Run.Pass;
             exit_code = 0;
             cost = Metering.Unknown_cost;
+            tier = None;
             stdout = "";
             stderr = "";
             handoff = None;
@@ -1974,6 +1975,7 @@ let test_last_handoff_picks_latest () =
       outcome = Run.Pass;
       exit_code = 0;
       cost = Metering.Unknown_cost;
+      tier = None;
       stdout = "";
       stderr = "";
       handoff = h;
@@ -2032,7 +2034,7 @@ let test_config_wrapper_prepends () =
   with
   | Error message -> Alcotest.fail message
   | Ok config -> (
-      match Model_provider.Default.resolve ~config ~skill:"any" with
+      match Model_provider.Default.resolve ~config ~skill:"any" ~tier:None with
       | Error message -> Alcotest.fail message
       | Ok command ->
           Alcotest.(check (list string))
@@ -2858,6 +2860,7 @@ let finished skill outcome =
       outcome;
       exit_code = 0;
       cost = Metering.Unknown_cost;
+      tier = None;
       stdout = "";
       stderr = "";
       handoff = None;
@@ -3162,6 +3165,7 @@ let finished_with ~started_at ~finished_at ~cost skill outcome =
       outcome;
       exit_code = 0;
       cost;
+      tier = None;
       stdout = "";
       stderr = "";
       handoff = None;
@@ -3229,6 +3233,7 @@ let recorded ?item_index ?item_key ?(outcome = Run.Pass) skill =
     outcome;
     exit_code = 0;
     cost = Metering.Unknown_cost;
+    tier = None;
     stdout = "";
     stderr = "";
     handoff = None;
@@ -3543,6 +3548,210 @@ let test_boxes_elapsed_lands_on_deepest_working_row () =
     (has_elapsed "alpha");
   Alcotest.(check bool) "loop head does not" false (has_elapsed "forEach")
 
+(* Tiers: the map from an abstract step tier to a concrete harness command. *)
+
+let tiered_config_yaml =
+  "harness:\n\
+  \  - claude\n\
+  \  - -p\n\
+   wrapper:\n\
+  \  - srt\n\
+   tiers:\n\
+  \  mechanical:\n\
+  \    - claude\n\
+  \    - -p\n\
+  \    - --model\n\
+  \    - cheap-model\n"
+
+let test_config_parses_tiers () =
+  match Config.of_string tiered_config_yaml with
+  | Error message -> Alcotest.fail message
+  | Ok config ->
+      Alcotest.(check (list string))
+        "mechanical tier command"
+        [ "claude"; "-p"; "--model"; "cheap-model" ]
+        (List.assoc "mechanical" config.Config.tiers)
+
+let test_config_rejects_non_list_tier () =
+  match Config.of_string "harness:\n  - claude\ntiers:\n  mechanical: fast\n" with
+  | Ok _ -> Alcotest.fail "a scalar tier command must be rejected"
+  | Error message ->
+      Alcotest.(check bool) "names the tier" true
+        (contains ~affix:"mechanical" message)
+
+let test_workflow_step_tier_parses () =
+  let yaml =
+    "name: hello\nsteps:\n  - skill: say-hi\n    tier: mechanical\n"
+  in
+  match Workflow.of_string yaml with
+  | Error message -> Alcotest.fail message
+  | Ok workflow ->
+      Alcotest.(check (list string))
+        "referenced tiers" [ "mechanical" ]
+        (Workflow.referenced_tiers workflow)
+
+let test_workflow_rejects_tier_on_command_step () =
+  let yaml =
+    "name: hello\nsteps:\n  - command: \"make lint\"\n    tier: mechanical\n"
+  in
+  match Workflow.of_string yaml with
+  | Ok _ -> Alcotest.fail "tier on a command step must be rejected"
+  | Error message ->
+      Alcotest.(check bool) "explains the restriction" true
+        (contains ~affix:"skill step" message)
+
+let test_resolve_tier_selects_mapped_command () =
+  match Config.of_string tiered_config_yaml with
+  | Error message -> Alcotest.fail message
+  | Ok config -> (
+      match
+        Model_provider.Default.resolve ~config ~skill:"any"
+          ~tier:(Some "mechanical")
+      with
+      | Error message -> Alcotest.fail message
+      | Ok command ->
+          Alcotest.(check (list string))
+            "wrapper prepended to the tier command"
+            [ "srt"; "claude"; "-p"; "--model"; "cheap-model" ]
+            command)
+
+let test_resolve_unmapped_tier_falls_back_to_harness () =
+  match Config.of_string tiered_config_yaml with
+  | Error message -> Alcotest.fail message
+  | Ok config -> (
+      match
+        Model_provider.Default.resolve ~config ~skill:"any"
+          ~tier:(Some "no-such-tier")
+      with
+      | Error message -> Alcotest.fail message
+      | Ok command ->
+          Alcotest.(check (list string))
+            "default harness, wrapper intact"
+            [ "srt"; "claude"; "-p" ]
+            command)
+
+let test_skill_frontmatter_tier_and_body () =
+  let skill =
+    Skill.parse "---\nname: run-tests\ntier: mechanical\n---\n# Run tests\n"
+  in
+  Alcotest.(check (option string))
+    "tier read from frontmatter" (Some "mechanical") skill.Skill.tier;
+  Alcotest.(check string)
+    "frontmatter stripped from the body" "# Run tests\n" skill.Skill.body
+
+let test_skill_without_frontmatter_is_untouched () =
+  let content = "# Say hi\n\nGreet the user.\n" in
+  let skill = Skill.parse content in
+  Alcotest.(check (option string)) "no tier" None skill.Skill.tier;
+  Alcotest.(check string) "body byte-for-byte" content skill.Skill.body
+
+(* Records the command each skill step resolved to. *)
+let capture_commands : string list list ref = ref []
+
+module Capturing_executor : Executor.S = struct
+  let execute ?on_spawn:_ ~command ~cwd:_ ~prompt:_ () =
+    capture_commands := !capture_commands @ [ command ];
+    Ok { Executor.exit_code = 0; stdout = handoff_block (); stderr = "" }
+end
+
+module Capturing_runner =
+  Runner.Make (Capturing_executor) (Model_provider.Default) (Metering.Noop)
+    (Store.Filesystem)
+
+(* Step tier wins over the skill's own; a skill's frontmatter tier applies
+   when the step is silent; no tier anywhere means the default harness. *)
+let test_tier_precedence_step_over_skill_over_default () =
+  let root = make_temp_root () in
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    "harness:\n\
+    \  - default-harness\n\
+     tiers:\n\
+    \  mechanical:\n\
+    \    - cheap-harness\n\
+    \  reasoning:\n\
+    \    - deep-harness\n";
+  write_file
+    (Filename.concat root ".jig/workflows/tiered.yaml")
+    "name: tiered\n\
+     steps:\n\
+    \  - skill: judge\n\
+    \  - skill: check\n\
+    \  - skill: check\n\
+    \    tier: reasoning\n";
+  add_skill root "judge" "# Judge\n";
+  add_skill root "check" "---\ntier: mechanical\n---\n# Check\n";
+  capture_commands := [];
+  match
+    Capturing_runner.execute_run ~root ~workflow_name:"tiered" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check (list (list string)))
+        "default, then skill tier, then step override"
+        [ [ "default-harness" ]; [ "cheap-harness" ]; [ "deep-harness" ] ]
+        !capture_commands;
+      Alcotest.(check (list (option string)))
+        "records carry the effective tier"
+        [ None; Some "mechanical"; Some "reasoning" ]
+        (List.map (fun step -> step.Run.tier) run.Run.steps)
+
+let test_step_record_json_round_trips_tier () =
+  let json =
+    Run.step_to_json
+      {
+        Run.skill = "check";
+        outcome = Run.Pass;
+        exit_code = 0;
+        cost = Metering.Unknown_cost;
+        tier = Some "mechanical";
+        stdout = "";
+        stderr = "";
+        handoff = None;
+        handoff_error = None;
+        session_id = None;
+        item_index = None;
+        item_key = None;
+        started_at = "";
+        finished_at = "";
+      }
+  in
+  match Run.step_of_json json with
+  | Error message -> Alcotest.fail message
+  | Ok step ->
+      Alcotest.(check (option string))
+        "tier survives" (Some "mechanical") step.Run.tier
+
+let test_validate_warns_on_unmapped_tier () =
+  let root = make_temp_root () in
+  let jig_dir = Filename.concat root ".jig" in
+  write_file
+    (Filename.concat root ".jig/workflows/tiered.yaml")
+    "name: tiered\nsteps:\n  - skill: check\n    tier: mechnical\n";
+  add_skill root "check" "---\ntier: budget\n---\n# Check\n";
+  let workflow =
+    match
+      Workflow.load ~path:(Filename.concat root ".jig/workflows/tiered.yaml")
+    with
+    | Ok workflow -> workflow
+    | Error message -> Alcotest.fail message
+  in
+  let warnings ~tiers =
+    Validate.tier_warnings ~jig_dir ~skill_paths:[] ~tiers workflow
+  in
+  Alcotest.(check int)
+    "both the typo'd step tier and the skill tier warn" 2
+    (List.length (warnings ~tiers:(Some [ ("mechanical", [ "cheap" ]) ])));
+  Alcotest.(check int)
+    "mapped tiers stay quiet" 0
+    (List.length
+       (warnings
+          ~tiers:(Some [ ("mechnical", [ "cheap" ]); ("budget", [ "cheap" ]) ])));
+  Alcotest.(check int)
+    "no config, nothing to check" 0
+    (List.length (warnings ~tiers:None))
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -3735,6 +3944,31 @@ let () =
           Alcotest.test_case "parses harness command" `Quick test_config_parses;
           Alcotest.test_case "rejects missing harness" `Quick
             test_config_rejects_missing_harness;
+        ] );
+      ( "tiers",
+        [
+          Alcotest.test_case "config parses the tiers map" `Quick
+            test_config_parses_tiers;
+          Alcotest.test_case "config rejects a scalar tier command" `Quick
+            test_config_rejects_non_list_tier;
+          Alcotest.test_case "workflow step tier parses" `Quick
+            test_workflow_step_tier_parses;
+          Alcotest.test_case "tier on a command step is rejected" `Quick
+            test_workflow_rejects_tier_on_command_step;
+          Alcotest.test_case "tier selects the mapped command" `Quick
+            test_resolve_tier_selects_mapped_command;
+          Alcotest.test_case "unmapped tier falls back to the harness" `Quick
+            test_resolve_unmapped_tier_falls_back_to_harness;
+          Alcotest.test_case "skill frontmatter carries the tier" `Quick
+            test_skill_frontmatter_tier_and_body;
+          Alcotest.test_case "skill without frontmatter is untouched" `Quick
+            test_skill_without_frontmatter_is_untouched;
+          Alcotest.test_case "step tier wins over skill over default" `Quick
+            test_tier_precedence_step_over_skill_over_default;
+          Alcotest.test_case "step record round-trips the tier" `Quick
+            test_step_record_json_round_trips_tier;
+          Alcotest.test_case "validate warns on unmapped tiers" `Quick
+            test_validate_warns_on_unmapped_tier;
         ] );
       ( "run",
         [

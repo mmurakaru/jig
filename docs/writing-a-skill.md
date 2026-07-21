@@ -6,6 +6,28 @@ named for the skill. jig resolves the name repo-first - `.jig/skills/<name>/`
 shadows an external skill by defining one with the same name. The file's
 content reaches the harness byte-for-byte.
 
+## Frontmatter
+
+A leading YAML frontmatter block (between `---` lines) is runner metadata,
+not instructions - it is stripped before the body reaches the harness. jig
+reads one key:
+
+```markdown
+---
+tier: mechanical
+---
+# Run the tests
+...
+```
+
+`tier` names the cost tier the skill runs on by default; the workflow step
+can override it, and `config.yaml` maps tier names to harness commands. A
+skill that is mechanical by nature (running tests, capturing output)
+declares that here once, instead of in every workflow that uses it. Other
+frontmatter keys (a `name:` or `description:` from harness skill
+ecosystems) are ignored. A file with no leading `---` has no frontmatter
+and passes byte-for-byte.
+
 ## The prompt
 
 For each step, jig composes one prompt for the harness:

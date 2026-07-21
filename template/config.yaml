@@ -18,6 +18,24 @@ harness:
   - --permission-mode
   - acceptEdits
 
+# Optional: named alternates to the default harness, for steps that
+# declare a tier (in the workflow step or the skill's frontmatter).
+# Judgment steps stay on the default harness; mechanical steps (running
+# tests, opening PRs) run fine on a cheaper model. A tier not mapped here
+# falls back to the default harness; `jig validate` warns about it.
+# tiers:
+#   mechanical:
+#     - claude
+#     - -p
+#     - --model
+#     - claude-haiku-4-5-20251001
+#     - --output-format
+#     - json
+#     - --disallowedTools
+#     - "EnterWorktree,ExitWorktree"
+#     - --permission-mode
+#     - acceptEdits
+
 # Optional: wrap every harness invocation in an OS-level sandbox.
 # wrapper:
 #   - srt

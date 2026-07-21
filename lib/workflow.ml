@@ -12,6 +12,10 @@ type step = {
   on_fail : on_failure option;
   until_pass : bool;
   inputs : (string * string) list;
+  (* The abstract cost tier this step runs on; config.yaml maps it to a
+     concrete harness command. None defers to the skill's own tier, then
+     to the default harness. *)
+  tier : string option;
 }
 
 (* The human-facing name of a step: the skill name, or the command itself. *)
@@ -115,7 +119,7 @@ let step_of_yaml ~inside_retry yaml =
       let base = [ "on_fail" ] @ if inside_retry then [ "until" ] else [] in
       let* () =
         check_no_unknown_keys ~context:"a step"
-          ~allowed:([ "skill"; "command"; "with" ] @ base)
+          ~allowed:([ "skill"; "command"; "with"; "tier" ] @ base)
           fields
       in
       (* Exactly one of skill / command. `with` (inputs) is skill-only; a
@@ -126,6 +130,9 @@ let step_of_yaml ~inside_retry yaml =
         | None, Some (`String command) ->
             if List.mem_assoc "with" fields then
               Error "workflow: with belongs to a skill step, not a command"
+            else if List.mem_assoc "tier" fields then
+              (* A command step runs no harness; it has nothing to tier. *)
+              Error "workflow: tier belongs to a skill step, not a command"
             else Ok (Command_step command)
         | Some _, None -> Error "workflow: step skill must be a string"
         | None, Some _ -> Error "workflow: step command must be a string"
@@ -151,7 +158,19 @@ let step_of_yaml ~inside_retry yaml =
             Error "workflow: until only supports the value \"pass\""
       in
       let* inputs = inputs_of_yaml fields in
-      Ok { action; on_fail; until_pass; inputs }
+      let* tier =
+        match List.assoc_opt "tier" fields with
+        | None -> Ok None
+        | Some (`String name) when is_valid_name name -> Ok (Some name)
+        | Some (`String name) ->
+            Error
+              (Printf.sprintf
+                 "workflow: step tier %S must contain only letters, digits, \
+                  '.', '_' or '-'"
+                 name)
+        | Some _ -> Error "workflow: step tier must be a string"
+      in
+      Ok { action; on_fail; until_pass; inputs; tier }
   | _ -> Error "workflow: each step must be a mapping"
 
 let retry_of_yaml yaml =
@@ -493,3 +512,9 @@ let load ~path =
 
 let referenced_skills workflow =
   List.filter_map step_skill (steps_of_entries workflow.entries)
+
+let referenced_tiers workflow =
+  List.sort_uniq compare
+    (List.filter_map
+       (fun step -> step.tier)
+       (steps_of_entries workflow.entries))

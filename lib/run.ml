@@ -241,6 +241,26 @@ let cost_summary run =
       | Metering.Unknown_cost -> (total, unknown + 1))
     (0.0, 0) run.steps
 
+(* Per-tier totals in first-seen order: (tier, known cost, steps, steps
+   with unknown cost). None is the default harness. The whole point of
+   tiers is the economics, so the breakdown must be inspectable per run. *)
+let cost_by_tier run =
+  List.fold_left
+    (fun totals step ->
+      let known, unknown =
+        match step.cost with
+        | Metering.Cost_usd value -> (value, 0)
+        | Metering.Unknown_cost -> (0.0, 1)
+      in
+      let rec add = function
+        | [] -> [ (step.tier, known, 1, unknown) ]
+        | (tier, total, steps, unknowns) :: rest when tier = step.tier ->
+            (tier, total +. known, steps + 1, unknowns + unknown) :: rest
+        | entry :: rest -> entry :: add rest
+      in
+      add totals)
+    [] run.steps
+
 let last_handoff run =
   List.fold_left
     (fun previous step ->

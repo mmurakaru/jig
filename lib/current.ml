@@ -9,6 +9,7 @@
 type t = {
   skill : string;
   item_key : string option;
+  tier : string option;
   stdout_path : string;
   stderr_path : string;
   started_at : string;
@@ -21,6 +22,9 @@ let to_json pointer =
     ([ ("skill", `String pointer.skill) ]
     @ (match pointer.item_key with
       | Some key -> [ ("item_key", `String key) ]
+      | None -> [])
+    @ (match pointer.tier with
+      | Some tier -> [ ("tier", `String tier) ]
       | None -> [])
     @ [
         ("stdout_path", `String pointer.stdout_path);
@@ -45,6 +49,7 @@ let of_json json =
         {
           skill;
           item_key = string_member "item_key";
+          tier = string_member "tier";
           stdout_path;
           stderr_path;
           started_at;

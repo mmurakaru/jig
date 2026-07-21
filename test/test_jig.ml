@@ -2852,7 +2852,7 @@ let progress_plan () = Progress.init (plan_entries ())
 let pos ?for_each entry_index =
   { Run.entry_index; iterations_used = 0; for_each }
 
-let started ?item_key skill position = Runner.Step_started { skill; position; item_key }
+let started ?item_key ?tier skill position = Runner.Step_started { skill; position; item_key; tier }
 let finished skill outcome =
   Runner.Step_finished
     {
@@ -3359,6 +3359,7 @@ let test_current_round_trip () =
     {
       Current.skill = "implement-fix";
       item_key = Some "alpha";
+      tier = Some "mechanical";
       stdout_path = "/tmp/out";
       stderr_path = "/tmp/err";
       started_at = "2026-01-01T00:00:00Z";
@@ -3370,6 +3371,8 @@ let test_current_round_trip () =
       Alcotest.(check string) "skill" pointer.Current.skill read_back.Current.skill;
       Alcotest.(check (option string))
         "item key" pointer.Current.item_key read_back.Current.item_key;
+      Alcotest.(check (option string))
+        "tier" pointer.Current.tier read_back.Current.tier;
       Alcotest.(check string)
         "stdout path" pointer.Current.stdout_path read_back.Current.stdout_path;
       Alcotest.(check string)
@@ -3723,6 +3726,65 @@ let test_step_record_json_round_trips_tier () =
       Alcotest.(check (option string))
         "tier survives" (Some "mechanical") step.Run.tier
 
+let tiered_step ~skill ~tier ~cost =
+  {
+    Run.skill;
+    outcome = Run.Pass;
+    exit_code = 0;
+    cost;
+    tier;
+    stdout = "";
+    stderr = "";
+    handoff = None;
+    handoff_error = None;
+    session_id = None;
+    item_index = None;
+    item_key = None;
+    started_at = "2026-01-01T00:00:00Z";
+    finished_at = "2026-01-01T00:01:30Z";
+  }
+
+let test_cost_by_tier_groups_in_first_seen_order () =
+  let run =
+    {
+      Run.id = "r";
+      workflow = "w";
+      task = "t";
+      status = Run.Completed;
+      error = None;
+      position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+      workspace = None;
+      steps =
+        [
+          tiered_step ~skill:"diagnose" ~tier:None
+            ~cost:(Metering.Cost_usd 1.20);
+          tiered_step ~skill:"run-tests" ~tier:(Some "mechanical")
+            ~cost:(Metering.Cost_usd 0.03);
+          tiered_step ~skill:"fix" ~tier:None ~cost:Metering.Unknown_cost;
+          tiered_step ~skill:"open-pr" ~tier:(Some "mechanical")
+            ~cost:(Metering.Cost_usd 0.02);
+        ];
+      started_at = "";
+      finished_at = None;
+    }
+  in
+  match Run.cost_by_tier run with
+  | [ (None, default_total, 2, 1); (Some "mechanical", cheap_total, 2, 0) ] ->
+      Alcotest.(check (float 0.0001)) "default tier total" 1.20 default_total;
+      Alcotest.(check (float 0.0001)) "mechanical total" 0.05 cheap_total
+  | other ->
+      Alcotest.fail
+        (Printf.sprintf "unexpected grouping of %d tiers" (List.length other))
+
+let test_step_detail_includes_tier () =
+  let detail =
+    Progress.detail_of_record
+      (tiered_step ~skill:"run-tests" ~tier:(Some "mechanical")
+         ~cost:(Metering.Cost_usd 0.31))
+  in
+  Alcotest.(check (option string))
+    "duration, cost, tier" (Some "1m30s  $0.31  mechanical") detail
+
 let test_validate_warns_on_unmapped_tier () =
   let root = make_temp_root () in
   let jig_dir = Filename.concat root ".jig" in
@@ -3969,6 +4031,10 @@ let () =
             test_step_record_json_round_trips_tier;
           Alcotest.test_case "validate warns on unmapped tiers" `Quick
             test_validate_warns_on_unmapped_tier;
+          Alcotest.test_case "cost groups by tier in first-seen order" `Quick
+            test_cost_by_tier_groups_in_first_seen_order;
+          Alcotest.test_case "step detail carries the tier" `Quick
+            test_step_detail_includes_tier;
         ] );
       ( "run",
         [

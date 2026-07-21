@@ -85,7 +85,8 @@ let format_duration seconds =
     Printf.sprintf "%dm%02ds" (whole / 60) (whole mod 60)
 
 (* Duration always (when both timestamps parse); cost only when the step
-   spent money - "$0.00" on every command step would be noise. *)
+   spent money - "$0.00" on every command step would be noise; the tier
+   when the step declared one - per-step economics are the point of tiers. *)
 let detail_of_record (record : Run.step_record) =
   let duration =
     match
@@ -102,12 +103,12 @@ let detail_of_record (record : Run.step_record) =
         Some (Printf.sprintf "$%.2f" value)
     | _ -> None
   in
-  match (duration, cost) with
-  | None, None -> None
-  | parts, cost_part ->
+  match (duration, cost, record.Run.tier) with
+  | None, None, None -> None
+  | duration_part, cost_part, tier_part ->
       Some
         (String.concat "  "
-           (List.filter_map Fun.id [ parts; cost_part ]))
+           (List.filter_map Fun.id [ duration_part; cost_part; tier_part ]))
 
 let apply t (event : Runner.run_event) =
   match event with
@@ -283,6 +284,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
              skill = record.Run.skill;
              position = { Run.entry_index; iterations_used = 0; for_each };
              item_key = record.Run.item_key;
+             tier = record.Run.tier;
            });
       apply t (Runner.Step_finished record))
     assigned;

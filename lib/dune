@@ -9,6 +9,7 @@
  (targets template_data.ml)
  (deps
   ../template/config.yaml
+  ../template/FIELDGUIDE.md
   ../template/workflows/bugfix.yaml
   ../template/workflows/feature-development.yaml
   ../template/skills/reproduce-issue/SKILL.md
@@ -26,6 +27,9 @@
     (echo "let files = [\n")
     (echo "(\"config.yaml\", {tmpl|")
     (cat ../template/config.yaml)
+    (echo "|tmpl});\n")
+    (echo "(\"FIELDGUIDE.md\", {tmpl|")
+    (cat ../template/FIELDGUIDE.md)
     (echo "|tmpl});\n")
     (echo "(\"workflows/bugfix.yaml\", {tmpl|")
     (cat ../template/workflows/bugfix.yaml)

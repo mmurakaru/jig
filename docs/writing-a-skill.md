@@ -36,6 +36,9 @@ For each step, jig composes one prompt for the harness:
 Context:                   (only when the workflow sets `context:`)
 <the workflow's constant framing>
 
+Field guide (repo knowledge accumulated by earlier runs):
+<.jig/FIELDGUIDE.md>       (only when the file exists and has content)
+
 Task: <the --task description>
 
 Step inputs (bound by the workflow; treat each value as a literal):
@@ -61,6 +64,20 @@ success.
 
 The skill's part of the contract is meaning, not mechanics: say what the
 statuses mean *for this step* - its completion criterion.
+
+## The field guide
+
+`.jig/FIELDGUIDE.md` is repo knowledge that agents accumulate across runs:
+build quirks, hidden dependencies, commands that must run first. When the
+file exists, jig reads it from the run's workspace before every skill step
+and renders it into the prompt, and the protocol invites the agent to
+append durable, non-obvious learnings - one short factual line each. An
+append mid-run reaches the very next step. The file's existence is the
+opt-in: delete it and jig says nothing about field guides. It is a plain
+repo file - versioned, reviewable in PRs, and prunable like any other
+document; in an isolated run the worktree's copy travels with the run's
+branch. Curate it: entries that restate the code or docs are prompt noise
+in every future step.
 
 ## Style
 

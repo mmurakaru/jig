@@ -85,13 +85,35 @@ let elicit_handoff_prompt =
   "The interactive session is over. Emit your handoff block for the current \
    state of this step."
 
-let build_prompt ~context ~task ~position ~inputs ~skill_body
+(* Shown only when the repo opted in (the guide file exists); it invites
+   the write side of the loop - injection is the read side. *)
+let field_guide_protocol =
+  "Field guide: if this step taught you something durable and non-obvious \
+   about this repository (a build quirk, a hidden dependency, a command \
+   that must run first), append it to " ^ Field_guide.relative_path
+  ^ " as one short factual line. Do not restate what the code or docs \
+     already say."
+
+let build_prompt ~context ~field_guide ~task ~position ~inputs ~skill_body
     ~previous_handoff ~guidance =
   let context_section =
     match context with
     | Some text when String.trim text <> "" ->
         Printf.sprintf "Context:\n%s\n\n" text
     | _ -> ""
+  in
+  let field_guide_section =
+    match field_guide with
+    | Some text when String.trim text <> "" ->
+        Printf.sprintf
+          "Field guide (repo knowledge accumulated by earlier runs):\n%s\n\n"
+          text
+    | _ -> ""
+  in
+  let protocol =
+    match field_guide with
+    | Some _ -> handoff_protocol ^ "\n\n" ^ field_guide_protocol
+    | None -> handoff_protocol
   in
   let inputs_section =
     match inputs with
@@ -117,9 +139,9 @@ let build_prompt ~context ~task ~position ~inputs ~skill_body
         Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
-  Printf.sprintf "%sTask: %s\n\n%s\n\n%s%s%s%s\n\n%s" context_section task
-    position inputs_section guidance_section handoff_section skill_body
-    handoff_protocol
+  Printf.sprintf "%s%sTask: %s\n\n%s\n\n%s%s%s%s\n\n%s" context_section
+    field_guide_section task position inputs_section guidance_section
+    handoff_section skill_body protocol
 
 module Make
     (Executor_port : Executor.S)
@@ -258,7 +280,9 @@ struct
             Executor_port.execute ~on_spawn:announce_output ~command
               ~cwd:engine.workspace
               ~prompt:
-                (build_prompt ~context:engine.context ~task:engine.task
+                (build_prompt ~context:engine.context
+                   ~field_guide:(Field_guide.load ~workspace:engine.workspace)
+                   ~task:engine.task
                    ~position:
                      (position_line ~workflow_name:progress.run.Run.workflow
                         ~entries:engine.entries

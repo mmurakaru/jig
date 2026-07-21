@@ -3814,6 +3814,89 @@ let test_validate_warns_on_unmapped_tier () =
     "no config, nothing to check" 0
     (List.length (warnings ~tiers:None))
 
+(* Field guide: .jig/FIELDGUIDE.md read from the workspace per step,
+   injected into the prompt; the file's existence is the opt-in. *)
+
+let step_stdout (run : Run.t) index =
+  (List.nth run.Run.steps index).Run.stdout
+
+let test_field_guide_injected_when_present () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  write_file
+    (Filename.concat root ".jig/FIELDGUIDE.md")
+    "- the test suite needs REDIS_URL set\n";
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      let prompt = step_stdout run 0 in
+      Alcotest.(check bool) "guide content is in the prompt" true
+        (contains ~affix:"the test suite needs REDIS_URL set" prompt);
+      Alcotest.(check bool) "the append instruction is in the prompt" true
+        (contains ~affix:"append it to .jig/FIELDGUIDE.md" prompt)
+
+let test_field_guide_absent_means_silent () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      let prompt = step_stdout run 0 in
+      Alcotest.(check bool) "no guide section" false
+        (contains ~affix:"Field guide" prompt);
+      Alcotest.(check bool) "no append instruction" false
+        (contains ~affix:"FIELDGUIDE.md" prompt)
+
+(* An empty guide file still opts in: the agent is invited to write the
+   first entry, but no empty section pads the prompt. *)
+let test_field_guide_empty_file_enables_instruction_only () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  write_file (Filename.concat root ".jig/FIELDGUIDE.md") "";
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      let prompt = step_stdout run 0 in
+      Alcotest.(check bool) "no guide section" false
+        (contains ~affix:"Field guide (repo knowledge" prompt);
+      Alcotest.(check bool) "append instruction present" true
+        (contains ~affix:"append it to .jig/FIELDGUIDE.md" prompt)
+
+(* Stigmergy within one run: step one writes the guide, step two reads it. *)
+let test_field_guide_append_reaches_next_step () =
+  let root = make_temp_root () in
+  setup_project root
+    ~harness:
+      [
+        "sh";
+        "-c";
+        "echo \"$0\"; echo '- learned by step one' >> .jig/FIELDGUIDE.md; \
+         printf '```handoff\\nstatus: pass\\n```\\n'";
+      ];
+  write_file (Filename.concat root ".jig/FIELDGUIDE.md") "";
+  write_file
+    (Filename.concat root ".jig/workflows/hello.yaml")
+    "name: hello\nsteps:\n  - skill: say-hi\n  - skill: say-hi\n";
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check bool) "step one did not see the entry" false
+        (contains ~affix:"learned by step one" (step_stdout run 0));
+      Alcotest.(check bool) "step two did" true
+        (contains ~affix:"learned by step one" (step_stdout run 1))
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -4035,6 +4118,17 @@ let () =
             test_cost_by_tier_groups_in_first_seen_order;
           Alcotest.test_case "step detail carries the tier" `Quick
             test_step_detail_includes_tier;
+        ] );
+      ( "field guide",
+        [
+          Alcotest.test_case "guide content and instruction inject" `Quick
+            test_field_guide_injected_when_present;
+          Alcotest.test_case "no file, no injection" `Quick
+            test_field_guide_absent_means_silent;
+          Alcotest.test_case "empty file enables the instruction only" `Quick
+            test_field_guide_empty_file_enables_instruction_only;
+          Alcotest.test_case "an append reaches the next step" `Quick
+            test_field_guide_append_reaches_next_step;
         ] );
       ( "run",
         [

@@ -41,11 +41,49 @@ marked `escalate` pauses the run for you:
 jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lexer"
 ```
 
+## Tiers
+
+Only the steps that need judgment - diagnosis, design, tradeoffs - need a
+frontier model; mechanical steps (running tests, opening a PR) run fine on
+a cheaper one. A skill step declares an abstract cost tier, and
+`config.yaml` maps each tier to a concrete harness command, so the
+workflow stays portable while the economics stay local:
+
+```yaml
+# workflow                          # .jig/config.yaml
+- skill: implement-fix              tiers:
+- skill: run-tests                    mechanical:
+  until: pass                           - claude
+  tier: mechanical                      - -p
+                                        - --model
+                                        - claude-haiku-4-5-20251001
+                                        # ...
+```
+
+A skill can also declare its own default tier in SKILL.md frontmatter; the
+workflow step overrides it. A tier the local config does not map falls
+back to the default harness (`jig validate` warns). The run report breaks
+cost down per tier:
+
+```
+total cost: $3.6700
+by tier: default $3.0400 (4 steps); mechanical $0.6300 (3 steps)
+```
+
+## The field guide
+
+`.jig/FIELDGUIDE.md` is repo knowledge agents accumulate across runs -
+build quirks, hidden dependencies, commands that must run first. When the
+file exists, jig injects it into every step's prompt and invites the agent
+to append durable learnings; an append mid-run reaches the very next step.
+It is a plain repo file: versioned, reviewable in PRs, prunable.
+
 ## The live view
 
 On a TTY, `jig run` draws the run in place: the pipeline with a spinner on
-the active step and per-step durations and costs, and beneath it a live
-tail of what the running step's agent is doing.
+the active step and per-step durations, costs, and tiers, and beneath it a
+live tail of what the running step's agent is doing - titled with the
+step, its forEach item, and the tier it runs on.
 When the run ends, the completed pipeline stays in the scrollback above the
 run report; each step's full output lives in the run record.
 
@@ -71,7 +109,8 @@ jig validate <workflow>                     # lint before running
 
 ```
 .jig/
-  config.yaml          # harness command (+ optional sandbox wrapper)
+  config.yaml          # harness command, cost tiers (+ optional sandbox wrapper)
+  FIELDGUIDE.md        # repo knowledge agents accumulate across runs
   skills/<name>/SKILL.md
   workflows/<name>.yaml
   runs/                # one JSON record per run + metering.jsonl

@@ -122,6 +122,39 @@ strings - jig never evaluates, inlines, or resolves them;
   - step-to-step and retry - is unchanged. Per-item context comes from
   `with:`, not from an upstream handoff.
 
+## Pattern: the review stack
+
+Multiple uncorrelated review lenses catch what one reviewer misses - each
+lens reads the same change with a different question. The existing schema
+expresses this with review skills inside the fix loop; no runner support
+is involved:
+
+```yaml
+name: review-stack
+steps:
+  - retry:
+      max_iterations: 4
+      on_exhausted: escalate
+      steps:
+        - skill: implement
+        - skill: review-correctness   # lens 1: is the logic right?
+        - skill: review-security      # lens 2: can it be abused?
+          until: pass
+  - skill: open-pr
+    tier: mechanical
+```
+
+Each review skill states one lens and fails with findings; a failing
+review fails the iteration, and its findings thread through the handoff
+into the next `implement` attempt. The run converges lens by lens:
+correctness findings are fixed before security ever speaks, and the group
+completes only when every lens passes. Keep the lenses uncorrelated - one
+question per review skill, like one capability per skill anywhere else -
+and tier them independently if a lens does not need the frontier model.
+The lenses run in order, not in parallel: jig trades fan-out for a
+portable definition, so a stack of three reviews costs three sequential
+steps per iteration.
+
 ## Where intelligence lives
 
 If you find yourself wanting conditionals, variables, or branching: put that

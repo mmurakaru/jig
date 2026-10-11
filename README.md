@@ -1,7 +1,7 @@
 # jig
 
-A minimal, agnostic runner for AI-driven development workflows.
-Declarative workflow format + portable runner with four swappable ports - the primitive, not the product.
+A lean workflow engine for AI-driven development.
+Declarative workflow format + portable engine with four swappable ports - the primitive, not the product.
 
 jig does not implement an agent. Each step of a workflow is a headless
 invocation of the agent harness you already use (`claude -p`, `codex exec`,

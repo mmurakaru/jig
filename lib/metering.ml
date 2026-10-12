@@ -8,10 +8,9 @@ type event = {
   tier : string option;
   cost : cost;
   usage : Yojson.Safe.t option;
-  (* The attempt the event meters; None for an attach hand-back. *)
+  (* None for an attach hand-back, which is not a step attempt. *)
   step_key : string option;
   attempt_id : string option;
-  (* The attempt's process ended with no recorded outcome. *)
   interrupted : bool;
   recorded_at : string;
 }
@@ -80,8 +79,7 @@ let event_to_json event =
     @ [ ("recorded_at", `String event.recorded_at) ])
 
 module type S = sig
-  (* Idempotent per attempt: an event whose attempt_id is already recorded
-     is skipped, so a resume can re-record without double counting. *)
+  (* Skips a recorded attempt_id, so a resume can re-record safely. *)
   val record : runs_dir:string -> event:event -> (unit, string) result
 end
 
@@ -111,8 +109,7 @@ module Jsonl : S = struct
            in
            scan ())
 
-  (* A line torn by a crash gets its own line ending, so the next event
-     stays parseable. *)
+  (* Ends a line torn by a crash, so the next event stays parseable. *)
   let ends_mid_line path =
     In_channel.with_open_bin path (fun channel ->
         let length = In_channel.length channel in

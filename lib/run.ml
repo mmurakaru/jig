@@ -2,17 +2,15 @@ open Result_syntax
 
 type outcome = Pass | Fail | Escalate | Invalid_handoff
 
-(* One execution of a step, saved before its process starts so a crash
-   leaves a record of it. *)
+(* Saved before the step's process starts, so a crash leaves a record. *)
 type attempt = {
-  (* Names the logical step; the same across resumes and re-runs. *)
+  (* The same across resumes and re-runs of the step. *)
   step_key : string;
   attempt_id : string;
   skill : string;
   tier : string option;
   command : string list;
   started_at : string;
-  (* Set once the step's process is running. *)
   child_pid : int option;
 }
 
@@ -33,8 +31,7 @@ type step_record = {
   session_id : string option;
   item_index : int option;
   item_key : string option;
-  (* None for a step no process ran: a human skip, an attach hand-back, or
-     a record from an earlier jig version. *)
+  (* None for a human skip, an attach hand-back, or an older record. *)
   attempt : attempt option;
   started_at : string;
   finished_at : string;
@@ -69,11 +66,9 @@ type t = {
   position : position;
   workspace : string option;
   steps : step_record list;
-  (* Attempts saved before their process started and not finished yet;
-     non-empty on disk only while steps execute or after a crash. *)
+  (* Keyed by step key, so the record can hold several attempts at once. *)
   attempts_in_flight : attempt Step_key_map.t;
-  (* Attempts that a resume found in flight: their process ended with no
-     recorded outcome. *)
+  (* Found in flight by a resume: their process ended with no outcome. *)
   interrupted_attempts : attempt list;
   started_at : string;
   finished_at : string option;
@@ -122,8 +117,7 @@ let make_id ~workflow ~time ~pid =
     (utc.Unix.tm_year + 1900) (utc.Unix.tm_mon + 1) utc.Unix.tm_mday workflow
     utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec pid !sequence
 
-(* Stable across resumes: the run, the entry, the forEach item and body
-   entry, the retry iteration, and the step inside the retry group. *)
+(* Every coordinate of the step's place, so the key survives a resume. *)
 let step_key_of_position ~run_id ~(position : position) ~step_index =
   let for_each_part =
     match position.for_each with
@@ -150,8 +144,7 @@ let next_attempt_id run ~step_key =
   in
   Printf.sprintf "%s#%d" step_key (earlier + 1)
 
-(* Moves the attempts found in flight to the interrupted list: no process
-   of this jig runs them any more. *)
+(* Called under the run lock, so no live jig drives these attempts. *)
 let mark_attempts_interrupted run =
   {
     run with
@@ -519,10 +512,10 @@ let of_json json =
     | `Null -> Ok Step_key_map.empty
     | `Assoc pairs ->
         List.fold_left
-          (fun accumulator (step_key, attempt_json) ->
+          (fun accumulator (_, attempt_json) ->
             let* attempts = accumulator in
             let* attempt = attempt_of_json attempt_json in
-            Ok (Step_key_map.add step_key attempt attempts))
+            Ok (Step_key_map.add attempt.step_key attempt attempts))
           (Ok Step_key_map.empty) pairs
     | _ -> Error "run: attempts_in_flight must be an object"
   in

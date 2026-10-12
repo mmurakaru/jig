@@ -4229,8 +4229,7 @@ let write_harness_config root harness =
        (String.concat ""
           (List.map (fun part -> Printf.sprintf "  - %S\n" part) harness)))
 
-(* Runs [action] in a forked jig process and returns how that process ended;
-   the child never returns into the test runner. *)
+(* The child must never return into the test runner. *)
 let in_child_process action =
   match Unix.fork () with
   | 0 ->
@@ -4370,23 +4369,24 @@ let test_resume_meters_a_step_saved_before_a_crash () =
         [ "saved-run/e0/r0/s0#1"; "saved-run/e0/r0/s0#2" ]
         (metered_attempt_ids root)
 
+let sample_metering_event =
+  {
+    Metering.run_id = "run";
+    skill = "say-hi";
+    command = [ "harness" ];
+    tier = None;
+    cost = Metering.Cost_usd 0.01;
+    usage = None;
+    step_key = Some "run/e0/r0/s0";
+    attempt_id = Some "run/e0/r0/s0#1";
+    interrupted = false;
+    recorded_at = "";
+  }
+
 let test_metering_skips_an_attempt_already_recorded () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
-  let event =
-    {
-      Metering.run_id = "run";
-      skill = "say-hi";
-      command = [ "harness" ];
-      tier = None;
-      cost = Metering.Cost_usd 0.01;
-      usage = None;
-      step_key = Some "run/e0/r0/s0";
-      attempt_id = Some "run/e0/r0/s0#1";
-      interrupted = false;
-      recorded_at = "";
-    }
-  in
+  let event = sample_metering_event in
   let record event =
     match Metering.Jsonl.record ~runs_dir ~event with
     | Ok () -> ()
@@ -4403,20 +4403,7 @@ let test_metering_appends_after_a_torn_line () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
   write_file (Filename.concat runs_dir "metering.jsonl") "{\"run_id\": \"tor";
-  let event =
-    {
-      Metering.run_id = "run";
-      skill = "say-hi";
-      command = [ "harness" ];
-      tier = None;
-      cost = Metering.Unknown_cost;
-      usage = None;
-      step_key = Some "run/e0/r0/s0";
-      attempt_id = Some "run/e0/r0/s0#1";
-      interrupted = false;
-      recorded_at = "";
-    }
-  in
+  let event = sample_metering_event in
   (match Metering.Jsonl.record ~runs_dir ~event with
   | Ok () -> ()
   | Error message -> Alcotest.fail message);
@@ -4538,6 +4525,42 @@ let test_run_json_round_trips_attempts () =
         = Run.Step_key_map.bindings run.Run.attempts_in_flight);
       Alcotest.(check bool) "the rest of the record survives" true
         (without_map loaded = without_map run)
+
+(* The harness runs, then reading its output fails. *)
+module Spawn_then_fail_executor : Executor.S = struct
+  let execute ?on_spawn ?environment:_ ~command:_ ~cwd:_ ~prompt:_ () =
+    Option.iter
+      (fun notify -> notify ~child_pid:4242 ~stdout_path:"" ~stderr_path:"")
+      on_spawn;
+    Error "executor: lost the capture files"
+end
+
+module Spawn_then_fail_runner =
+  Runner.Make (Spawn_then_fail_executor) (Model_provider.Default)
+    (Metering.Jsonl) (Store.Filesystem)
+
+let test_an_error_after_spawn_keeps_the_attempt () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  (match
+     Spawn_then_fail_runner.execute_run ~run_id:"lost-output" ~root
+       ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
+   with
+  | Ok _ -> Alcotest.fail "expected the executor error"
+  | Error _ -> ());
+  match
+    Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"lost-output"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check (list string)) "the attempt that ran is recorded"
+        [ "lost-output/e0/r0/s0#1" ]
+        (List.map
+           (fun attempt -> attempt.Run.attempt_id)
+           run.Run.interrupted_attempts);
+      Alcotest.(check (list string)) "and metered once"
+        [ "lost-output/e0/r0/s0#1" ]
+        (metered_attempt_ids root)
 
 (* Lets one event through, then refuses like a budget gate at its cap. *)
 let budget_events_left = ref 0
@@ -5057,6 +5080,8 @@ let () =
             `Quick test_step_keys_follow_items_iterations_and_retry_steps;
           Alcotest.test_case "run json round-trips attempts" `Quick
             test_run_json_round_trips_attempts;
+          Alcotest.test_case "an error after spawn keeps the attempt" `Quick
+            test_an_error_after_spawn_keeps_the_attempt;
           Alcotest.test_case "an infrastructure error keeps saved steps"
             `Quick test_infrastructure_error_keeps_the_saved_steps;
         ] );

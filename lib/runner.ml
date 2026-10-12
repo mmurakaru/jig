@@ -230,38 +230,32 @@ struct
     }
 
   (* Keyed by attempt id, so recording it again on a resume is a no-op. *)
-  let metering_event ~run_id (step_record : Run.step_record)
+  let attempt_metering_event ~run_id ~cost ~usage ~interrupted
       (attempt : Run.attempt) =
     {
       Metering.run_id;
       skill = attempt.Run.skill;
       command = attempt.Run.command;
       tier = attempt.Run.tier;
-      cost = step_record.Run.cost;
-      usage = snd (Metering.parse_cost step_record.Run.stdout);
+      cost;
+      usage;
       step_key = Some attempt.Run.step_key;
       attempt_id = Some attempt.Run.attempt_id;
-      interrupted = false;
+      interrupted;
       recorded_at = Run.iso8601 (Unix.gettimeofday ());
     }
+
+  let finished_metering_event ~run_id (step_record : Run.step_record) attempt =
+    attempt_metering_event ~run_id ~cost:step_record.Run.cost
+      ~usage:(snd (Metering.parse_cost step_record.Run.stdout))
+      ~interrupted:false attempt
 
   (* The spend of an interrupted attempt is unknown, never zero. *)
-  let interrupted_metering_event ~run_id (attempt : Run.attempt) =
-    {
-      Metering.run_id;
-      skill = attempt.Run.skill;
-      command = attempt.Run.command;
-      tier = attempt.Run.tier;
-      cost = Metering.Unknown_cost;
-      usage = None;
-      step_key = Some attempt.Run.step_key;
-      attempt_id = Some attempt.Run.attempt_id;
-      interrupted = true;
-      recorded_at = Run.iso8601 (Unix.gettimeofday ());
-    }
+  let interrupted_metering_event ~run_id attempt =
+    attempt_metering_event ~run_id ~cost:Metering.Unknown_cost ~usage:None
+      ~interrupted:true attempt
 
-  (* Metering follows the step save, so a crash between the two leaves an
-     attempt without its event; this records each missing one. *)
+  (* A crash between the step save and its metering loses the event. *)
   let record_missing_metering engine (run : Run.t) =
     let record event =
       Metering_port.record ~runs_dir:(runs_dir engine) ~event
@@ -272,7 +266,9 @@ struct
           let* () = previous in
           match step_record.Run.attempt with
           | Some attempt ->
-              record (metering_event ~run_id:run.Run.id step_record attempt)
+              record
+                (finished_metering_event ~run_id:run.Run.id step_record
+                   attempt)
           | None -> Ok ())
         (Ok ()) run.Run.steps
     in
@@ -307,8 +303,7 @@ struct
     }
 
   (* Guidance rides on exactly one step - the first one executed after a
-     resume - then is consumed. [step_index] is the step's place inside its
-     retry group (0 outside one); it is part of the step key. *)
+     resume - then is consumed. *)
   let execute_step engine progress ~item ~step_index (step : Workflow.step) =
     let label = Workflow.step_label step in
     let item_key = Option.map (fun context -> Items.key context.bindings) item in
@@ -412,7 +407,6 @@ struct
         child_pid = None;
       }
     in
-    (* The intent save: a crash from here on leaves the attempt on disk. *)
     let* progress, _ =
       persist engine
         (with_attempt_in_flight progress attempt)
@@ -438,9 +432,30 @@ struct
     let* exec_result =
       match process_result with
       | Ok exec_result -> Ok exec_result
-      | Error message ->
+      | Error message when Option.is_none !spawned_attempt.Run.child_pid ->
           (* The process never started, so the attempt leaves no trace. *)
           ignore (persist engine progress ~status:Run.Running ~finished:false);
+          Error message
+      | Error message ->
+          (* The harness ran, so its unknown spend stays on record. *)
+          let progress =
+            {
+              progress with
+              run =
+                {
+                  progress.run with
+                  Run.interrupted_attempts =
+                    progress.run.Run.interrupted_attempts @ [ !spawned_attempt ];
+                };
+            }
+          in
+          let* _ = persist engine progress ~status:Run.Running ~finished:false in
+          let* () =
+            Metering_port.record ~runs_dir:(runs_dir engine)
+              ~event:
+                (interrupted_metering_event ~run_id:progress.run.Run.id
+                   !spawned_attempt)
+          in
           Error message
     in
     let stdout = exec_result.Executor.stdout in
@@ -521,7 +536,7 @@ struct
     let* () =
       Metering_port.record ~runs_dir:(runs_dir engine)
         ~event:
-          (metering_event ~run_id:progress.run.Run.id step_record
+          (finished_metering_event ~run_id:progress.run.Run.id step_record
              !spawned_attempt)
     in
     engine.on_step step_record;
@@ -1011,8 +1026,6 @@ struct
       }
     in
     let last_handoff = Run.last_handoff existing in
-    (* The lock proves no other jig drives the run, so an attempt still in
-       flight lost its driver; its step runs again at the cursor. *)
     let run =
       Run.mark_attempts_interrupted
         { existing with Run.status = Run.Running; finished_at = None }

@@ -168,6 +168,8 @@ struct
     run : Run.t;
     last_handoff : Handoff.t option;
     guidance : string option;
+    (* Set by a resume and consumed, like guidance, by the next step. *)
+    resumed : bool;
   }
 
   (* How an entry (or the whole run) ended: either the run continues to the
@@ -391,6 +393,7 @@ struct
         session_id;
         item_index = Option.map (fun context -> context.item_index) item;
         item_key;
+        resumed = progress.resumed;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
@@ -408,6 +411,7 @@ struct
           | None, Run.Invalid_handoff -> Some (degraded_handoff stdout)
           | None, _ -> progress.last_handoff);
         guidance = None;
+        resumed = false;
       }
     in
     let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
@@ -715,7 +719,7 @@ struct
         finished_at = None;
       }
     in
-    drive engine { run; last_handoff = None; guidance = None }
+    drive engine { run; last_handoff = None; guidance = None; resumed = false }
 
   let retry_gate_skill (retry : Workflow.retry) =
     let gate =
@@ -827,6 +831,7 @@ struct
         session_id = None;
         item_index;
         item_key;
+        resumed = true;
         started_at = now;
         finished_at = now;
       }
@@ -888,8 +893,14 @@ struct
         human_skip ~entries:workflow.Workflow.entries ~guidance run
       in
       on_step record;
-      drive engine { run; last_handoff = record.Run.handoff; guidance = None }
-    else drive engine { run; last_handoff; guidance }
+      drive engine
+        {
+          run;
+          last_handoff = record.Run.handoff;
+          guidance = None;
+          resumed = false;
+        }
+    else drive engine { run; last_handoff; guidance; resumed = true }
 
   (* After an interactive attach, the same session is resumed headlessly and
      asked for its handoff; that result completes the paused entry as if the
@@ -983,6 +994,7 @@ struct
         session_id = Metering.parse_session_id exec_result.Executor.stdout;
         item_index;
         item_key;
+        resumed = true;
         started_at = now;
         finished_at = now;
       }
@@ -1006,9 +1018,12 @@ struct
                 existing.Run.position;
           }
         in
-        drive engine { run; last_handoff = handoff; guidance = None }
+        drive engine
+          { run; last_handoff = handoff; guidance = None; resumed = false }
     | Run.Escalate ->
-        finish engine { run; last_handoff = handoff; guidance = None } Run.Paused
+        finish engine
+          { run; last_handoff = handoff; guidance = None; resumed = false }
+          Run.Paused
     | Run.Fail ->
         (* Inside a forEach the failing unit is the current body entry. *)
         let failing_entry =
@@ -1031,7 +1046,9 @@ struct
              still needs the human, so the run stays theirs. *)
           | _ -> Run.Paused
         in
-        finish engine { run; last_handoff = handoff; guidance = None } status
+        finish engine
+          { run; last_handoff = handoff; guidance = None; resumed = false }
+          status
     | Run.Invalid_handoff -> Error "attach: unreachable - rejected above"
 end
 

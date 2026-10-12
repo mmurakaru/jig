@@ -1387,6 +1387,7 @@ let test_run_json_roundtrips_for_each_position () =
             session_id = None;
             item_index = Some 1;
             item_key = Some "alpha";
+            resumed = false;
             started_at = "";
             finished_at = "";
           };
@@ -1876,6 +1877,20 @@ let test_resume_continues_from_paused_step () =
             (Run.string_of_status run.Run.status);
           Alcotest.(check int) "four steps total" 4
             (List.length run.Run.steps);
+          let resumed_flags run =
+            List.map (fun step -> step.Run.resumed) run.Run.steps
+          in
+          Alcotest.(check (list bool))
+            "only the first step after the resume is marked"
+            [ false; false; true; false ] (resumed_flags run);
+          (match
+             Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root)
+               ~id:run.Run.id
+           with
+          | Ok loaded ->
+              Alcotest.(check (list bool)) "resumed survives the store"
+                [ false; false; true; false ] (resumed_flags loaded)
+          | Error message -> Alcotest.fail message);
           match Scripted_executor.prompts () with
           | first_resumed :: second_resumed :: _ ->
               Alcotest.(check bool) "guidance in first resumed prompt" true
@@ -1983,6 +1998,7 @@ let test_last_handoff_picks_latest () =
       session_id = None;
       item_index = None;
       item_key = None;
+      resumed = false;
       started_at = "";
       finished_at = "";
     }
@@ -2868,6 +2884,7 @@ let finished skill outcome =
       session_id = None;
       item_index = None;
       item_key = None;
+      resumed = false;
       started_at = "";
       finished_at = "";
     }
@@ -3173,6 +3190,7 @@ let finished_with ~started_at ~finished_at ~cost skill outcome =
       session_id = None;
       item_index = None;
       item_key = None;
+      resumed = false;
       started_at;
       finished_at;
     }
@@ -3241,6 +3259,7 @@ let recorded ?item_index ?item_key ?(outcome = Run.Pass) skill =
     session_id = None;
     item_index;
     item_key;
+    resumed = false;
     started_at = "";
     finished_at = "";
   }
@@ -3716,6 +3735,7 @@ let test_step_record_json_round_trips_tier () =
         session_id = None;
         item_index = None;
         item_key = None;
+        resumed = false;
         started_at = "";
         finished_at = "";
       }
@@ -3740,6 +3760,7 @@ let tiered_step ~skill ~tier ~cost =
     session_id = None;
     item_index = None;
     item_key = None;
+    resumed = false;
     started_at = "2026-01-01T00:00:00Z";
     finished_at = "2026-01-01T00:01:30Z";
   }

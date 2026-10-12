@@ -17,6 +17,8 @@ type step_record = {
   session_id : string option;
   item_index : int option;
   item_key : string option;
+  (* True for the first step recorded after a paused run resumed. *)
+  resumed : bool;
   started_at : string;
   finished_at : string;
 }
@@ -155,6 +157,7 @@ let step_to_json step =
     | Some key -> [ ("item_key", `String key) ]
     | None -> []
   in
+  let resumed_field = if step.resumed then [ ("resumed", `Bool true) ] else [] in
   `Assoc
     ([
        ("skill", `String step.skill);
@@ -163,7 +166,7 @@ let step_to_json step =
        ("cost_usd", Metering.cost_to_json step.cost);
      ]
     @ tier_field @ handoff_field @ handoff_error_field @ session_field
-    @ item_fields
+    @ item_fields @ resumed_field
     @ [
         ("stdout", `String step.stdout);
         ("stderr", `String step.stderr);
@@ -318,6 +321,7 @@ let step_of_json json =
       session_id = optional_string json "session_id";
       item_index = optional_int json "item_index";
       item_key = optional_string json "item_key";
+      resumed = Yojson.Safe.Util.member "resumed" json = `Bool true;
       started_at;
       finished_at;
     }

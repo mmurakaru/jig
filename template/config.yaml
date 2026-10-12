@@ -36,7 +36,8 @@ harness:
 #     - --permission-mode
 #     - acceptEdits
 
-# Optional: wrap every harness invocation in an OS-level sandbox.
+# Optional: wrap every harness invocation in an OS-level sandbox. The wrapper
+# must forward SIGTERM to the harness, or take it down when the wrapper dies.
 # wrapper:
 #   - srt
 
@@ -61,7 +62,7 @@ harness:
 
 # Optional: command run whenever a run stops executing (paused, completed,
 # failed, aborted) - {run_id} and {status} are substituted. Failures are
-# ignored.
+# ignored, and a command still running after 30 seconds is stopped.
 # notify:
 #   - sh
 #   - -c

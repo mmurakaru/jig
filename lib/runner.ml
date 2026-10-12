@@ -258,6 +258,9 @@ let build_prompt ?interruption ~context ~field_guide ~task ~position ~inputs
     field_guide_section task position inputs_section guidance_section
     interruption_section handoff_section skill_body protocol
 
+(** A hung notify hook must not block the end of a run. *)
+let notify_time_limit_seconds = 30.0
+
 module Make
     (Executor_port : Executor.S)
     (Model_provider_port : Model_provider.S)
@@ -1196,7 +1199,9 @@ struct
             ("run: cannot open a forEach worker pipe: "
             ^ Unix.error_message error)
       | worker_input, worker_output -> (
-          match Unix.fork () with
+          match
+            Process_group.fork_worker_process ~pipe_from_worker:worker_input
+          with
           | exception Unix.Unix_error (error, _, _) ->
               Unix.close worker_input;
               Unix.close worker_output;
@@ -1375,6 +1380,7 @@ struct
     let reap worker =
       Unix.close worker.worker_input;
       wait_for_exit worker.worker_pid;
+      Process_group.forget_worker_process worker.worker_pid;
       workers :=
         List.filter
           (fun other -> other.worker_pid <> worker.worker_pid)
@@ -1397,11 +1403,14 @@ struct
             match
               Unix.select
                 (List.map (fun worker -> worker.worker_input) running)
-                [] [] (-1.0)
+                [] []
+                Process_group.child_poll_interval_seconds
             with
             | ready, _, _ -> ready
             | exception Unix.Unix_error (Unix.EINTR, _, _) -> []
           in
+          (* A forwarded signal may land on another thread, so poll for it. *)
+          Process_group.exit_if_stop_requested ();
           List.iter
             (fun worker ->
               if List.mem worker.worker_input ready then (
@@ -1534,7 +1543,9 @@ struct
                    ~value:(Run.string_of_status run.Run.status))
             template
         in
-        ignore (Subprocess.run ~cwd:engine.root ~argv ())
+        ignore
+          (Subprocess.run ~cwd:engine.root
+             ~time_limit_seconds:notify_time_limit_seconds ~argv ())
 
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
      finds the work in progress exactly where the agent left it. *)

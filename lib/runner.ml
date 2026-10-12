@@ -1165,7 +1165,7 @@ struct
 
   (* Runs in a forked process and never returns. *)
   let run_item_worker engine progress (for_each : Workflow.for_each) ~state
-      ~(item : Run.item_in_progress) ~worker_output
+      ~(item : Run.item_in_progress) ~item_workspace ~worker_output
       ~timeout_mark_acknowledgements =
     let link =
       {
@@ -1186,8 +1186,7 @@ struct
     in
     (try
        let result =
-         let* workspace = ensure_item_worktree engine progress item in
-         execute_item (worker_engine workspace) progress for_each ~state
+         execute_item (worker_engine item_workspace) progress for_each ~state
            ~item_index:item.Run.started_item_index
            ~body_index:item.Run.item_body_index
        in
@@ -1334,71 +1333,75 @@ struct
           guidance = (if resumed then guidance else None);
         }
       in
-      match
-        let worker_input, worker_output = Unix.pipe ~cloexec:true () in
-        match Unix.pipe ~cloexec:true () with
-        | acknowledgement_input, acknowledgement_output ->
-            ( worker_input,
-              worker_output,
-              acknowledgement_input,
-              acknowledgement_output )
-        | exception raised ->
-            Unix.close worker_input;
-            Unix.close worker_output;
-            raise raised
-      with
-      | exception Unix.Unix_error (error, _, _) ->
-          note_error
-            ("run: cannot open a forEach worker pipe: "
-            ^ Unix.error_message error)
-      | worker_input, worker_output, acknowledgement_input, acknowledgement_output
-        -> (
-          let close_all () =
-            List.iter Unix.close
-              [
-                worker_input;
-                worker_output;
-                acknowledgement_input;
-                acknowledgement_output;
-              ]
-          in
+      (* git worktree add races a sibling's half-written worktree, so the driver creates them in turn. *)
+      match ensure_item_worktree engine worker_progress item with
+      | Error message -> note_error message
+      | Ok item_workspace -> (
           match
-            Process_group.fork_worker_process ~pipe_from_worker:worker_input
+            let worker_input, worker_output = Unix.pipe ~cloexec:true () in
+            match Unix.pipe ~cloexec:true () with
+            | acknowledgement_input, acknowledgement_output ->
+                ( worker_input,
+                  worker_output,
+                  acknowledgement_input,
+                  acknowledgement_output )
+            | exception raised ->
+                Unix.close worker_input;
+                Unix.close worker_output;
+                raise raised
           with
           | exception Unix.Unix_error (error, _, _) ->
-              close_all ();
               note_error
-                ("run: cannot fork a forEach worker: "
+                ("run: cannot open a forEach worker pipe: "
                 ^ Unix.error_message error)
-          | 0 ->
-              Unix.close worker_input;
-              Unix.close acknowledgement_output;
-              (* Another worker's end of file must not wait on this one. *)
-              List.iter
-                (fun worker ->
-                  (try Unix.close worker.worker_input
-                   with Unix.Unix_error _ -> ());
-                  try Unix.close worker.acknowledgement_output
-                  with Unix.Unix_error _ -> ())
-                !workers;
-              run_item_worker engine worker_progress for_each
-                ~state:worker_state ~item ~worker_output
-                ~timeout_mark_acknowledgements:acknowledgement_input
-          | worker_pid ->
-              Unix.close worker_output;
-              Unix.close acknowledgement_input;
-              workers :=
-                !workers
-                @ [
-                    {
-                      worker_pid;
-                      worker_input;
-                      acknowledgement_output;
-                      worker_reader = Worker_channel.create_reader worker_input;
-                      worker_item_index = item_index;
-                      worker_reported_end = false;
-                    };
-                  ])
+          | worker_input, worker_output, acknowledgement_input, acknowledgement_output
+            -> (
+              let close_all () =
+                List.iter Unix.close
+                  [
+                    worker_input;
+                    worker_output;
+                    acknowledgement_input;
+                    acknowledgement_output;
+                  ]
+              in
+              match
+                Process_group.fork_worker_process ~pipe_from_worker:worker_input
+              with
+              | exception Unix.Unix_error (error, _, _) ->
+                  close_all ();
+                  note_error
+                    ("run: cannot fork a forEach worker: "
+                    ^ Unix.error_message error)
+              | 0 ->
+                  Unix.close worker_input;
+                  Unix.close acknowledgement_output;
+                  (* Another worker's end of file must not wait on this one. *)
+                  List.iter
+                    (fun worker ->
+                      (try Unix.close worker.worker_input
+                       with Unix.Unix_error _ -> ());
+                      try Unix.close worker.acknowledgement_output
+                      with Unix.Unix_error _ -> ())
+                    !workers;
+                  run_item_worker engine worker_progress for_each
+                    ~state:worker_state ~item ~item_workspace ~worker_output
+                    ~timeout_mark_acknowledgements:acknowledgement_input
+              | worker_pid ->
+                  Unix.close worker_output;
+                  Unix.close acknowledgement_input;
+                  workers :=
+                    !workers
+                    @ [
+                        {
+                          worker_pid;
+                          worker_input;
+                          acknowledgement_output;
+                          worker_reader = Worker_channel.create_reader worker_input;
+                          worker_item_index = item_index;
+                          worker_reported_end = false;
+                        };
+                      ]))
     in
     let start_next_item () =
       let item_index = !state.Run.item_index in
@@ -1423,7 +1426,7 @@ struct
           Run.item_index = item_index + 1;
           items_in_progress = !state.Run.items_in_progress @ [ item ];
         };
-      (* Saved before the worker creates the worktree, so none is orphaned. *)
+      (* Saved before the worktree is created, so none is orphaned. *)
       save ();
       start_worker item ~resumed:false
     in

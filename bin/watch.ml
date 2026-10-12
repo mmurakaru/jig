@@ -48,51 +48,54 @@ let mark_step_working ~entries model (position : Run.position) =
            })
   | Error _ -> ()
 
-(* The model for one frame: replay the record, then mark the in-flight
-   steps Working - their identity comes from the pointers while their
-   subprocesses run, and from the persisted cursors between steps. *)
+(* Replay the record, then mark in-flight steps from pointers or cursors. *)
 let build_model ~entries ~entry_count (record : Run.t) pointers =
   let model = Progress.restore ~entries record in
   let position = record.Run.position in
+  let mark_pointer current =
+    Progress.apply model
+      (Jig_core.Runner.Step_started
+         {
+           skill = current.Current.skill;
+           position =
+             position_of_item position ~item_index:current.Current.item_index;
+           item_key = current.Current.item_key;
+           tier = current.Current.tier;
+         })
+  in
   (if record.Run.status = Run.Running && position.Run.entry_index < entry_count
    then
-     match (pointers, Run.parallel_items_in_progress position) with
-     | _ :: _, _ ->
-         List.iter
-           (fun current ->
-             Progress.apply model
-               (Jig_core.Runner.Step_started
-                  {
-                    skill = current.Current.skill;
-                    position =
-                      position_of_item position
-                        ~item_index:current.Current.item_index;
-                    item_key = current.Current.item_key;
-                    tier = current.Current.tier;
-                  }))
-           pointers
+     match (Run.parallel_items_in_progress position, pointers) with
+     | [], _ :: _ -> List.iter mark_pointer pointers
      | [], [] -> mark_step_working ~entries model position
-     | [], items ->
+     | items, _ ->
+         (* An item between steps has no pointer; its cursor names the step. *)
          List.iter
            (fun (item : Run.item_in_progress) ->
+             let item_index = item.Run.started_item_index in
              if item.Run.item_status = Run.Running then
-               mark_step_working ~entries model
-                 {
-                   (position_of_item position
-                      ~item_index:(Some item.Run.started_item_index))
-                   with
-                   Run.iterations_used = item.Run.item_iterations_used;
-                   step_index = item.Run.item_step_index;
-                   for_each =
-                     Option.map
-                       (fun state ->
-                         {
-                           state with
-                           Run.item_index = item.Run.started_item_index;
-                           body_index = item.Run.item_body_index;
-                         })
-                       position.Run.for_each;
-                 })
+               match
+                 List.find_opt
+                   (fun current -> current.Current.item_index = Some item_index)
+                   pointers
+               with
+               | Some current -> mark_pointer current
+               | None ->
+                   mark_step_working ~entries model
+                     {
+                       position with
+                       Run.iterations_used = item.Run.item_iterations_used;
+                       step_index = item.Run.item_step_index;
+                       for_each =
+                         Option.map
+                           (fun state ->
+                             {
+                               state with
+                               Run.item_index;
+                               body_index = item.Run.item_body_index;
+                             })
+                           position.Run.for_each;
+                     })
            items);
   model
 

@@ -47,8 +47,7 @@ let repaint ~previous_height lines =
   flush stdout;
   List.length lines
 
-(* A step whose subprocess is running; several at once in a parallel
-   forEach, keyed by item index. *)
+(* A running step; a parallel forEach runs one per item at once. *)
 type running_step = {
   item_index : int option;
   label : string;
@@ -70,8 +69,7 @@ type t = {
 
 let working t = t.running_steps <> []
 
-(* The Log box follows the last item's step, the row Boxes puts the
-   elapsed time on, so the two always describe the same step. *)
+(* The last item's step: Boxes puts the elapsed time on that row. *)
 let focused_step t =
   List.fold_left
     (fun focus step ->

@@ -76,7 +76,7 @@ let workflow ~workflow_dir ~jig_dir ~skill_paths (workflow : Workflow.t) =
 
 let concurrency_isolation_message concurrency =
   Printf.sprintf
-    "concurrency %d needs --isolated: forEach items that run in parallel \
+    "config: concurrency %d needs --isolated: forEach items that run in parallel \
      each work in their own git worktree. Start the run with --isolated, or \
      set concurrency: 1 in .jig/config.yaml"
     concurrency

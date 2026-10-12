@@ -1,9 +1,9 @@
 (* The active steps' live-output pointers: runs/<run-id>.current names each
-   running step and its captured-output files while its subprocess runs -
-   one step, or one per forEach item running in parallel. The runner
-   rewrites it at each spawn and finish and removes it when no step runs,
-   so its presence means "a step is executing right now" - a watcher tails
-   the named paths for the Log box and drops the box when the file goes.
+   running step (one per forEach item running in parallel) and its
+   captured-output files while its subprocess runs. The runner writes it at
+   spawn and removes it when no step runs, so its presence means "a step is
+   executing right now" - a watcher tails the named paths for the Log box
+   and drops the box when the file disappears.
    Everything is best-effort: the pointer is advisory display state, and a
    failure to write or remove it must never affect the run. *)
 

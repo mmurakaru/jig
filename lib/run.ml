@@ -50,8 +50,7 @@ type step_record = {
 
 type status = Running | Paused | Completed | Failed | Aborted
 
-(* One item of a parallel forEach, from its start until it passes: its own
-   cursor and worktree, so a resume re-enters each item where it stopped. *)
+(* A parallel forEach item from its start until it passes, for a resume. *)
 type item_in_progress = {
   started_item_index : int;
   item_body_index : int;
@@ -164,8 +163,7 @@ let step_key_of_position ~run_id ~(position : position) =
 let item_step_key_prefix ~run_id ~entry_index ~item_index =
   Printf.sprintf "%s/e%d/i%d/" run_id entry_index item_index
 
-(* The run as one parallel forEach item sees it: only that item's steps and
-   attempts, so attempt numbering and outcome routing stay per item. *)
+(* Only one item's steps and attempts, so numbering and routing stay per item. *)
 let item_lane run ~step_key_prefix =
   let belongs (attempt : attempt) =
     String.starts_with ~prefix:step_key_prefix attempt.step_key

@@ -174,8 +174,7 @@ let apply t (event : Runner.run_event) =
         | Run.Escalate -> Paused
       in
       let detail = detail_of_record record in
-      (* Apply to the leaf currently working: the only one in a sequential
-         run, or the record's own item in a parallel forEach. *)
+      (* The working leaf: the only one, or the record's item when parallel. *)
       Array.iter
         (fun node ->
           match node with
@@ -355,8 +354,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
      match run.Run.position.Run.for_each with
      | Some _ -> announce run.Run.position.Run.entry_index
      | None -> ());
-  (* A parallel forEach: items below the next one to start that are no
-     longer in progress passed; stopped items keep their status. *)
+  (* Started items no longer in progress passed; stopped ones keep status. *)
   (let entry_index = run.Run.position.Run.entry_index in
    match parallel_state entry_index with
    | None -> ()

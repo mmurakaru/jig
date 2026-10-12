@@ -1,8 +1,4 @@
-(* Messages between the driving jig process and a forked forEach item
-   worker: marshalled OCaml values over a pipe. Both ends are the same
-   binary, so Marshal's framing (it records each value's size) is the whole
-   protocol. Raw reads, not an in_channel, so select(2) on the descriptor
-   never misses a message already pulled into a channel buffer. *)
+(* Marshal over a pipe (one binary at both ends); raw reads keep select honest. *)
 
 let rec write_all descriptor bytes offset =
   if offset < Bytes.length bytes then

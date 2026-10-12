@@ -75,9 +75,9 @@ let concurrency_field fields =
   match List.assoc_opt "concurrency" fields with
   | None -> Ok 1
   | Some (`Float value)
-    when Float.is_integer value && value >= 1.0 && value <= 1024.0 ->
+    when Float.is_integer value && value >= 1.0 && value <= 256.0 ->
       Ok (int_of_float value)
-  | Some _ -> Error "config: concurrency must be a whole number from 1 to 1024"
+  | Some _ -> Error "config: concurrency must be a whole number from 1 to 256"
 
 let of_yaml yaml =
   match yaml with

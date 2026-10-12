@@ -70,19 +70,16 @@ type run_event =
       item_index : int option;
     }
   | Step_finished of Run.step_record
-  (* An item of a parallel forEach ended: Completed when its body passed,
-     else the status it stopped with. *)
+  (* Completed when the item's body passed, else the status it stopped with. *)
   | Item_finished of { entry_index : int; item_index : int; status : Run.status }
 
-(* The write end of a forked item worker's pipe, and how much of the item's
-   lane it has reported, so each report carries only what is new. *)
+(* A worker's pipe and how many steps it reported, so reports send only new ones. *)
 type worker_link = {
   worker_output : Unix.file_descr;
   mutable reported_step_count : int;
 }
 
-(* What a parallel forEach item worker tells the driving process. The
-   driver alone saves the run record, meters, and renders. *)
+(* Only the driver saves, meters, and renders; a worker reports to it. *)
 type worker_message =
   | Worker_progress of {
       position : Run.position;
@@ -282,8 +279,7 @@ struct
     on_event : run_event -> unit;
     (* Loaded from the ledger at most once per drive; None until first use. *)
     metered_attempt_ids : (string, unit) Hashtbl.t option ref;
-    (* Set inside a parallel forEach item worker, which reports to the
-       driving process instead of saving, metering, or rendering. *)
+    (* Set in a parallel forEach item worker, which reports to the driver. *)
     worker_link : worker_link option;
   }
 
@@ -323,8 +319,7 @@ struct
     let* path = Store_port.save ~runs_dir:(runs_dir engine) run in
     Ok ({ progress with run }, path)
 
-  (* A step's mid-run save; a worker reports only what changed since its
-     last report, and the driver saves it into the whole run record. *)
+  (* In a worker, the save is a report the driver merges into the record. *)
   let save_step_progress engine progress =
     match engine.worker_link with
     | None ->
@@ -1010,8 +1005,7 @@ struct
     in
     loop progress body_index
 
-  (* Created in the worker, so items set up their worktrees in parallel. A
-     missing worktree is recreated only for an item that never ran a step. *)
+  (* Recreated only when the item never ran a step, so no work is lost. *)
   let ensure_item_worktree engine progress (item : Run.item_in_progress) =
     let item_number = item.Run.started_item_index + 1 in
     let never_ran =
@@ -1033,8 +1027,7 @@ struct
     | None ->
         Error (Printf.sprintf "run: forEach item %d has no worktree" item_number)
 
-  (* Runs in a forked process: the item's body against its own worktree,
-     reporting every save and event to the driver. Never returns. *)
+  (* Runs in a forked process and never returns. *)
   let run_item_worker engine progress (for_each : Workflow.for_each) ~state
       ~(item : Run.item_in_progress) ~worker_output =
     let link =
@@ -1077,7 +1070,9 @@ struct
      with exception_raised -> (
        try
          send_to_driver link
-           (Worker_item_error (Printexc.to_string exception_raised))
+           (Worker_item_error
+              ("run: forEach item worker raised "
+              ^ Printexc.to_string exception_raised))
        with _ -> ()));
     (* _exit: the driver's at_exit handlers and buffers are not the worker's. *)
     Unix._exit 0
@@ -1096,18 +1091,19 @@ struct
     | None | Some Run.Paused -> Some status
     | Some _ -> current
 
-  let body_index_of_position (position : Run.position) ~default =
-    match position.Run.for_each with
-    | Some cursor -> cursor.Run.body_index
-    | None -> default
+  (* The item's cursor as a worker's item position reports it. *)
+  let with_item_cursor (position : Run.position) (item : Run.item_in_progress) =
+    {
+      item with
+      Run.item_body_index =
+        (match position.Run.for_each with
+        | Some cursor -> cursor.Run.body_index
+        | None -> item.Run.item_body_index);
+      item_iterations_used = position.Run.iterations_used;
+      item_step_index = position.Run.step_index;
+    }
 
-  (* A forEach with concurrency above 1: up to that many items run at once,
-     each in a forked worker process with its own worktree. The driver
-     holds the run lock and does every save, so saves stay serial. When an
-     item stops (pause, fail, abort) or errors, no new item starts; the
-     items in flight run to their own end, then the entry stops. A passed
-     item's worktree is removed; one that stopped stays for a resume or a
-     human, named in the run record. *)
+  (* Forked item workers; the driver alone saves, so saves stay serial. *)
   let execute_parallel_for_each engine progress (for_each : Workflow.for_each)
       (initial_state : Run.for_each_state) =
     let entry_index = progress.run.Run.position.Run.entry_index in
@@ -1124,10 +1120,13 @@ struct
     let note_error message =
       if Option.is_none !first_error then first_error := Some message
     in
-    let save () =
+    let sync_state_into_master () =
       master :=
         set_position !master
-          { !master.run.Run.position with Run.for_each = Some !state };
+          { !master.run.Run.position with Run.for_each = Some !state }
+    in
+    let save () =
+      sync_state_into_master ();
       match persist engine !master ~status:Run.Running ~finished:false with
       | Ok (saved, _) -> master := saved
       | Error message -> note_error message
@@ -1312,15 +1311,7 @@ struct
                     other_interrupted_attempts @ interrupted_attempts;
                 };
             };
-          update_item item_index (fun item ->
-              {
-                item with
-                Run.item_body_index =
-                  body_index_of_position position
-                    ~default:item.Run.item_body_index;
-                item_iterations_used = position.Run.iterations_used;
-                item_step_index = position.Run.step_index;
-              });
+          update_item item_index (with_item_cursor position);
           save ()
       | Worker_metering event -> (
           match record_attempt_metering engine event with
@@ -1347,7 +1338,13 @@ struct
             (fun (item : Run.item_in_progress) ->
               match item.Run.item_workspace with
               | Some path -> (
-                  match Workspace.remove ~root:engine.root ~path with
+                  match
+                    let* () =
+                      Workspace.keep_item_commits
+                        ~run_workspace:engine.workspace ~path
+                    in
+                    Workspace.remove ~root:engine.root ~path
+                  with
                   | Ok () -> ()
                   | Error message -> note_error message)
               | None -> ())
@@ -1358,13 +1355,8 @@ struct
           worker.worker_reported_end <- true;
           update_item item_index (fun item ->
               {
-                item with
-                Run.item_body_index =
-                  body_index_of_position position
-                    ~default:item.Run.item_body_index;
-                item_iterations_used = position.Run.iterations_used;
-                item_step_index = position.Run.step_index;
-                item_status = status;
+                (with_item_cursor position item) with
+                Run.item_status = status;
                 item_paused_on_attempt = paused_on_attempt;
               });
           stop_status := combine_stop_status !stop_status status;
@@ -1422,9 +1414,7 @@ struct
           drain ()
     in
     drain ();
-    master :=
-      set_position !master
-        { !master.run.Run.position with Run.for_each = Some !state };
+    sync_state_into_master ();
     match (!first_error, !stop_status) with
     | Some message, _ -> Error message
     | None, Some status -> Ok (Stop (status, !master))

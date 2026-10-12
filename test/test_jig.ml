@@ -4167,6 +4167,69 @@ let test_otlp_paused_run_defers_the_root_and_keeps_ids () =
     (Yojson.Safe.to_string completed)
     (Yojson.Safe.to_string (export (otlp_fixture_run ~status:Run.Completed)))
 
+(* Prints the TRACEPARENT the harness sees, then a passing handoff. *)
+let traceparent_harness =
+  [
+    "sh";
+    "-c";
+    "printf 'traceparent=%s\\n' \"${TRACEPARENT:-none}\"; printf \
+     '```handoff\\nstatus: pass\\n```\\n'";
+  ]
+
+let test_harness_receives_the_step_traceparent () =
+  let root = make_temp_root () in
+  setup_project root ~harness:traceparent_harness;
+  write_file
+    (Filename.concat root ".jig/workflows/hello.yaml")
+    "name: hello\nsteps:\n  - skill: say-hi\n  - skill: say-hi\n";
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      let exported_step_span_ids =
+        List.filter_map
+          (fun span ->
+            match Yojson.Safe.Util.member "parentSpanId" span with
+            | `Null -> None
+            | _ -> Some (otlp_string span "spanId"))
+          (otlp_spans (Otlp.traces_of_run ~resource_attributes:[] run))
+      in
+      Alcotest.(check int) "two step spans" 2
+        (List.length exported_step_span_ids);
+      List.iteri
+        (fun step_index span_id ->
+          Alcotest.(check bool)
+            (Printf.sprintf "step %d saw its exported span" step_index)
+            true
+            (contains
+               ~affix:
+                 (Printf.sprintf "traceparent=00-%s-%s-01"
+                    (Otlp.trace_id_of_run ~run_id:run.Run.id)
+                    span_id)
+               (step_stdout run step_index)))
+        exported_step_span_ids
+
+let test_otel_sdk_disabled_skips_traceparent () =
+  let root = make_temp_root () in
+  setup_project root ~harness:traceparent_harness;
+  Unix.putenv "OTEL_SDK_DISABLED" "true";
+  let result =
+    Fun.protect
+      ~finally:(fun () -> Unix.putenv "OTEL_SDK_DISABLED" "")
+      (fun () ->
+        Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"t"
+          ~isolated:false ())
+  in
+  match result with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check bool) "no jig trace context" false
+        (contains
+           ~affix:(Otlp.trace_id_of_run ~run_id:run.Run.id)
+           (step_stdout run 0))
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -4621,5 +4684,9 @@ let () =
             test_otlp_completed_run_is_one_trace;
           Alcotest.test_case "paused run defers the root, keeps ids" `Quick
             test_otlp_paused_run_defers_the_root_and_keeps_ids;
+          Alcotest.test_case "harness receives the step traceparent" `Quick
+            test_harness_receives_the_step_traceparent;
+          Alcotest.test_case "OTEL_SDK_DISABLED run skips traceparent" `Quick
+            test_otel_sdk_disabled_skips_traceparent;
         ] );
     ]

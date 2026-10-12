@@ -266,6 +266,11 @@ struct
           started_at };
       engine.on_event (Step_output { stdout_path; stderr_path })
     in
+    let environment =
+      Otlp.traceparent_environment ~getenv:Sys.getenv_opt
+        ~run_id:progress.run.Run.id
+        ~step_index:(List.length progress.run.Run.steps)
+    in
     let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code,
          session_id, tier
         =
@@ -279,7 +284,8 @@ struct
               step.Workflow.inputs
           in
           let* exec_result =
-            Executor_port.execute ~on_spawn:announce_output ~command
+            Executor_port.execute ~on_spawn:announce_output ~environment
+              ~command
               ~cwd:engine.workspace
               ~prompt:
                 (build_prompt ~context:engine.context
@@ -332,7 +338,7 @@ struct
             Result.map_error
               (fun message -> "command step: " ^ message)
               (Subprocess.run ~cwd:engine.workspace ~on_spawn:announce_output
-                 ~argv:[ "sh"; "-c"; command ] ())
+                 ~environment ~argv:[ "sh"; "-c"; command ] ())
           in
           let exit_code = result.Subprocess.exit_code in
           let stdout = result.Subprocess.stdout in

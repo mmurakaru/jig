@@ -50,6 +50,7 @@ jobs:
           ATTEMPTS: ${{ inputs.attempts }}
           BASELINE: ${{ inputs.baseline }}
         run: |
+          set -o pipefail
           arguments=(--model "$MODEL" --attempts "$ATTEMPTS" --concurrency 4
             --jig-binary _build/default/bin/main.exe --job-name evals --jobs-dir evals/jobs)
           if [ -n "$MECHANICAL_MODEL" ]; then arguments+=(--mechanical-model "$MECHANICAL_MODEL"); fi

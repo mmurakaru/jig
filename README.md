@@ -105,6 +105,11 @@ jig list workflows|runs [--json]            # discover what is runnable, and wha
 jig validate <workflow>                     # lint before running
 ```
 
+Each step runs in its own process group.
+Ctrl-C on a run, or a SIGTERM or SIGHUP to a detached one, stops the running step with every process it started (SIGTERM, then SIGKILL after 5 seconds), and jig exits with 128 + the signal number.
+The run record keeps the steps that finished, and `jig run --resume <run-id>` runs the stopped step again.
+The interactive chat of `jig attach` keeps the terminal and its Ctrl-C.
+
 ## Layout
 
 ```

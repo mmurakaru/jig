@@ -26,7 +26,8 @@ eight step-skills they reference.
 - `wrapper:` - prepended to every harness invocation (OS sandbox).
 - `attach:` / `attach_headless:` - interactive and headless session-reopen
   commands; `{session_id}` is substituted per step.
-- `notify:` - run on every run stop; `{run_id}` and `{status}` substituted.
+- `notify:` - run on every run stop; `{run_id}` and `{status}` substituted;
+  stopped after 30 seconds.
 
 ## Prove the wiring before the first real run
 

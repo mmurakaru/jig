@@ -20,13 +20,18 @@ let write_file path content =
   Out_channel.with_open_text path (fun channel ->
       Out_channel.output_string channel content)
 
-let make_temp_root () =
+let rec make_unique_temp_directory () =
   let root =
     Filename.concat (Filename.get_temp_dir_name ())
       (Printf.sprintf "jig-test-%d-%d" (Unix.getpid ()) (Random.int 1_000_000))
   in
+  match Unix.mkdir root 0o755 with
+  | () -> root
+  | exception Unix.Unix_error (Unix.EEXIST, _, _) -> make_unique_temp_directory ()
+
+let make_temp_root () =
+  let root = make_unique_temp_directory () in
   let mkdir path = Unix.mkdir path 0o755 in
-  mkdir root;
   mkdir (Filename.concat root ".jig");
   mkdir (Filename.concat root ".jig/workflows");
   mkdir (Filename.concat root ".jig/skills");

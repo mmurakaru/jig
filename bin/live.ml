@@ -47,35 +47,54 @@ let repaint ~previous_height lines =
   flush stdout;
   List.length lines
 
+(* A running step; a parallel forEach runs one per item at once. *)
+type running_step = {
+  item_index : int option;
+  label : string;
+  started : float;
+  mutable tail : Tail.t option;
+}
+
 type t = {
   model : Progress.t;
   workflow : string;
   mutex : Mutex.t;
   wake : Condition.t;
   mutable tick : int;
-  mutable working : bool;
   mutable stopped : bool;
   mutable height : int;
-  mutable tail : Tail.t option;
-  mutable step_label : string option;
-  mutable step_started : float;
+  mutable running_steps : running_step list;
   mutable ticker : Thread.t option;
 }
 
+let working t = t.running_steps <> []
+
+(* The last item's step: Boxes puts the elapsed time on that row. *)
+let focused_step t =
+  List.fold_left
+    (fun focus step ->
+      match focus with
+      | Some best when best.item_index >= step.item_index -> focus
+      | _ -> Some step)
+    None t.running_steps
+
 (* Assumes the mutex is held. *)
 let redraw_locked t ~state =
-  Option.iter Tail.poll t.tail;
+  let focus = focused_step t in
+  let tail = Option.bind focus (fun step -> step.tail) in
+  Option.iter Tail.poll tail;
   let elapsed =
-    if t.working then
-      Some (format_elapsed (Unix.gettimeofday () -. t.step_started))
-    else None
+    Option.map
+      (fun step -> format_elapsed (Unix.gettimeofday () -. step.started))
+      focus
   in
   let lines =
     Boxes.view ~columns:(Term_size.columns ()) ~height:(Term_size.rows ())
       ~workflow:t.workflow ~state
       ~spinner:(Progress.spinner_frame t.tick)
-      ~elapsed ~log_title:t.step_label
-      ~log_lines:(match t.tail with Some tail -> Tail.lines tail | None -> [])
+      ~elapsed
+      ~log_title:(Option.map (fun step -> step.label) focus)
+      ~log_lines:(match tail with Some tail -> Tail.lines tail | None -> [])
       (Progress.rows t.model)
   in
   t.height <- repaint ~previous_height:t.height lines
@@ -83,7 +102,7 @@ let redraw_locked t ~state =
 let ticker_loop t =
   Mutex.lock t.mutex;
   while not t.stopped do
-    if t.working then (
+    if working t then (
       t.tick <- t.tick + 1;
       redraw_locked t ~state:Boxes.Running;
       Mutex.unlock t.mutex;
@@ -101,12 +120,9 @@ let create ~workflow entries =
       mutex = Mutex.create ();
       wake = Condition.create ();
       tick = 0;
-      working = false;
       stopped = false;
       height = 0;
-      tail = None;
-      step_label = None;
-      step_started = 0.0;
+      running_steps = [];
       ticker = None;
     }
   in
@@ -116,23 +132,36 @@ let create ~workflow entries =
 let on_event t event =
   Mutex.lock t.mutex;
   Progress.apply t.model event;
+  let without item_index =
+    List.filter (fun step -> step.item_index <> item_index) t.running_steps
+  in
   (match event with
-  | Jig_core.Runner.Step_started { skill; item_key; tier; _ } ->
-      t.working <- true;
-      t.step_started <- Unix.gettimeofday ();
+  | Jig_core.Runner.Step_started { skill; item_key; tier; position } ->
+      let item_index =
+        Option.map
+          (fun state -> state.Jig_core.Run.item_index)
+          position.Jig_core.Run.for_each
+      in
       (* skill · item · tier: where the step runs and what it costs to. *)
-      t.step_label <-
-        Some
-          (String.concat " · "
-             (skill :: Option.to_list item_key @ Option.to_list tier));
-      t.tail <- None
-  | Jig_core.Runner.Step_output { stdout_path; stderr_path } ->
-      t.tail <- Some (Tail.create ~capacity:tail_capacity [ stdout_path; stderr_path ])
-  | Jig_core.Runner.Step_finished _ ->
-      t.working <- false;
-      t.tail <- None;
-      t.step_label <- None
-  | Jig_core.Runner.Items_resolved _ -> ());
+      let label =
+        String.concat " · "
+          (skill :: Option.to_list item_key @ Option.to_list tier)
+      in
+      t.running_steps <-
+        { item_index; label; started = Unix.gettimeofday (); tail = None }
+        :: without item_index
+  | Jig_core.Runner.Step_output { stdout_path; stderr_path; item_index } ->
+      List.iter
+        (fun step ->
+          if step.item_index = item_index then
+            step.tail <-
+              Some
+                (Tail.create ~capacity:tail_capacity
+                   [ stdout_path; stderr_path ]))
+        t.running_steps
+  | Jig_core.Runner.Step_finished record ->
+      t.running_steps <- without record.Jig_core.Run.item_index
+  | Jig_core.Runner.Items_resolved _ | Jig_core.Runner.Item_finished _ -> ());
   redraw_locked t ~state:Boxes.Running;
   Condition.signal t.wake;
   Mutex.unlock t.mutex
@@ -143,10 +172,8 @@ let on_event t event =
 let finalize t ~state =
   Mutex.lock t.mutex;
   Progress.finalize t.model;
-  t.working <- false;
   t.stopped <- true;
-  t.tail <- None;
-  t.step_label <- None;
+  t.running_steps <- [];
   redraw_locked t ~state;
   Condition.signal t.wake;
   Mutex.unlock t.mutex;

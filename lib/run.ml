@@ -50,13 +50,30 @@ type step_record = {
 
 type status = Running | Paused | Completed | Failed | Aborted
 
+(* A parallel forEach item from its start until it passes, for a resume. *)
+type item_in_progress = {
+  started_item_index : int;
+  item_body_index : int;
+  item_iterations_used : int;
+  item_step_index : int;
+  item_workspace : string option;
+  (* Running, or the status the item stopped with (paused, failed, aborted). *)
+  item_status : status;
+  (* The attempt whose result paused the item, so a resume runs it again. *)
+  item_paused_on_attempt : string option;
+}
+
 (* A forEach entry in flight. The items are snapshotted here when the entry
    starts so a resume re-binds exactly the item it paused on - the items
-   file is never re-read mid-run. Cleared when the entry completes. *)
+   file is never re-read mid-run. Cleared when the entry completes.
+   With concurrency above 1, item_index is the next item to start and
+   each started item keeps its own cursor in items_in_progress. *)
 type for_each_state = {
   item_index : int;
   body_index : int;
   items : (string * string) list list;
+  concurrency : int;
+  items_in_progress : item_in_progress list;
 }
 
 (* Where the run is in the workflow: the entry being executed, how many
@@ -141,6 +158,72 @@ let step_key_of_position ~run_id ~(position : position) =
   in
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
     position.iterations_used position.step_index
+
+(* The step-key prefix shared by every attempt of one forEach item. *)
+let item_step_key_prefix ~run_id ~entry_index ~item_index =
+  Printf.sprintf "%s/e%d/i%d/" run_id entry_index item_index
+
+(* Only one item's steps and attempts, so numbering and routing stay per item. *)
+let item_lane run ~step_key_prefix =
+  let belongs (attempt : attempt) =
+    String.starts_with ~prefix:step_key_prefix attempt.step_key
+  in
+  {
+    run with
+    steps =
+      List.filter
+        (fun step ->
+          match step.attempt with
+          | Some attempt -> belongs attempt
+          | None -> false)
+        run.steps;
+    attempts_in_flight =
+      Step_key_map.filter (fun _ attempt -> belongs attempt)
+        run.attempts_in_flight;
+    interrupted_attempts = List.filter belongs run.interrupted_attempts;
+  }
+
+(* True while the position is inside a forEach that runs items in parallel. *)
+let runs_items_in_parallel position =
+  match position.for_each with
+  | Some state -> state.concurrency > 1
+  | None -> false
+
+(* The started, unfinished items of a forEach running items in parallel. *)
+let parallel_items_in_progress position =
+  match position.for_each with
+  | Some state when state.concurrency > 1 -> state.items_in_progress
+  | _ -> []
+
+(* A paused run has no running item. *)
+let pause_running_items position =
+  match position.for_each with
+  | Some state when state.concurrency > 1 ->
+      let pause item =
+        if item.item_status = Running then { item with item_status = Paused }
+        else item
+      in
+      {
+        position with
+        for_each =
+          Some
+            {
+              state with
+              items_in_progress = List.map pause state.items_in_progress;
+            };
+      }
+  | _ -> position
+
+let item_in_progress_of_attempt run (attempt : attempt) =
+  List.find_opt
+    (fun item ->
+      String.starts_with
+        ~prefix:
+          (item_step_key_prefix ~run_id:run.id
+             ~entry_index:run.position.entry_index
+             ~item_index:item.started_item_index)
+        attempt.step_key)
+    (parallel_items_in_progress run.position)
 
 (* Every attempt of the key so far, finished or interrupted. *)
 let attempt_count run ~step_key =
@@ -290,6 +373,23 @@ let attempt_to_json attempt =
           ("stdout_path", attempt.stdout_path);
         ])
 
+let item_in_progress_to_json item =
+  `Assoc
+    ([
+       ("item_index", `Int item.started_item_index);
+       ("body_index", `Int item.item_body_index);
+       ("iterations_used", `Int item.item_iterations_used);
+       ("step_index", `Int item.item_step_index);
+     ]
+    @ (match item.item_workspace with
+      | Some workspace -> [ ("workspace", `String workspace) ]
+      | None -> [])
+    @ [ ("status", `String (string_of_status item.item_status)) ]
+    @
+    match item.item_paused_on_attempt with
+    | Some attempt_id -> [ ("paused_on_attempt", `String attempt_id) ]
+    | None -> [])
+
 let step_to_json step =
   let handoff_field =
     match step.handoff with
@@ -381,20 +481,30 @@ let to_json run =
                 [
                   ( "for_each",
                     `Assoc
-                      [
-                        ("item_index", `Int state.item_index);
-                        ("body_index", `Int state.body_index);
-                        ( "items",
-                          `List
-                            (List.map
-                               (fun bindings ->
-                                 `Assoc
-                                   (List.map
-                                      (fun (key, value) ->
-                                        (key, `String value))
-                                      bindings))
-                               state.items) );
-                      ] );
+                      ([
+                         ("item_index", `Int state.item_index);
+                         ("body_index", `Int state.body_index);
+                         ( "items",
+                           `List
+                             (List.map
+                                (fun bindings ->
+                                  `Assoc
+                                    (List.map
+                                       (fun (key, value) ->
+                                         (key, `String value))
+                                       bindings))
+                                state.items) );
+                       ]
+                      @
+                      if state.concurrency <= 1 then []
+                      else
+                        [
+                          ("concurrency", `Int state.concurrency);
+                          ( "items_in_progress",
+                            `List
+                              (List.map item_in_progress_to_json
+                                 state.items_in_progress) );
+                        ]) );
                 ]) );
         ("steps", `List (List.map step_to_json run.steps));
       ]
@@ -517,6 +627,24 @@ let attempt_of_json json =
       stdout_path = optional_string json "stdout_path";
     }
 
+let item_in_progress_of_json json =
+  let* started_item_index = member_int json "item_index" in
+  let* item_body_index = member_int json "body_index" in
+  let* item_iterations_used = member_int json "iterations_used" in
+  let* item_step_index = member_int json "step_index" in
+  let* status_string = member_string json "status" in
+  let* item_status = status_of_string status_string in
+  Ok
+    {
+      started_item_index;
+      item_body_index;
+      item_iterations_used;
+      item_step_index;
+      item_workspace = optional_string json "workspace";
+      item_status;
+      item_paused_on_attempt = optional_string json "paused_on_attempt";
+    }
+
 let optional_attempt json =
   match Yojson.Safe.Util.member "attempt" json with
   | `Null -> Ok None
@@ -610,7 +738,27 @@ let of_json json =
                 item_entries (Ok [])
           | _ -> Error "run: for_each items must be a list"
         in
-        Ok (Some { item_index; body_index; items })
+        let* concurrency =
+          match Yojson.Safe.Util.member "concurrency" state_json with
+          | `Null -> Ok 1
+          | `Int value when value >= 1 -> Ok value
+          | _ -> Error "run: for_each concurrency must be a positive integer"
+        in
+        let* items_in_progress =
+          match Yojson.Safe.Util.member "items_in_progress" state_json with
+          | `Null -> Ok []
+          | `List entries ->
+              List.fold_right
+                (fun entry accumulator ->
+                  let* items_in_progress = accumulator in
+                  let* item = item_in_progress_of_json entry in
+                  Ok (item :: items_in_progress))
+                entries (Ok [])
+          | _ -> Error "run: for_each items_in_progress must be a list"
+        in
+        Ok
+          (Some
+             { item_index; body_index; items; concurrency; items_in_progress })
   in
   let* steps =
     match Yojson.Safe.Util.member "steps" json with

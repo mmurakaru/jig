@@ -36,6 +36,10 @@ literals. A workflow directory (`.jig/workflows/<name>/workflow.yaml`) may
 co-locate `AGENTS.md` (auto-loaded as context) and the forEach items file.
 Always finish with `jig validate <name>`.
 
+forEach items are independent, so `concurrency: N` in `.jig/config.yaml`
+runs up to N at once; that needs `jig run --isolated`, and each item works
+in its own git worktree with no merge back.
+
 Branching belongs inside skills, reported through handoff status - the
 schema routes on outcomes and never evaluates expressions.
 

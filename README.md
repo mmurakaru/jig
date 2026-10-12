@@ -98,6 +98,7 @@ On a TTY, `jig run` draws the run in place: the pipeline with a spinner on
 the active step and per-step durations, costs, and tiers, and beneath it a
 live tail of what the running step's agent is doing - titled with the
 step, its forEach item, and the tier it runs on.
+With `concurrency` above 1 in `config.yaml`, forEach items run in parallel, each in its own worktree, and the pipeline shows every item in flight.
 When the run ends, the completed pipeline stays in the scrollback above the
 run report; each step's full output lives in the run record.
 
@@ -108,7 +109,7 @@ run report; each step's full output lives in the run record.
 ```
 jig init                                    # scaffold .jig/ from the embedded starter set
 jig run <workflow> --task "<description>"   # execute a workflow against a task
-  [--isolated]                              #   in a git worktree per run
+  [--isolated]                              #   in a git worktree per run (and per item with concurrency)
   [--detach]                                #   survives its terminal; steps stream to runs/<run-id>.log
 jig run --resume <run-id> [--guidance "…"]  # continue a paused run
   [--skip]                                  #   a human finished the paused step; record it and move on

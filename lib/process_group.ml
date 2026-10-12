@@ -125,8 +125,7 @@ let with_process_starting start =
   incr processes_starting;
   Fun.protect ~finally:(fun () -> decr processes_starting) start
 
-(** Waits for a step child; past [deadline], [on_deadline] runs before the group
-    is stopped. The flag is true when the deadline, not a signal, stopped it. *)
+(** Waits for a step child; true when its deadline, not a signal, stopped it. *)
 let wait_for_child child_pid ~deadline ~grace_seconds ~on_deadline =
   let deadline_has_passed () =
     match deadline with
@@ -145,8 +144,7 @@ let wait_for_child child_pid ~deadline ~grace_seconds ~on_deadline =
       (try on_deadline () with _ -> ());
       (terminate_process_group ~grace_seconds child_pid, true)
 
-(** Stops the group of a step child that an earlier jig started: SIGTERM, a
-    grace period, then SIGKILL. The caller checks that the pid is still that child. *)
+(** Stops the process group of a step child that an earlier jig started. *)
 let terminate_recorded_process_group ~grace_seconds process_group_id =
   let grace_ends_at = Unix.gettimeofday () +. grace_seconds in
   signal_process_group process_group_id Sys.sigterm;

@@ -138,10 +138,7 @@ let load_skill_paths ~jig_dir =
   if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then Ok []
   else Result.map (fun config -> config.skill_paths) (load ~jig_dir)
 
-(* Validation warns about tiers when a valid config exists, and stays quiet
-   when there is none to check against. *)
+(* None without a valid config, so validation warnings stay quiet then. *)
 let load_if_valid ~jig_dir =
   if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then None
   else Result.to_option (load ~jig_dir)
-
-

@@ -126,9 +126,8 @@ let iso8601_milliseconds time =
     (String.sub whole_seconds 0 (String.length whole_seconds - 1))
     (total_milliseconds mod 1000)
 
-(* Inverse of [iso8601] and [iso8601_milliseconds], for durations between
-   recorded timestamps without depending on the environment's timezone
-   (civil-date day arithmetic). *)
+(* Inverse of [iso8601], for durations between recorded timestamps without
+   depending on the environment's timezone (civil-date day arithmetic). *)
 let epoch_of_iso8601 text =
   let days_from_civil year month day =
     let year = if month <= 2 then year - 1 else year in

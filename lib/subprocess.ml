@@ -6,14 +6,20 @@ type outcome = {
   timed_out : bool;
 }
 
-(** A wall-clock time limit: past [deadline] (seconds since the epoch),
-    [on_deadline] runs, then the child's group gets SIGTERM, [grace_seconds],
-    and SIGKILL. *)
+(** A wall-clock time limit; [deadline] is in seconds since the epoch. *)
 type time_limit = {
   deadline : float;
   grace_seconds : float;
   on_deadline : unit -> unit;
 }
+
+(** A time limit that ends [seconds] from now, with nothing to do at the deadline. *)
+let time_limit_from_now ~seconds ~grace_seconds =
+  {
+    deadline = Unix.gettimeofday () +. seconds;
+    grace_seconds;
+    on_deadline = ignore;
+  }
 
 (* The parent's environment with each [overrides] name replaced or added,
    as execve expects it: "NAME=value" strings. *)

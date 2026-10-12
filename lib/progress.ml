@@ -87,7 +87,7 @@ let format_duration seconds =
     let whole = int_of_float seconds in
     Printf.sprintf "%dm%02ds" (whole / 60) (whole mod 60)
 
-(* "timed out" when jig stopped the step; duration always (when both timestamps parse); cost only when the step
+(* Duration always (when both timestamps parse); cost only when the step
    spent money - "$0.00" on every command step would be noise; the tier
    when the step declared one - per-step economics are the point of tiers. *)
 let detail_of_record (record : Run.step_record) =

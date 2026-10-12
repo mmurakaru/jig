@@ -428,13 +428,11 @@ let attach_run run_id latest step_number =
               let time_limit =
                 Option.map
                   (fun seconds ->
-                    {
-                      Jig_core.Subprocess.deadline =
-                        Unix.gettimeofday () +. float_of_int seconds;
-                      grace_seconds =
-                        float_of_int timeout.Jig_core.Step_timeout.grace_seconds;
-                      on_deadline = ignore;
-                    })
+                    Jig_core.Subprocess.time_limit_from_now
+                      ~seconds:(float_of_int seconds)
+                      ~grace_seconds:
+                        (float_of_int
+                           timeout.Jig_core.Step_timeout.grace_seconds))
                   timeout.Jig_core.Step_timeout.skill_step_limit_seconds
               in
               Jig_core.Executor.Local.execute ?time_limit

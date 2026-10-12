@@ -6161,11 +6161,8 @@ let test_run_json_round_trips_items_in_progress () =
 (* Subprocess process groups and signal forwarding *)
 
 let time_limit_in seconds =
-  {
-    Subprocess.deadline = Unix.gettimeofday () +. seconds;
-    grace_seconds = Process_group.termination_grace_seconds;
-    on_deadline = ignore;
-  }
+  Subprocess.time_limit_from_now ~seconds
+    ~grace_seconds:Process_group.termination_grace_seconds
 
 let grandchild_command root =
   Printf.sprintf "sleep 300 & echo $! > %s; wait"
@@ -6844,6 +6841,29 @@ let test_each_parallel_item_gets_its_own_deadline () =
         (List.length
            (List.sort_uniq compare
               (List.map (fun attempt -> attempt.Run.step_key) attempts)))
+
+let test_a_parallel_item_waits_for_the_driver_to_save_its_mark () =
+  let root = make_temp_root () in
+  setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ]
+    ~body:"        - command: \"sleep 300\"\n";
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    "harness:\n\
+    \  - unused-by-these-steps\n\
+     concurrency: 2\n\
+     timeout:\n\
+    \  command: 1s\n\
+    \  grace: 1s\n";
+  match
+    Failing_timeout_mark_runner.execute_run ~run_id:"fan-unmarked" ~root
+      ~workflow_name:"fan" ~task:"fan out" ~isolated:true ()
+  with
+  | Ok _ -> Alcotest.fail "expected an infrastructure error"
+  | Error message ->
+      Alcotest.(check bool)
+        (Printf.sprintf "the worker learns the mark was not saved: %s" message)
+        true
+        (contains ~affix:"timeout mark could not be saved" message)
 
 let test_a_timed_out_attach_hand_back_leaves_the_run_paused () =
   let root = make_temp_root () in
@@ -7536,6 +7556,8 @@ let () =
             test_a_failed_timeout_mark_still_stops_the_child;
           Alcotest.test_case "each parallel item gets its own deadline" `Quick
             test_each_parallel_item_gets_its_own_deadline;
+          Alcotest.test_case "a parallel item waits for its mark's save"
+            `Quick test_a_parallel_item_waits_for_the_driver_to_save_its_mark;
           Alcotest.test_case "a timed-out attach hand-back stays paused" `Quick
             test_a_timed_out_attach_hand_back_leaves_the_run_paused;
           Alcotest.test_case "a timeout shows as failed with its label" `Quick

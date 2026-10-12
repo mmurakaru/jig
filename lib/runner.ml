@@ -76,6 +76,8 @@ type run_event =
 (* A worker's pipe and how many steps it reported, so reports send only new ones. *)
 type worker_link = {
   worker_output : Unix.file_descr;
+  (* The driver answers a timeout mark here once its save ended. *)
+  timeout_mark_acknowledgements : Unix.file_descr;
   mutable reported_step_count : int;
 }
 
@@ -88,6 +90,8 @@ type worker_message =
       (* All of the item's, since a recovery updates them in place. *)
       interrupted_attempts : Run.attempt list;
     }
+  (* The worker waits for the driver's answer before it signals the child. *)
+  | Worker_timeout_mark of Run.attempt
   | Worker_metering of Metering.event
   | Worker_event of run_event
   | Worker_step of Run.step_record
@@ -344,6 +348,30 @@ struct
              });
         link.reported_step_count <- List.length run.Run.steps;
         Ok progress
+
+  let timeout_mark_saved = '1'
+
+  let rec read_acknowledgement descriptor =
+    let byte = Bytes.create 1 in
+    match Unix.read descriptor byte 0 1 with
+    | 1 -> Some (Bytes.get byte 0)
+    | _ -> None
+    | exception Unix.Unix_error (Unix.EINTR, _, _) ->
+        read_acknowledgement descriptor
+    | exception Unix.Unix_error _ -> None
+
+  (* In a worker the driver saves the mark, so the worker waits for its answer. *)
+  let save_timeout_mark engine progress (marked : Run.attempt) =
+    match engine.worker_link with
+    | None ->
+        let* _ = save_step_progress engine progress in
+        Ok ()
+    | Some link -> (
+        send_to_driver link (Worker_timeout_mark marked);
+        match read_acknowledgement link.timeout_mark_acknowledgements with
+        | Some answer when answer = timeout_mark_saved -> Ok ()
+        | Some _ | None ->
+            Error "the forEach driver could not save it")
 
   let set_step_pointer engine ~run_id pointer =
     match engine.worker_link with
@@ -805,8 +833,10 @@ struct
         }
       in
       spawned_attempt := marked;
-      match save_step_progress engine (with_attempt_in_flight progress marked) with
-      | Ok _ -> ()
+      match
+        save_timeout_mark engine (with_attempt_in_flight progress marked) marked
+      with
+      | Ok () -> ()
       | Error message -> timeout_mark_error := Some message
     in
     let time_limit =
@@ -825,7 +855,8 @@ struct
       | Ok _, Some message ->
           Error
             (Printf.sprintf
-               "run: attempt %s timed out, but its timeout mark could not be                 saved (%s); jig stopped the attempt"
+               "run: attempt %s timed out, but its timeout mark could not be \
+                saved (%s); jig stopped the attempt"
                attempt_id message)
       | result, _ -> result
     in
@@ -890,7 +921,7 @@ struct
                       (interpolate command_template) exit_code)
                  (stdout ^ stderr)),
             None,
-            Metering.Cost_usd 0.0,
+            Metering.Unknown_cost,
             None )
       | Workflow.Skill_step _ ->
           let outcome, handoff, handoff_error = outcome_of_exec exec_result in
@@ -1133,10 +1164,12 @@ struct
 
   (* Runs in a forked process and never returns. *)
   let run_item_worker engine progress (for_each : Workflow.for_each) ~state
-      ~(item : Run.item_in_progress) ~worker_output =
+      ~(item : Run.item_in_progress) ~worker_output
+      ~timeout_mark_acknowledgements =
     let link =
       {
         worker_output;
+        timeout_mark_acknowledgements;
         reported_step_count = List.length progress.run.Run.steps;
       }
     in
@@ -1184,6 +1217,7 @@ struct
   type item_worker = {
     worker_pid : int;
     worker_input : Unix.file_descr;
+    acknowledgement_output : Unix.file_descr;
     worker_reader : Worker_channel.reader;
     worker_item_index : int;
     mutable worker_reported_end : bool;
@@ -1229,11 +1263,16 @@ struct
         set_position !master
           { !master.run.Run.position with Run.for_each = Some !state }
     in
-    let save () =
+    let try_save () =
       sync_state_into_master ();
       match persist engine !master ~status:Run.Running ~finished:false with
-      | Ok (saved, _) -> master := saved
-      | Error message -> note_error message
+      | Ok (saved, _) ->
+          master := saved;
+          Ok ()
+      | Error message -> Error message
+    in
+    let save () =
+      match try_save () with Ok () -> () | Error message -> note_error message
     in
     let update_item item_index change =
       state :=
@@ -1294,39 +1333,66 @@ struct
           guidance = (if resumed then guidance else None);
         }
       in
-      match Unix.pipe ~cloexec:true () with
+      match
+        let worker_input, worker_output = Unix.pipe ~cloexec:true () in
+        match Unix.pipe ~cloexec:true () with
+        | acknowledgement_input, acknowledgement_output ->
+            ( worker_input,
+              worker_output,
+              acknowledgement_input,
+              acknowledgement_output )
+        | exception raised ->
+            Unix.close worker_input;
+            Unix.close worker_output;
+            raise raised
+      with
       | exception Unix.Unix_error (error, _, _) ->
           note_error
             ("run: cannot open a forEach worker pipe: "
             ^ Unix.error_message error)
-      | worker_input, worker_output -> (
+      | worker_input, worker_output, acknowledgement_input, acknowledgement_output
+        -> (
+          let close_all () =
+            List.iter Unix.close
+              [
+                worker_input;
+                worker_output;
+                acknowledgement_input;
+                acknowledgement_output;
+              ]
+          in
           match
             Process_group.fork_worker_process ~pipe_from_worker:worker_input
           with
           | exception Unix.Unix_error (error, _, _) ->
-              Unix.close worker_input;
-              Unix.close worker_output;
+              close_all ();
               note_error
                 ("run: cannot fork a forEach worker: "
                 ^ Unix.error_message error)
           | 0 ->
               Unix.close worker_input;
+              Unix.close acknowledgement_output;
               (* Another worker's end of file must not wait on this one. *)
               List.iter
                 (fun worker ->
-                  try Unix.close worker.worker_input
+                  (try Unix.close worker.worker_input
+                   with Unix.Unix_error _ -> ());
+                  try Unix.close worker.acknowledgement_output
                   with Unix.Unix_error _ -> ())
                 !workers;
               run_item_worker engine worker_progress for_each
                 ~state:worker_state ~item ~worker_output
+                ~timeout_mark_acknowledgements:acknowledgement_input
           | worker_pid ->
               Unix.close worker_output;
+              Unix.close acknowledgement_input;
               workers :=
                 !workers
                 @ [
                     {
                       worker_pid;
                       worker_input;
+                      acknowledgement_output;
                       worker_reader = Worker_channel.create_reader worker_input;
                       worker_item_index = item_index;
                       worker_reported_end = false;
@@ -1419,6 +1485,38 @@ struct
             };
           update_item item_index (with_item_cursor position);
           save ()
+      | Worker_timeout_mark (marked : Run.attempt) ->
+          let unmarked = !master in
+          let run = !master.run in
+          master :=
+            {
+              !master with
+              run =
+                {
+                  run with
+                  Run.attempts_in_flight =
+                    Run.Step_key_map.add marked.Run.step_key marked
+                      run.Run.attempts_in_flight;
+                };
+            };
+          let answer =
+            match try_save () with
+            | Ok () -> timeout_mark_saved
+            | Error _ ->
+                (* The worker reports the error; later saves must not repeat it. *)
+                master := unmarked;
+                '0'
+          in
+          (* A worker that already ended gets no answer, and must not SIGPIPE the driver. *)
+          let previous_handler = Sys.signal Sys.sigpipe Sys.Signal_ignore in
+          Fun.protect
+            ~finally:(fun () -> Sys.set_signal Sys.sigpipe previous_handler)
+            (fun () ->
+              try
+                ignore
+                  (Unix.write_substring worker.acknowledgement_output
+                     (String.make 1 answer) 0 1)
+              with Unix.Unix_error _ -> ())
       | Worker_metering event -> (
           match record_attempt_metering engine event with
           | Ok () -> ()
@@ -1480,6 +1578,7 @@ struct
     in
     let reap worker =
       Unix.close worker.worker_input;
+      Unix.close worker.acknowledgement_output;
       wait_for_exit worker.worker_pid;
       Process_group.forget_worker_process worker.worker_pid;
       workers :=
@@ -1647,12 +1746,9 @@ struct
         ignore
           (Subprocess.run ~cwd:engine.root
              ~time_limit:
-               {
-                 Subprocess.deadline =
-                   Unix.gettimeofday () +. notify_time_limit_seconds;
-                 grace_seconds = Process_group.termination_grace_seconds;
-                 on_deadline = ignore;
-               }
+               (Subprocess.time_limit_from_now
+                  ~seconds:notify_time_limit_seconds
+                  ~grace_seconds:Process_group.termination_grace_seconds)
              ~argv ())
 
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
@@ -1955,8 +2051,7 @@ struct
     let* () = record_missing_metering engine progress.run in
     finish engine progress Run.Paused
 
-  (* A crash after the timeout mark, or a resume past the deadline, ends the
-     attempt as a timeout: the deadline is durable, so a crash never extends it. *)
+  (* The deadline is durable, so a crash never extends it. *)
   let attempt_has_timed_out ~now (attempt : Run.attempt) =
     Option.is_some attempt.Run.timeout_requested_at
     ||
@@ -2000,8 +2095,7 @@ struct
       finished_at;
     }
 
-  (** Records each timed-out attempt in flight as a timeout step: saves the
-      timeout mark, stops a recorded child that still runs, then saves the step. *)
+  (** Finishes timed-out attempts in flight as timeout steps: mark, stop, then save. *)
   let finish_timed_out_attempts engine (run : Run.t) =
     let host = Unix.gethostname () in
     let now = Unix.gettimeofday () in
@@ -2050,7 +2144,8 @@ struct
         Result.map_error
           (fun message ->
             Printf.sprintf
-              "run: could not save the timeout mark of a timed-out attempt                (%s); jig stopped the attempt"
+              "run: could not save the timeout mark of a timed-out attempt \
+               (%s); jig stopped the attempt"
               message)
           mark_saved
       in

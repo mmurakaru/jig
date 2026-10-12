@@ -1,7 +1,6 @@
 open Result_syntax
 
-(** The wall-clock limit per step attempt, from the `timeout:` block of
-    config.yaml. A limit of None means `off`. *)
+(** The wall-clock limit per step attempt from config.yaml timeout:; None is off. *)
 type config = {
   skill_step_limit_seconds : int option;
   command_step_limit_seconds : int option;

@@ -7,8 +7,7 @@ type exec_result = {
 }
 
 module type S = sig
-  (* Past [time_limit], the executor runs its on_deadline, stops the process
-     group, and returns its partial output with timed_out set. *)
+  (* Past [time_limit]: on_deadline, then stop the group, then return timed_out. *)
   val execute :
     ?on_spawn:(child_pid:int -> stdout_path:string -> stderr_path:string -> unit) ->
     ?environment:(string * string) list ->

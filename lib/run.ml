@@ -120,13 +120,16 @@ let iso8601 time =
     (utc.Unix.tm_mon + 1) utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min
     utc.Unix.tm_sec
 
-(** [iso8601] with milliseconds, for a deadline that a 1s limit can use. *)
+(** [iso8601] with milliseconds: the run record format; a 1s limit needs it. *)
 let iso8601_milliseconds time =
   let total_milliseconds = int_of_float (Float.round (time *. 1000.0)) in
   let whole_seconds = iso8601 (float_of_int (total_milliseconds / 1000)) in
   Printf.sprintf "%s.%03dZ"
     (String.sub whole_seconds 0 (String.length whole_seconds - 1))
     (total_milliseconds mod 1000)
+
+(** Now, as run records store time: RFC 3339 UTC with milliseconds. *)
+let record_timestamp_now () = iso8601_milliseconds (Unix.gettimeofday ())
 
 (* Inverse of [iso8601], for durations between recorded timestamps without
    depending on the environment's timezone (civil-date day arithmetic). *)
@@ -160,6 +163,12 @@ let epoch_of_iso8601 text =
   with
   | seconds -> seconds
   | exception _ -> None
+
+(** A record timestamp cut to whole seconds, for a terminal column. *)
+let whole_second_timestamp text =
+  match epoch_of_iso8601 text with
+  | Some seconds -> iso8601 (Float.of_int (int_of_float seconds))
+  | None -> text
 
 (* pid separates concurrent jig processes; the sequence separates runs
    started by one process within the same second. *)

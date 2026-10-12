@@ -519,7 +519,7 @@ let list_runs json_output =
           Printf.printf "%s  %s  %s  %s\n" run.Jig_core.Run.id
             run.Jig_core.Run.workflow
             (Jig_core.Run.string_of_status run.Jig_core.Run.status)
-            run.Jig_core.Run.started_at)
+            (Jig_core.Run.whole_second_timestamp run.Jig_core.Run.started_at))
         runs
 
 let list_workflows json_output =

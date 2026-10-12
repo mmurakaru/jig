@@ -320,8 +320,7 @@ struct
              Run.last_step_attempt_id progress.run.Run.steps
            else progress.run.Run.paused_on_attempt);
         finished_at =
-          (if finished then Some (Run.iso8601 (Unix.gettimeofday ()))
-           else None);
+          (if finished then Some (Run.record_timestamp_now ()) else None);
       }
     in
     let* path = Store_port.save ~runs_dir:(runs_dir engine) run in
@@ -638,7 +637,7 @@ struct
     engine.on_event
       (Step_started
          { skill = label; position = progress.run.Run.position; item_key; tier });
-    let started_at = Run.iso8601 (Unix.gettimeofday ()) in
+    let started_at = Run.record_timestamp_now () in
     let step_key =
       Run.step_key_of_position ~run_id:progress.run.Run.id
         ~position:progress.run.Run.position
@@ -979,7 +978,7 @@ struct
         attempt = Some finished_attempt;
         resumed = progress.resumed;
         started_at;
-        finished_at = Run.iso8601 (Unix.gettimeofday ());
+        finished_at = Run.record_timestamp_now ();
       }
     in
     let progress =
@@ -1890,7 +1889,7 @@ struct
         attempts_in_flight = Run.Step_key_map.empty;
         interrupted_attempts = [];
         paused_on_attempt = None;
-        started_at = Run.iso8601 started;
+        started_at = Run.iso8601_milliseconds started;
         finished_at = None;
       }
     in
@@ -1988,7 +1987,7 @@ struct
   let human_skip ~entries ~guidance run =
     let* skill = skip_target_skill ~entries ~position:run.Run.position in
     let item_index, item_key = position_item run.Run.position in
-    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let now = Run.record_timestamp_now () in
     let summary =
       match guidance with
       | Some text -> "A human completed this step manually.\n" ^ text
@@ -2419,7 +2418,7 @@ struct
             recorded_at = Run.iso8601 (Unix.gettimeofday ());
           }
     in
-    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let now = Run.record_timestamp_now () in
     let item_index, item_key = position_item existing.Run.position in
     let record =
       {

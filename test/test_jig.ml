@@ -7471,6 +7471,39 @@ let test_probe_receives_its_attempt_traceparent () =
             (Option.value attempt.Run.probe_after ~default:"")
       | _ -> Alcotest.fail "expected one step with an attempt")
 
+let test_sub_second_step_exports_a_non_zero_duration () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  write_file
+    (Filename.concat root ".jig/workflows/hello.yaml")
+    "name: hello\nsteps:\n  - command: \"true\"\n";
+  match
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"t"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> (
+      Alcotest.(check bool) "the record keeps milliseconds" true
+        (String.length (List.hd run.Run.steps).Run.started_at
+        = String.length "2026-10-12T14:44:58.123Z");
+      Alcotest.(check (list string))
+        "listings show whole seconds for both record forms"
+        [ "2026-10-12T14:44:58Z"; "2026-10-12T14:44:58Z" ]
+        (List.map Run.whole_second_timestamp
+           [ "2026-10-12T14:44:58.987Z"; "2026-10-12T14:44:58Z" ]);
+      match exported_step_spans run with
+      | [ span ] ->
+          let nanoseconds key = Int64.of_string (otlp_string span key) in
+          Alcotest.(check bool) "end after start" true
+            (Int64.compare
+               (nanoseconds "endTimeUnixNano")
+               (nanoseconds "startTimeUnixNano")
+            > 0)
+      | spans ->
+          Alcotest.fail
+            (Printf.sprintf "expected one step span, got %d"
+               (List.length spans)))
+
 let test_otel_sdk_disabled_skips_traceparent () =
   let root = make_temp_root () in
   setup_project root
@@ -8158,5 +8191,7 @@ let () =
             test_probe_receives_its_attempt_traceparent;
           Alcotest.test_case "OTEL_SDK_DISABLED run skips traceparent" `Quick
             test_otel_sdk_disabled_skips_traceparent;
+          Alcotest.test_case "sub-second step has a non-zero duration" `Quick
+            test_sub_second_step_exports_a_non_zero_duration;
         ] );
     ]

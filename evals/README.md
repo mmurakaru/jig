@@ -45,7 +45,7 @@ It builds the Linux binary from the checkout and reads the `ANTHROPIC_API_KEY` r
 ## The report
 
 The report has one block per arm.
-A trial is solved when the verifier writes reward 1 (the hidden tests and the visible suite both pass) and nothing timed out.
+A trial is solved when the verifier writes reward 1 (the hidden tests and the visible suite both pass) and the trial did not end on a timeout.
 
 - `solve rate`: solved trials over all trials.
 - `unattended solve rate`: solved trials whose run also finished on its own.
@@ -57,17 +57,21 @@ A trial is solved when the verifier writes reward 1 (the hidden tests and the vi
 - `cost per solved task`: total cost of all trials, failed ones included, over solved trials.
   A cheap run that fails is not a saving.
   When some trials reported no cost, the number is marked as a lower bound.
-- `timeouts`: trials stopped by Harbor's agent timeout, or jig runs with a step that timed out; neither counts as solved.
+- `timeouts`: trials stopped by Harbor's agent timeout, or jig runs that stopped with a timed-out step last; neither counts as solved.
+  A step timeout routes like a failure, so a run that retries past it and completes still counts.
 - `solved per task`: solved over attempts for each task.
 
 jig arms also show:
 
 - `cost per tier (all trials)`: metered cost by tier over the whole arm (`default` is the default harness).
   Steps whose harness reported no cost are counted as unknown-cost steps.
-- `retry iterations`: mean number of `run-tests` step records per trial, which is one per iteration of the bugfix retry group.
+- `retry iterations`: mean number of bugfix retry-group iterations per trial, counted from the iteration in each step record's key.
 - `escalation rate`: trials whose run paused.
   `agent-escalated` means a step handed off `status: escalate`; `failure-escalated` means jig escalated a failed, invalid, or timed-out step (`on_fail: escalate`, or the retry group ran out of iterations).
 - `invalid-handoff rate`: steps whose output had no valid handoff block, over all steps, and how many trials had one.
+- `timed-out steps`: step records with the outcome `timeout`, over all steps.
+- `interrupted attempts`: attempts cut off before they finished, for example when Harbor stopped jig at its timeout.
+  jig could not meter them, so their trial has no whole cost.
 
 ## How the adapter works
 
@@ -78,7 +82,8 @@ For the run it scaffolds `.jig/` with `jig init`, writes a `.jig/config.yaml` wh
 jig exits 1 on a failed run and 2 on a paused run; the adapter writes that code to `jig-runs/jig-exit-code` and returns normally, so Harbor scores the workspace and never retries a real outcome.
 After the trial it puts cost and tokens into Harbor's agent context and the run summary into its metadata.
 
-Adapter options go through `--ak name=value` when you call `harbor run` directly: `workflow`, `jig_binary_path`, `jig_release`, `harness` (a JSON list), `mechanical_model`, and `install_harness`.
+Adapter options go through `--ak name=value` when you call `harbor run` directly: `workflow`, `jig_binary_path`, `jig_release`, `harness` (a JSON list), `mechanical_model`, `install_harness`, and `step_timeout`.
+`step_timeout` (default `15m`) is jig's limit per step attempt; it stays well under the task's 60-minute agent timeout, so jig records a timeout before Harbor stops the trial.
 
 ## The dataset
 

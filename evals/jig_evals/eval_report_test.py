@@ -119,17 +119,12 @@ def test_empty_job_directory_is_an_error(tmp_path, capsys):
     assert "no trials found" in capsys.readouterr().err
 
 
-def test_a_timed_out_jig_step_is_not_solved_even_with_reward_one(tmp_path):
+def test_timeouts_count_as_unsolved_only_when_the_trial_ends_on_one(tmp_path):
     job = tmp_path / "job"
-    write_trial(job, "duration-parse__a", "jig", 1.0)
-    record = {
-        "id": "run-1",
-        "status": "completed",
-        "steps": [{"skill": "implement-fix", "outcome": "timeout", "cost_usd": "unknown"}],
-        "started_at": "2026-10-12T00:00:00Z",
-    }
-    runs_directory = job / "duration-parse__a" / "agent" / JIG_RUNS_LOG_NAME
-    runs_directory.mkdir()
-    (runs_directory / "run-1.json").write_text(json.dumps(record))
+    write_trial(job, "duration-parse__a", "jig", 1.0, "timeout-then-recover")
+    write_trial(job, "duration-parse__b", "jig", 1.0, "timeout-exhausted")
+    write_trial(job, "duration-parse__c", "jig", 1.0, "killed-mid-step", exception_type="AgentTimeoutError")
     (report,) = build_eval_report(load_trial_outcomes(job))
-    assert (report.solved, report.solved_unattended, report.timeouts) == (0, 0, 1)
+    assert (report.solved, report.solved_unattended, report.timeouts) == (1, 1, 2)
+    assert (report.jig.timeout_steps, report.jig.interrupted_attempts) == (4, 1)
+    assert report.trials_without_cost == 3

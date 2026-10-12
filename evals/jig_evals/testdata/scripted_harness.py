@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 HANDOFF_TEMPLATE = "Done.\n\n```handoff\nstatus: {status}\nsummary: {summary}\n```\n"
@@ -32,6 +33,13 @@ def main() -> None:
     counter_path = state_directory / f"{skill}.count"
     call_number = int(counter_path.read_text()) + 1 if counter_path.exists() else 1
     counter_path.write_text(str(call_number))
+
+    if skill == "implement-fix" and (
+        scenario == "timeout-exhausted"
+        or (scenario == "timeout-then-recover" and call_number == 1)
+        or scenario == "killed-mid-step"
+    ):
+        time.sleep(60)
 
     status = step_outcome(scenario, skill, call_number)
     text = (

@@ -45,8 +45,9 @@ class TrialOutcome:
 
     @property
     def timed_out(self) -> bool:
+        """Harbor stopped the agent at its limit, or the jig run ended on a timed-out step."""
         harbor_timeout = self.exception_type is not None and "Timeout" in self.exception_type
-        return harbor_timeout or (self.jig_run is not None and self.jig_run.timeout_steps > 0)
+        return harbor_timeout or (self.jig_run is not None and self.jig_run.ended_on_timeout)
 
     @property
     def reported_cost_usd(self) -> float | None:
@@ -107,6 +108,8 @@ class JigArmMetrics:
     steps: int
     invalid_handoff_steps: int
     trials_with_invalid_handoff: int
+    timeout_steps: int
+    interrupted_attempts: int
 
 
 @dataclass
@@ -142,6 +145,8 @@ def build_jig_arm_metrics(jig_runs: list[JigRunSummary]) -> JigArmMetrics:
         steps=sum(run.step_count for run in jig_runs),
         invalid_handoff_steps=sum(run.invalid_handoff_steps for run in jig_runs),
         trials_with_invalid_handoff=sum(run.invalid_handoff_steps > 0 for run in jig_runs),
+        timeout_steps=sum(run.timeout_steps for run in jig_runs),
+        interrupted_attempts=sum(run.interrupted_attempts for run in jig_runs),
     )
 
 
@@ -198,6 +203,8 @@ def render_jig_arm_rows(metrics: JigArmMetrics, trials: int) -> list[tuple[str, 
             f"{format_trial_rate(metrics.invalid_handoff_steps, metrics.steps)} of steps, "
             f"in {metrics.trials_with_invalid_handoff} of {trials} trials",
         ),
+        ("timed-out steps", f"{metrics.timeout_steps} of {metrics.steps}"),
+        ("interrupted attempts", str(metrics.interrupted_attempts)),
     ]
 
 

@@ -66,15 +66,33 @@ def test_missing_directory_summarizes_as_no_run(tmp_path):
     assert summary.step_count == 0
 
 
-def test_timeout_steps_are_counted(tmp_path):
-    record = {
-        "id": "run-1",
-        "status": "failed",
-        "steps": [{"skill": "implement-fix", "outcome": "timeout", "cost_usd": "unknown"}],
-        "started_at": "2026-10-12T00:00:00Z",
-    }
-    (tmp_path / "run-1.json").write_text(json.dumps(record))
-    assert summarize_jig_run(tmp_path).timeout_steps == 1
+def test_a_timeout_the_retry_group_recovers_from_still_completes():
+    summary = summarize_jig_run(RECORDED_RUNS / "timeout-then-recover")
+    assert summary.status == "completed"
+    assert summary.timeout_steps == 1
+    assert not summary.ended_on_timeout
+    assert summary.retry_iterations == 2
+    assert summary.cost_usd is None
+    assert summary.unknown_cost_events == 1
+
+
+def test_timeouts_in_every_iteration_end_the_run_on_a_timeout():
+    summary = summarize_jig_run(RECORDED_RUNS / "timeout-exhausted")
+    assert summary.status == "paused"
+    assert summary.exit_code == 2
+    assert summary.ended_on_timeout
+    assert summary.escalation_cause == "failure-escalated"
+    assert (summary.timeout_steps, summary.retry_iterations) == (3, 3)
+
+
+def test_a_run_killed_mid_step_has_an_unmetered_attempt_and_no_exit_code():
+    summary = summarize_jig_run(RECORDED_RUNS / "killed-mid-step")
+    assert summary.status == "running"
+    assert summary.exit_code is None
+    assert summary.interrupted_attempts == 1
+    assert summary.known_cost_usd == pytest.approx(0.5)
+    assert summary.cost_usd is None
+    assert not summary.completed
 
 
 def test_newest_run_record_wins_and_metering_of_other_runs_is_ignored(tmp_path):
@@ -88,3 +106,11 @@ def test_newest_run_record_wins_and_metering_of_other_runs_is_ignored(tmp_path):
     summary = summarize_jig_run(tmp_path)
     assert summary.run_id == "new"
     assert summary.cost_usd == pytest.approx(1.5)
+
+
+def test_newest_run_record_wins_with_and_without_milliseconds(tmp_path):
+    for run_id, started_at in (("whole-second", "2026-10-12T15:27:11Z"), ("later", "2026-10-12T15:27:11.250Z")):
+        (tmp_path / f"{run_id}.json").write_text(
+            json.dumps({"id": run_id, "status": "completed", "steps": [], "started_at": started_at})
+        )
+    assert summarize_jig_run(tmp_path).run_id == "later"

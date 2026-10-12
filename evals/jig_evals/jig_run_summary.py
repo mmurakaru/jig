@@ -1,15 +1,18 @@
 """Summarize one jig run from `.jig/runs/` and the adapter's `jig-exit-code` file."""
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
 JIG_EXIT_CODE_FILE = "jig-exit-code"
 METERING_LEDGER_FILE = "metering.jsonl"
 
-# The `until: pass` step of the bugfix retry group: one record per iteration.
-RETRY_ITERATION_SKILL = "run-tests"
+# The skills of the bugfix retry group; their step keys carry the iteration.
+RETRY_GROUP_SKILLS = ("implement-fix", "run-tests")
+STEP_KEY_ITERATION_PATTERN = re.compile(r"/e(\d+)/(?:.*/)?r(\d+)/s\d+$")
 
 DEFAULT_TIER_NAME = "default"
 
@@ -34,6 +37,7 @@ class JigRunSummary:
     step_count: int
     invalid_handoff_steps: int
     timeout_steps: int
+    interrupted_attempts: int
     cost_usd: float | None
     known_cost_usd: float
     unknown_cost_events: int
@@ -51,6 +55,11 @@ class JigRunSummary:
     @property
     def completed(self) -> bool:
         return self.status == "completed"
+
+    @property
+    def ended_on_timeout(self) -> bool:
+        """The run stopped short with a timed-out step last; a timeout it recovered from does not count."""
+        return not self.completed and bool(self.steps) and self.steps[-1]["outcome"] == "timeout"
 
     def to_metadata(self) -> dict:
         """Plain JSON-safe dict for Harbor's AgentContext.metadata."""
@@ -78,7 +87,15 @@ def load_latest_run_record(runs_directory: Path) -> dict | None:
             records.append(record)
     if not records:
         return None
-    return max(records, key=lambda record: record.get("started_at", ""))
+    return max(records, key=lambda record: parse_run_timestamp(record.get("started_at")))
+
+
+def parse_run_timestamp(text: str | None) -> datetime:
+    """Parse a run record timestamp, with or without milliseconds; unreadable sorts first."""
+    try:
+        return datetime.fromisoformat(text) if text else datetime.min.replace(tzinfo=UTC)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def load_metering_events(runs_directory: Path, run_id: str | None) -> list[dict]:
@@ -110,6 +127,18 @@ def classify_escalation_cause(record: dict) -> EscalationCause | None:
     if last_outcome in ("fail", "invalid-handoff", "timeout"):
         return EscalationCause.FAILURE_ESCALATED
     return EscalationCause.OTHER
+
+
+def count_retry_iterations(steps: list[dict]) -> int:
+    """Count distinct retry iterations from step keys; a timed-out fix leaves no run-tests record."""
+    iterations = set()
+    for step in steps:
+        if step.get("skill") not in RETRY_GROUP_SKILLS:
+            continue
+        match = STEP_KEY_ITERATION_PATTERN.search((step.get("attempt") or {}).get("step_key", ""))
+        if match:
+            iterations.add(match.groups())
+    return len(iterations)
 
 
 def sum_token_usage(events: list[dict]) -> tuple[int | None, int | None, int | None]:
@@ -147,17 +176,21 @@ def summarize_jig_run(runs_directory: Path) -> JigRunSummary:
         else:
             unknown_cost_events += 1
     input_tokens, cache_tokens, output_tokens = sum_token_usage(events)
+    attempts_in_flight = record.get("attempts_in_flight") or {}
+    interrupted_attempts = len(record.get("interrupted_attempts") or []) + len(attempts_in_flight)
 
     return JigRunSummary(
         run_id=run_id,
         status=record.get("status"),
         exit_code=read_jig_exit_code(runs_directory),
         escalation_cause=classify_escalation_cause(record),
-        retry_iterations=sum(1 for step in steps if step.get("skill") == RETRY_ITERATION_SKILL),
+        retry_iterations=count_retry_iterations(steps),
         step_count=len(steps),
         invalid_handoff_steps=sum(1 for step in steps if step.get("outcome") == "invalid-handoff"),
         timeout_steps=sum(1 for step in steps if step.get("outcome") == "timeout"),
-        cost_usd=known_cost_usd if events and unknown_cost_events == 0 else None,
+        interrupted_attempts=interrupted_attempts,
+        # An attempt still in flight was cut off before jig could meter it.
+        cost_usd=known_cost_usd if events and unknown_cost_events == 0 and not attempts_in_flight else None,
         known_cost_usd=known_cost_usd,
         unknown_cost_events=unknown_cost_events,
         cost_by_tier=cost_by_tier,

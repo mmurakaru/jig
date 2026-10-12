@@ -190,6 +190,10 @@ struct
       {
         progress.run with
         Run.status;
+        paused_on_attempt =
+          (if status = Run.Paused then
+             Run.last_step_attempt_id progress.run.Run.steps
+           else progress.run.Run.paused_on_attempt);
         finished_at =
           (if finished then Some (Run.iso8601 (Unix.gettimeofday ()))
            else None);
@@ -331,9 +335,16 @@ struct
         };
     }
 
+  let handoff_after_step progress (step_record : Run.step_record) =
+    match (step_record.Run.handoff, step_record.Run.outcome) with
+    | Some _, _ -> step_record.Run.handoff
+    | None, Run.Invalid_handoff ->
+        Some (degraded_handoff step_record.Run.stdout)
+    | None, _ -> progress.last_handoff
+
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
-  let execute_step engine progress ~item (step : Workflow.step) =
+  let run_step_process engine progress ~item (step : Workflow.step) =
     let label = Workflow.step_label step in
     let item_key = Option.map (fun context -> Items.key context.bindings) item in
     let interpolate value =
@@ -552,11 +563,7 @@ struct
             progress.run with
             Run.steps = progress.run.Run.steps @ [ step_record ];
           };
-        last_handoff =
-          (match (handoff, outcome) with
-          | Some _, _ -> handoff
-          | None, Run.Invalid_handoff -> Some (degraded_handoff stdout)
-          | None, _ -> progress.last_handoff);
+        last_handoff = handoff_after_step progress step_record;
         guidance = None;
       }
     in
@@ -569,6 +576,22 @@ struct
     engine.on_step step_record;
     engine.on_event (Step_finished step_record);
     Ok (step_record, progress)
+
+  (* A crash after a step's result save leaves its outcome unrouted. *)
+  let execute_step engine progress ~item step =
+    let step_key =
+      Run.step_key_of_position ~run_id:progress.run.Run.id
+        ~position:progress.run.Run.position
+    in
+    match Run.unrouted_finished_step progress.run ~step_key with
+    | Some step_record ->
+        Ok
+          ( step_record,
+            {
+              progress with
+              last_handoff = handoff_after_step progress step_record;
+            } )
+    | None -> run_step_process engine progress ~item step
 
   let stop_for_failure ~on_fail progress =
     match on_fail with
@@ -892,6 +915,7 @@ struct
         steps = [];
         attempts_in_flight = Run.Step_key_map.empty;
         interrupted_attempts = [];
+        paused_on_attempt = None;
         started_at = Run.iso8601 started;
         finished_at = None;
       }

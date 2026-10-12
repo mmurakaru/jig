@@ -503,6 +503,7 @@ let test_store_saves_run () =
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
+      paused_on_attempt = None;
       started_at = "2026-07-02T12:00:00Z";
       finished_at = None;
     }
@@ -1400,6 +1401,7 @@ let test_run_json_roundtrips_for_each_position () =
         ];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
+      paused_on_attempt = None;
       started_at = "";
       finished_at = None;
     }
@@ -2019,6 +2021,7 @@ let test_last_handoff_picks_latest () =
         [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
+      paused_on_attempt = None;
       started_at = "";
       finished_at = None;
     }
@@ -2158,6 +2161,7 @@ let test_resume_honors_recorded_workspace_location () =
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
+      paused_on_attempt = None;
       started_at = "2026-07-03T00:00:00Z";
       finished_at = None;
     }
@@ -2286,6 +2290,7 @@ let sample_stored_run ~id ~task =
     steps = [];
     attempts_in_flight = Run.Step_key_map.empty;
     interrupted_attempts = [];
+    paused_on_attempt = None;
     started_at = "2026-07-02T12:00:00Z";
     finished_at = None;
   }
@@ -3537,6 +3542,7 @@ let persisted_run ~steps ~status ~position =
     steps;
     attempts_in_flight = Run.Step_key_map.empty;
     interrupted_attempts = [];
+    paused_on_attempt = None;
     started_at = "";
     finished_at = None;
   }
@@ -4051,6 +4057,7 @@ let test_cost_by_tier_groups_in_first_seen_order () =
         ];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
+      paused_on_attempt = None;
       started_at = "";
       finished_at = None;
     }
@@ -4374,10 +4381,12 @@ let test_resume_meters_a_step_saved_before_a_crash () =
         (metered_attempt_ids root));
   match Runner.Default.resume_run ~root ~run_id:"saved-run" ~guidance:None () with
   | Error message -> Alcotest.fail message
-  | Ok _ ->
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
       Alcotest.(check (list string))
-        "the saved attempt is metered once, then the re-run"
-        [ "saved-run/e0/r0/s0#1"; "saved-run/e0/r0/s0#2" ]
+        "the saved attempt is metered once and does not run again"
+        [ "saved-run/e0/r0/s0#1" ]
         (metered_attempt_ids root)
 
 (* Resume inside a retry group *)

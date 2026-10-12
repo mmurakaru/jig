@@ -2,6 +2,17 @@ type outcome = {
   exit_code : int;
   stdout : string;
   stderr : string;
+  (* True when the time limit, not the child, ended it; the exit code is only evidence. *)
+  timed_out : bool;
+}
+
+(** A wall-clock time limit: past [deadline] (seconds since the epoch),
+    [on_deadline] runs, then the child's group gets SIGTERM, [grace_seconds],
+    and SIGKILL. *)
+type time_limit = {
+  deadline : float;
+  grace_seconds : float;
+  on_deadline : unit -> unit;
 }
 
 (* The parent's environment with each [overrides] name replaced or added,
@@ -30,9 +41,9 @@ let read_and_remove path =
    [on_spawn] fires in the parent once the child is running, with its pid
    and the capture paths - a live view can tail them while this call waits.
    [environment] adds or replaces variables for the child only.
-   The child leads its own process group; past [time_limit_seconds] that
-   group is stopped. *)
-let run ?cwd ?on_spawn ?(environment = []) ?time_limit_seconds ~argv () =
+   The child leads its own process group; past [time_limit] that group is
+   stopped. *)
+let run ?cwd ?on_spawn ?(environment = []) ?time_limit ~argv () =
   match argv with
   | [] -> Error "subprocess: empty command"
   | program :: _ -> (
@@ -52,7 +63,7 @@ let run ?cwd ?on_spawn ?(environment = []) ?time_limit_seconds ~argv () =
         let stderr_fd =
           Unix.openfile stderr_path [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600
         in
-        let status =
+        let status, timed_out =
           Process_group.run_tracked_child
             ~in_child:(fun () ->
               ignore (Unix.setsid ());
@@ -77,11 +88,13 @@ let run ?cwd ?on_spawn ?(environment = []) ?time_limit_seconds ~argv () =
                 (fun notify -> notify ~child_pid ~stdout_path ~stderr_path)
                 on_spawn;
               Process_group.wait_for_child child_pid
-                ~deadline:
-                  (Option.map
-                     (fun limit -> Unix.gettimeofday () +. limit)
-                     time_limit_seconds)
-                ~on_deadline:ignore)
+                ~deadline:(Option.map (fun limit -> limit.deadline) time_limit)
+                ~grace_seconds:
+                  (match time_limit with
+                  | Some limit -> limit.grace_seconds
+                  | None -> Process_group.termination_grace_seconds)
+                ~on_deadline:(fun () ->
+                  Option.iter (fun limit -> limit.on_deadline ()) time_limit))
         in
         let stdout = read_and_remove stdout_path in
         let stderr = read_and_remove stderr_path in
@@ -92,7 +105,7 @@ let run ?cwd ?on_spawn ?(environment = []) ?time_limit_seconds ~argv () =
           | Unix.WSIGNALED signal | Unix.WSTOPPED signal ->
               128 + Process_group.posix_signal_number signal
         in
-        Ok { exit_code; stdout; stderr }
+        Ok { exit_code; stdout; stderr; timed_out }
       with
       | Unix.Unix_error (error, _, _) ->
           Error

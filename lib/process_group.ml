@@ -72,8 +72,9 @@ let rec wait_for_empty_group process_group_id ~until =
     wait_for_empty_group process_group_id ~until)
 
 (** Stops a child's whole process group: SIGTERM, a grace period, then SIGKILL. *)
-let terminate_process_group child_pid =
-  let grace_ends_at = Unix.gettimeofday () +. termination_grace_seconds in
+let terminate_process_group ?(grace_seconds = termination_grace_seconds)
+    child_pid =
+  let grace_ends_at = Unix.gettimeofday () +. grace_seconds in
   let grace_has_ended () = Unix.gettimeofday () >= grace_ends_at in
   signal_process_group child_pid Sys.sigterm;
   let status =
@@ -124,8 +125,9 @@ let with_process_starting start =
   incr processes_starting;
   Fun.protect ~finally:(fun () -> decr processes_starting) start
 
-(** Waits for a step child; past [deadline], [on_deadline] runs and the group is stopped. *)
-let wait_for_child child_pid ~deadline ~on_deadline =
+(** Waits for a step child; past [deadline], [on_deadline] runs before the group
+    is stopped. The flag is true when the deadline, not a signal, stopped it. *)
+let wait_for_child child_pid ~deadline ~grace_seconds ~on_deadline =
   let deadline_has_passed () =
     match deadline with
     | Some deadline -> Unix.gettimeofday () >= deadline
@@ -135,10 +137,34 @@ let wait_for_child child_pid ~deadline ~on_deadline =
     Option.is_some !requested_stop_signal || deadline_has_passed ()
   in
   match wait_for_child_until child_pid ~stop_waiting with
-  | Some status -> status
+  | Some status -> (status, false)
+  | None when Option.is_some !requested_stop_signal ->
+      (terminate_process_group child_pid, false)
   | None ->
-      if Option.is_none !requested_stop_signal then on_deadline ();
-      terminate_process_group child_pid
+      (* Even a failed timeout mark must not leave the child running. *)
+      (try on_deadline () with _ -> ());
+      (terminate_process_group ~grace_seconds child_pid, true)
+
+(** Stops the group of a step child that an earlier jig started: SIGTERM, a
+    grace period, then SIGKILL. The caller checks that the pid is still that child. *)
+let terminate_recorded_process_group ~grace_seconds process_group_id =
+  let grace_ends_at = Unix.gettimeofday () +. grace_seconds in
+  signal_process_group process_group_id Sys.sigterm;
+  let rec wait_for_exit () =
+    let leader_alive =
+      match Unix.kill process_group_id 0 with
+      | () -> true
+      | exception Unix.Unix_error _ -> false
+    in
+    if
+      (leader_alive || process_group_has_members process_group_id)
+      && Unix.gettimeofday () < grace_ends_at
+    then (
+      Unix.sleepf child_poll_interval_seconds;
+      wait_for_exit ())
+  in
+  wait_for_exit ();
+  signal_process_group process_group_id Sys.sigkill
 
 (** Forks a tracked step child that runs [in_child] (which must exec), then [wait]s on it. *)
 let run_tracked_child ~in_child ~wait =

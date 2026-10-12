@@ -356,7 +356,8 @@ struct
     | Some link -> send_to_driver link (Worker_pointer None)
 
   let outcome_of_exec exec_result =
-    if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
+    if exec_result.Executor.timed_out then (Run.Timeout, None, None)
+    else if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
     else
       match Handoff.parse exec_result.Executor.stdout with
       | Ok handoff -> (
@@ -383,8 +384,24 @@ struct
          message:\n" ^ text;
     }
 
+  (* Tells the next attempt that jig stopped this one, with its output tail. *)
+  let timeout_handoff ~(attempt : Run.attempt) ~description output =
+    let when_stopped =
+      match attempt.Run.time_limit_seconds with
+      | Some seconds -> "after " ^ Step_timeout.format_duration_seconds seconds
+      | None -> "at its deadline"
+    in
+    {
+      Handoff.status = Handoff.Fail;
+      artifacts = [];
+      summary =
+        Printf.sprintf "%s timed out %s and jig stopped it. Its final output:\n%s"
+          description when_stopped
+          (tail_text ~limit:degraded_text_limit output);
+    }
+
   (* Keyed by attempt id, so recording it again on a resume is a no-op. *)
-  let attempt_metering_event ~run_id ~cost ~usage ~interrupted
+  let attempt_metering_event ~run_id ~cost ~usage ~interrupted ~timed_out
       (attempt : Run.attempt) =
     {
       Metering.run_id;
@@ -396,18 +413,21 @@ struct
       step_key = Some attempt.Run.step_key;
       attempt_id = Some attempt.Run.attempt_id;
       interrupted;
+      timed_out;
       recorded_at = Run.iso8601 (Unix.gettimeofday ());
     }
 
   let finished_metering_event ~run_id (step_record : Run.step_record) attempt =
     attempt_metering_event ~run_id ~cost:step_record.Run.cost
       ~usage:(snd (Metering.parse_cost step_record.Run.stdout))
-      ~interrupted:false attempt
+      ~interrupted:false
+      ~timed_out:(step_record.Run.outcome = Run.Timeout)
+      attempt
 
   (* The spend of an interrupted attempt is unknown, never zero. *)
   let interrupted_metering_event ~run_id attempt =
     attempt_metering_event ~run_id ~cost:Metering.Unknown_cost ~usage:None
-      ~interrupted:true attempt
+      ~interrupted:true ~timed_out:false attempt
 
   let metered_attempt_ids engine ~run_id =
     match !(engine.metered_attempt_ids) with
@@ -601,6 +621,28 @@ struct
       | Some _ | None -> progress
     in
     let recovery = recovery_plan engine interrupted in
+    let timeout_config = engine.config.Config.timeout in
+    (* A continued session finishes the cut-off attempt, so it keeps that deadline. *)
+    let time_limit_seconds, deadline_at =
+      match recovery with
+      | Continue_session { cut_off = { Run.deadline_at = Some _; _ } as cut_off; _ }
+        ->
+          (cut_off.Run.time_limit_seconds, cut_off.Run.deadline_at)
+      | Continue_session _ | Recovery_prompt _ | Fresh_attempt ->
+          let limit =
+            match step.Workflow.action with
+            | Workflow.Skill_step _ ->
+                Step_timeout.skill_step_limit_seconds timeout_config ~tier
+            | Workflow.Command_step _ ->
+                timeout_config.Step_timeout.command_step_limit_seconds
+          in
+          ( limit,
+            Option.map
+              (fun seconds ->
+                Run.iso8601_milliseconds
+                  (Unix.gettimeofday () +. float_of_int seconds))
+              limit )
+    in
     let on_interrupt =
       match loaded_skill with
       | Some skill -> skill.Skill.on_interrupt
@@ -622,9 +664,9 @@ struct
           Ok
             ( command,
               Some session_id,
-              fun ~on_spawn ->
-                Executor_port.execute ~on_spawn ~environment ~command
-                  ~cwd:engine.workspace ~prompt () )
+              fun ~on_spawn ~time_limit ->
+                Executor_port.execute ~on_spawn ~environment ?time_limit
+                  ~command ~cwd:engine.workspace ~prompt () )
       | Workflow.Skill_step name, Some skill, _ ->
           let* resolved_command =
             Model_provider_port.resolve ~config:engine.config ~skill:name ~tier
@@ -672,9 +714,9 @@ struct
           Ok
             ( command,
               session_id,
-              fun ~on_spawn ->
-                Executor_port.execute ~on_spawn ~environment ~command
-                  ~cwd:engine.workspace ~prompt () )
+              fun ~on_spawn ~time_limit ->
+                Executor_port.execute ~on_spawn ~environment ?time_limit
+                  ~command ~cwd:engine.workspace ~prompt () )
       | Workflow.Skill_step name, None, _ ->
           Error
             (Printf.sprintf "run: skill %s failed to load - unreachable" name)
@@ -686,18 +728,19 @@ struct
           Ok
             ( argv,
               None,
-              fun ~on_spawn ->
+              fun ~on_spawn ~time_limit ->
                 Result.map
                   (fun result ->
                     {
                       Executor.exit_code = result.Subprocess.exit_code;
                       stdout = result.Subprocess.stdout;
                       stderr = result.Subprocess.stderr;
+                      timed_out = result.Subprocess.timed_out;
                     })
                   (Result.map_error
                      (fun message -> "command step: " ^ message)
                      (Subprocess.run ~cwd:engine.workspace ~on_spawn
-                        ~environment ~argv ())) )
+                        ~environment ?time_limit ~argv ())) )
     in
     let attempt =
       {
@@ -715,6 +758,9 @@ struct
         probe_before;
         probe_after = None;
         stdout_path = None;
+        time_limit_seconds;
+        deadline_at;
+        timeout_requested_at = None;
       }
     in
     let* progress =
@@ -748,7 +794,41 @@ struct
           Run.child_start_time = Process_identity.start_time child_pid;
         }
     in
-    let process_result = start_process ~on_spawn in
+    let timeout_mark_error = ref None in
+    (* The timeout mark is saved before any signal reaches the child. *)
+    let on_deadline () =
+      let marked =
+        {
+          !spawned_attempt with
+          Run.timeout_requested_at =
+            Some (Run.iso8601_milliseconds (Unix.gettimeofday ()));
+        }
+      in
+      spawned_attempt := marked;
+      match save_step_progress engine (with_attempt_in_flight progress marked) with
+      | Ok _ -> ()
+      | Error message -> timeout_mark_error := Some message
+    in
+    let time_limit =
+      Option.map
+        (fun deadline ->
+          {
+            Subprocess.deadline;
+            grace_seconds =
+              float_of_int timeout_config.Step_timeout.grace_seconds;
+            on_deadline;
+          })
+        (Option.bind deadline_at Run.epoch_of_iso8601)
+    in
+    let process_result =
+      match (start_process ~on_spawn ~time_limit, !timeout_mark_error) with
+      | Ok _, Some message ->
+          Error
+            (Printf.sprintf
+               "run: attempt %s timed out, but its timeout mark could not be                 saved (%s); jig stopped the attempt"
+               attempt_id message)
+      | result, _ -> result
+    in
     clear_step_pointer engine ~run_id:progress.run.Run.id;
     let progress = without_attempt_in_flight progress attempt in
     let* exec_result =
@@ -792,6 +872,26 @@ struct
     let exit_code = exec_result.Executor.exit_code in
     let outcome, handoff, handoff_error, cost, session_id =
       match step.Workflow.action with
+      | Workflow.Skill_step _ when exec_result.Executor.timed_out ->
+          ( Run.Timeout,
+            Some
+              (timeout_handoff ~attempt:finished_attempt
+                 ~description:"The previous attempt" (stdout ^ stderr)),
+            None,
+            Metering.Unknown_cost,
+            finished_attempt.Run.session_id )
+      | Workflow.Command_step command_template when exec_result.Executor.timed_out
+        ->
+          ( Run.Timeout,
+            Some
+              (timeout_handoff ~attempt:finished_attempt
+                 ~description:
+                   (Printf.sprintf "The command %s (exit %d)"
+                      (interpolate command_template) exit_code)
+                 (stdout ^ stderr)),
+            None,
+            Metering.Cost_usd 0.0,
+            None )
       | Workflow.Skill_step _ ->
           let outcome, handoff, handoff_error = outcome_of_exec exec_result in
           ( outcome,
@@ -892,7 +992,8 @@ struct
     | Run.Pass -> Ok (Proceed progress)
     | Run.Escalate -> Ok (Stop (Run.Paused, progress))
     | Run.Invalid_handoff -> Ok (Stop (Run.Failed, progress))
-    | Run.Fail -> Ok (stop_for_failure ~on_fail:step.Workflow.on_fail progress)
+    | Run.Fail | Run.Timeout ->
+        Ok (stop_for_failure ~on_fail:step.Workflow.on_fail progress)
 
   (* One retry iteration: run the group in order. Pass on an until-step
      completes the group early; any fail (or invalid handoff) fails the
@@ -922,7 +1023,7 @@ struct
               if step.Workflow.until_pass then Ok (Group_done progress)
               else loop progress (step_index + 1)
           | Run.Escalate -> Ok (Interrupted (Run.Paused, progress))
-          | Run.Fail | Run.Invalid_handoff ->
+          | Run.Fail | Run.Invalid_handoff | Run.Timeout ->
               Ok (Iteration_failed progress))
     in
     let start_index = progress.run.Run.position.Run.step_index in
@@ -1545,7 +1646,14 @@ struct
         in
         ignore
           (Subprocess.run ~cwd:engine.root
-             ~time_limit_seconds:notify_time_limit_seconds ~argv ())
+             ~time_limit:
+               {
+                 Subprocess.deadline =
+                   Unix.gettimeofday () +. notify_time_limit_seconds;
+                 grace_seconds = Process_group.termination_grace_seconds;
+                 on_deadline = ignore;
+               }
+             ~argv ())
 
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
      finds the work in progress exactly where the agent left it. *)
@@ -1847,6 +1955,136 @@ struct
     let* () = record_missing_metering engine progress.run in
     finish engine progress Run.Paused
 
+  (* A crash after the timeout mark, or a resume past the deadline, ends the
+     attempt as a timeout: the deadline is durable, so a crash never extends it. *)
+  let attempt_has_timed_out ~now (attempt : Run.attempt) =
+    Option.is_some attempt.Run.timeout_requested_at
+    ||
+    match Option.bind attempt.Run.deadline_at Run.epoch_of_iso8601 with
+    | Some deadline -> now >= deadline
+    | None -> false
+
+  (* Exit code -1: jig never saw the process exit. *)
+  let timed_out_step_record (run : Run.t) (attempt : Run.attempt) ~finished_at =
+    let stdout =
+      match attempt.Run.stdout_path with
+      | Some path -> Result.value (File.read path) ~default:""
+      | None -> ""
+    in
+    let item_index =
+      Run.item_index_of_step_key ~run_id:run.Run.id attempt.Run.step_key
+    in
+    let item_key =
+      match (item_index, run.Run.position.Run.for_each) with
+      | Some index, Some state ->
+          Option.map Items.key (List.nth_opt state.Run.items index)
+      | _ -> None
+    in
+    {
+      Run.skill = attempt.Run.skill;
+      outcome = Run.Timeout;
+      exit_code = -1;
+      cost = Metering.Unknown_cost;
+      tier = attempt.Run.tier;
+      stdout;
+      stderr = "";
+      handoff =
+        Some
+          (timeout_handoff ~attempt ~description:"The previous attempt" stdout);
+      handoff_error = None;
+      session_id = attempt.Run.session_id;
+      item_index;
+      item_key;
+      attempt = Some { attempt with Run.stdout_path = None };
+      started_at = attempt.Run.started_at;
+      finished_at;
+    }
+
+  (** Records each timed-out attempt in flight as a timeout step: saves the
+      timeout mark, stops a recorded child that still runs, then saves the step. *)
+  let finish_timed_out_attempts engine (run : Run.t) =
+    let host = Unix.gethostname () in
+    let now = Unix.gettimeofday () in
+    let timed_out_attempts =
+      List.filter
+        (fun (attempt : Run.attempt) ->
+          (attempt.Run.child_host = None || attempt.Run.child_host = Some host)
+          && attempt_has_timed_out ~now attempt)
+        (List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight))
+    in
+    if timed_out_attempts = [] then Ok run
+    else
+      let now_text = Run.iso8601_milliseconds now in
+      let marked_attempts =
+        List.map
+          (fun (attempt : Run.attempt) ->
+            match attempt.Run.timeout_requested_at with
+            | Some _ -> attempt
+            | None -> { attempt with Run.timeout_requested_at = Some now_text })
+          timed_out_attempts
+      in
+      let with_marks =
+        {
+          run with
+          Run.attempts_in_flight =
+            List.fold_left
+              (fun attempts (attempt : Run.attempt) ->
+                Run.Step_key_map.add attempt.Run.step_key attempt attempts)
+              run.Run.attempts_in_flight marked_attempts;
+        }
+      in
+      let mark_saved = Store_port.save ~runs_dir:(runs_dir engine) with_marks in
+      let grace_seconds =
+        float_of_int engine.config.Config.timeout.Step_timeout.grace_seconds
+      in
+      List.iter
+        (fun (attempt : Run.attempt) ->
+          match attempt.Run.child_pid with
+          | Some pid
+            when Process_identity.is_running ~pid
+                   ~recorded_start_time:attempt.Run.child_start_time ->
+              Process_group.terminate_recorded_process_group ~grace_seconds pid
+          | Some _ | None -> ())
+        marked_attempts;
+      let* _ =
+        Result.map_error
+          (fun message ->
+            Printf.sprintf
+              "run: could not save the timeout mark of a timed-out attempt                (%s); jig stopped the attempt"
+              message)
+          mark_saved
+      in
+      let records =
+        List.map
+          (timed_out_step_record with_marks ~finished_at:now_text)
+          marked_attempts
+      in
+      let settled =
+        {
+          with_marks with
+          Run.steps = with_marks.Run.steps @ records;
+          attempts_in_flight =
+            List.fold_left
+              (fun attempts (attempt : Run.attempt) ->
+                Run.Step_key_map.remove attempt.Run.step_key attempts)
+              with_marks.Run.attempts_in_flight marked_attempts;
+        }
+      in
+      let* _ = Store_port.save ~runs_dir:(runs_dir engine) settled in
+      let* () =
+        List.fold_left
+          (fun previous (record : Run.step_record) ->
+            let* () = previous in
+            match record.Run.attempt with
+            | Some attempt ->
+                record_attempt_metering engine
+                  (finished_metering_event ~run_id:settled.Run.id record attempt)
+            | None -> Ok ())
+          (Ok ()) records
+      in
+      List.iter engine.on_step records;
+      Ok settled
+
   let resume_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
       ?(skip = false) ~root ~run_id
       ~guidance () =
@@ -1864,7 +2102,6 @@ struct
                run_id
                (Run.string_of_status status))
     in
-    let* () = Process_identity.refuse_while_attempts_run existing in
     let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
@@ -1893,6 +2130,8 @@ struct
         worker_link = None;
       }
     in
+    let* existing = finish_timed_out_attempts engine existing in
+    let* () = Process_identity.refuse_while_attempts_run existing in
     let* () =
       if skip && Run.runs_items_in_parallel existing.Run.position then
         Error parallel_items_refuse_one_item_message
@@ -1971,6 +2210,10 @@ struct
     let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     let* () =
       match outcome with
+      | Run.Timeout ->
+          Error
+            "attach: the hand-back timed out before the session replied; the \
+             run is unchanged - re-attach, or resume with --guidance or --skip"
       | Run.Invalid_handoff ->
           Error
             (Printf.sprintf
@@ -2015,6 +2258,7 @@ struct
             step_key = None;
             attempt_id = None;
             interrupted = false;
+            timed_out = false;
             recorded_at = Run.iso8601 (Unix.gettimeofday ());
           }
     in
@@ -2095,7 +2339,8 @@ struct
         finish_with_metering
           { run; last_handoff = handoff; guidance = None }
           status
-    | Run.Invalid_handoff -> Error "attach: unreachable - rejected above"
+    | Run.Invalid_handoff | Run.Timeout ->
+        Error "attach: unreachable - rejected above"
 end
 
 module Default =

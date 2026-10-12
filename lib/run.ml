@@ -1,6 +1,7 @@
 open Result_syntax
 
-type outcome = Pass | Fail | Escalate | Invalid_handoff
+(* Timeout: jig stopped the attempt at its deadline; it routes like Fail. *)
+type outcome = Pass | Fail | Escalate | Invalid_handoff | Timeout
 
 (* Saved before the step's process starts, so a crash leaves a record. *)
 type attempt = {
@@ -23,6 +24,11 @@ type attempt = {
   probe_after : string option;
   (* The live capture file; a resume reads the partial output from it. *)
   stdout_path : string option;
+  time_limit_seconds : int option;
+  (* Saved before the start, so a resume never grants the attempt a new limit. *)
+  deadline_at : string option;
+  (* Saved before jig signals the attempt, so a crash cannot lose the decision. *)
+  timeout_requested_at : string option;
 }
 
 module Step_key_map = Map.Make (String)
@@ -112,8 +118,17 @@ let iso8601 time =
     (utc.Unix.tm_mon + 1) utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min
     utc.Unix.tm_sec
 
-(* Inverse of [iso8601], for durations between recorded timestamps without
-   depending on the environment's timezone (civil-date day arithmetic). *)
+(** [iso8601] with milliseconds, for a deadline that a 1s limit can use. *)
+let iso8601_milliseconds time =
+  let total_milliseconds = int_of_float (Float.round (time *. 1000.0)) in
+  let whole_seconds = iso8601 (float_of_int (total_milliseconds / 1000)) in
+  Printf.sprintf "%s.%03dZ"
+    (String.sub whole_seconds 0 (String.length whole_seconds - 1))
+    (total_milliseconds mod 1000)
+
+(* Inverse of [iso8601] and [iso8601_milliseconds], for durations between
+   recorded timestamps without depending on the environment's timezone
+   (civil-date day arithmetic). *)
 let epoch_of_iso8601 text =
   let days_from_civil year month day =
     let year = if month <= 2 then year - 1 else year in
@@ -128,14 +143,21 @@ let epoch_of_iso8601 text =
     in
     (era * 146097) + day_of_era - 719468
   in
+  let whole_seconds year month day hour minute second =
+    float_of_int
+      ((((days_from_civil year month day * 24) + hour) * 60 + minute) * 60
+      + second)
+  in
   match
-    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2dZ"
-      (fun year month day hour minute second ->
-        float_of_int
-          ((((days_from_civil year month day * 24) + hour) * 60 + minute) * 60
-          + second))
+    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2d%s%!"
+      (fun year month day hour minute second rest ->
+        let seconds = whole_seconds year month day hour minute second in
+        if rest = "Z" then Some seconds
+        else
+          Scanf.sscanf rest ".%3d%[0-9]Z%!" (fun milliseconds _ ->
+              Some (seconds +. (float_of_int milliseconds /. 1000.0))))
   with
-  | seconds -> Some seconds
+  | seconds -> seconds
   | exception _ -> None
 
 (* pid separates concurrent jig processes; the sequence separates runs
@@ -158,6 +180,19 @@ let step_key_of_position ~run_id ~(position : position) =
   in
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
     position.iterations_used position.step_index
+
+(** The forEach item index a step key names, if the step ran inside a forEach. *)
+let item_index_of_step_key ~run_id step_key =
+  let prefix = run_id ^ "/e" in
+  if not (String.starts_with ~prefix step_key) then None
+  else
+    let rest =
+      String.sub step_key (String.length prefix)
+        (String.length step_key - String.length prefix)
+    in
+    match Scanf.sscanf rest "%d/i%d/" (fun _ item_index -> item_index) with
+    | item_index -> Some item_index
+    | exception _ -> None
 
 (* The step-key prefix shared by every attempt of one forEach item. *)
 let item_step_key_prefix ~run_id ~entry_index ~item_index =
@@ -312,12 +347,14 @@ let string_of_outcome = function
   | Fail -> "fail"
   | Escalate -> "escalate"
   | Invalid_handoff -> "invalid-handoff"
+  | Timeout -> "timeout"
 
 let outcome_of_string = function
   | "pass" -> Ok Pass
   | "fail" -> Ok Fail
   | "escalate" -> Ok Escalate
   | "invalid-handoff" -> Ok Invalid_handoff
+  | "timeout" -> Ok Timeout
   | other -> Error (Printf.sprintf "run: unknown outcome %S" other)
 
 let string_of_status = function
@@ -371,6 +408,16 @@ let attempt_to_json attempt =
           ("probe_before", attempt.probe_before);
           ("probe_after", attempt.probe_after);
           ("stdout_path", attempt.stdout_path);
+        ]
+    @ (match attempt.time_limit_seconds with
+      | Some seconds -> [ ("time_limit_seconds", `Int seconds) ]
+      | None -> [])
+    @ List.filter_map
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
+        [
+          ("deadline_at", attempt.deadline_at);
+          ("timeout_requested_at", attempt.timeout_requested_at);
         ])
 
 let item_in_progress_to_json item =
@@ -625,6 +672,9 @@ let attempt_of_json json =
       probe_before = optional_string json "probe_before";
       probe_after = optional_string json "probe_after";
       stdout_path = optional_string json "stdout_path";
+      time_limit_seconds = optional_int json "time_limit_seconds";
+      deadline_at = optional_string json "deadline_at";
+      timeout_requested_at = optional_string json "timeout_requested_at";
     }
 
 let item_in_progress_of_json json =

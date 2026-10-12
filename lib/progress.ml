@@ -87,7 +87,7 @@ let format_duration seconds =
     let whole = int_of_float seconds in
     Printf.sprintf "%dm%02ds" (whole / 60) (whole mod 60)
 
-(* Duration always (when both timestamps parse); cost only when the step
+(* "timed out" when jig stopped the step; duration always (when both timestamps parse); cost only when the step
    spent money - "$0.00" on every command step would be noise; the tier
    when the step declared one - per-step economics are the point of tiers. *)
 let detail_of_record (record : Run.step_record) =
@@ -106,12 +106,14 @@ let detail_of_record (record : Run.step_record) =
         Some (Printf.sprintf "$%.2f" value)
     | _ -> None
   in
-  match (duration, cost, record.Run.tier) with
-  | None, None, None -> None
-  | duration_part, cost_part, tier_part ->
-      Some
-        (String.concat "  "
-           (List.filter_map Fun.id [ duration_part; cost_part; tier_part ]))
+  let timed_out =
+    if record.Run.outcome = Run.Timeout then Some "timed out" else None
+  in
+  match
+    List.filter_map Fun.id [ timed_out; duration; cost; record.Run.tier ]
+  with
+  | [] -> None
+  | parts -> Some (String.concat "  " parts)
 
 let apply t (event : Runner.run_event) =
   match event with
@@ -170,7 +172,7 @@ let apply t (event : Runner.run_event) =
       let outcome_status =
         match record.Run.outcome with
         | Run.Pass -> Done
-        | Run.Fail | Run.Invalid_handoff -> Failed
+        | Run.Fail | Run.Invalid_handoff | Run.Timeout -> Failed
         | Run.Escalate -> Paused
       in
       let detail = detail_of_record record in

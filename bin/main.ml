@@ -155,8 +155,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
                            parsed))))
       | None, Some run_id, None ->
           let runs_dir = Jig_core.Project.runs_dir ~root in
-          (* Probe the lock here so a live run is refused in the terminal,
-             not in the detached log; the child takes it for real. *)
+          (* Refuse a live run here, in the terminal, not in the log. *)
           Result.bind (Jig_core.Store.Filesystem.load ~runs_dir ~id:run_id)
             (fun (_ : Jig_core.Run.t) ->
               Result.map
@@ -377,32 +376,40 @@ let attach_run run_id latest step_number =
             exit 1
         | Ok headless_command -> (
             let command = interactive_command () in
-            print_endline
-              "reopening the step's session - exit the chat to hand back to \
-               the run";
-            let chat =
-              Unix.create_process (List.hd command)
-                (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
+            let collect_handoff () =
+              print_endline
+                "reopening the step's session - exit the chat to hand back \
+                 to the run";
+              let chat =
+                Unix.create_process (List.hd command)
+                  (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
+              in
+              ignore (Unix.waitpid [] chat);
+              print_endline "collecting the step's handoff...";
+              Jig_core.Executor.Local.execute ~command:headless_command
+                ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
+                ()
             in
-            ignore (Unix.waitpid [] chat);
-            print_endline "collecting the step's handoff...";
-            let continued =
-              Result.bind
-                (Jig_core.Executor.Local.execute ~command:headless_command
-                   ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
-                   ())
-                (fun exec_result ->
-                  Jig_core.Runner.Default.continue_attached
-                    ~on_step:print_step_live ~root ~run_id:id ~exec_result ())
-            in
-            match continued with
+            match
+              Jig_core.Runner.Default.continue_attached
+                ~on_step:print_step_live ~root ~run_id:id ~collect_handoff ()
+            with
             | Ok (run, path) -> report_run run path
             | Error message ->
                 Printf.eprintf "jig: %s\n" message;
-                Printf.printf
-                  "still paused: jig run --resume %s [--guidance \"...\"] \
-                   [--skip], or jig attach %s\n"
-                  id id;
+                let still_paused =
+                  match
+                    Jig_core.Store.Filesystem.load
+                      ~runs_dir:(Jig_core.Project.runs_dir ~root) ~id
+                  with
+                  | Ok stored -> stored.Jig_core.Run.status = Jig_core.Run.Paused
+                  | Error _ -> false
+                in
+                if still_paused then
+                  Printf.printf
+                    "still paused: jig run --resume %s [--guidance \"...\"] \
+                     [--skip], or jig attach %s\n"
+                    id id;
                 exit 2))
 
 let list_runs json_output =

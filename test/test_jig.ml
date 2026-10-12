@@ -2411,6 +2411,20 @@ let test_run_lock_refuses_a_lock_from_another_host () =
       Alcotest.(check bool) "names the other host" true
         (contains ~affix:"on host another-host.invalid" message)
 
+let test_run_lock_reports_a_malformed_lock_as_an_error () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  write_file (Filename.concat runs_dir "malformed.lock") "[]";
+  match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"malformed" with
+  | Ok _ -> Alcotest.fail "expected a malformed lock to be refused"
+  | Error message ->
+      Alcotest.(check bool) "names the unreadable lock" true
+        (contains ~affix:"has an unreadable lock" message);
+      Alcotest.(check bool) "leaves no candidate file behind" false
+        (Sys.file_exists
+           (Filename.concat runs_dir
+              (Printf.sprintf "malformed.lock.%d" (Unix.getpid ()))))
+
 let test_resume_refuses_a_run_another_process_drives () =
   let root = make_temp_root () in
   setup_three_step_project root;
@@ -2757,6 +2771,7 @@ let pause_pipeline_at_step_one root =
   | Ok (run, _) -> run
 
 let elicited_result stdout = { Executor.exit_code = 0; stdout; stderr = "" }
+let attached_reply stdout () = Ok (elicited_result stdout)
 
 let test_continue_attached_pass_drives_the_run () =
   let root = make_temp_root () in
@@ -2769,8 +2784,8 @@ let test_continue_attached_pass_drives_the_run () =
       ];
   match
     Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
-      ~exec_result:
-        (elicited_result
+      ~collect_handoff:
+        (attached_reply
            (claude_style_output
               ~handoff:(handoff_block ~summary:"resolved with the human" ())
               ~session:"sess-att" ()))
@@ -2801,8 +2816,8 @@ let test_continue_attached_pass_advances_the_item_cursor () =
   Scripted_executor.reset ~outputs:[ handoff_block () ];
   match
     Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
-      ~exec_result:
-        (elicited_result
+      ~collect_handoff:
+        (attached_reply
            (claude_style_output
               ~handoff:(handoff_block ~summary:"human fixed beta" ())
               ~session:"sess-item" ()))
@@ -2833,8 +2848,8 @@ let test_continue_attached_escalate_stays_paused () =
   Scripted_executor.reset ~outputs:[];
   match
     Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
-      ~exec_result:
-        (elicited_result
+      ~collect_handoff:
+        (attached_reply
            (claude_style_output
               ~handoff:
                 (handoff_block ~status:"escalate" ~summary:"still blocked" ())
@@ -2855,7 +2870,7 @@ let test_continue_attached_invalid_leaves_run_untouched () =
   let paused = pause_pipeline_at_step_one root in
   match
     Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
-      ~exec_result:(elicited_result "no handoff block here")
+      ~collect_handoff:(attached_reply "no handoff block here")
       ()
   with
   | Ok _ -> Alcotest.fail "an unparseable elicitation must be an error"
@@ -2873,6 +2888,29 @@ let test_continue_attached_invalid_leaves_run_untouched () =
             (Run.string_of_status reloaded.Run.status);
           Alcotest.(check int) "no record was added" 1
             (List.length reloaded.Run.steps))
+
+let test_attach_refuses_before_the_chat_when_another_process_drives () =
+  let root = make_temp_root () in
+  let paused = pause_pipeline_at_step_one root in
+  let runs_dir = Project.runs_dir ~root in
+  match Store.Filesystem.acquire_run_lock ~runs_dir ~id:paused.Run.id with
+  | Error message -> Alcotest.fail message
+  | Ok run_lock ->
+      let chat_opened = ref false in
+      let result =
+        Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
+          ~collect_handoff:(fun () ->
+            chat_opened := true;
+            attached_reply (handoff_block ()) ())
+          ()
+      in
+      Store.Filesystem.release_run_lock run_lock;
+      (match result with
+      | Ok _ -> Alcotest.fail "expected the attach to be refused"
+      | Error message ->
+          Alcotest.(check bool) "says another process drives it" true
+            (contains ~affix:"is driven by live pid" message));
+      Alcotest.(check bool) "the chat never opened" false !chat_opened
 
 let test_parse_cost_known_and_unknown () =
   let known, usage = Metering.parse_cost (claude_style_output ()) in
@@ -4483,8 +4521,13 @@ let () =
             test_run_lock_takes_over_a_dead_pid;
           Alcotest.test_case "run lock refuses another host" `Quick
             test_run_lock_refuses_a_lock_from_another_host;
+          Alcotest.test_case "run lock reports a malformed lock" `Quick
+            test_run_lock_reports_a_malformed_lock_as_an_error;
           Alcotest.test_case "resume refuses a run another process drives"
             `Quick test_resume_refuses_a_run_another_process_drives;
+          Alcotest.test_case "attach refuses before the chat when driven"
+            `Quick
+            test_attach_refuses_before_the_chat_when_another_process_drives;
         ] );
       ( "init",
         [

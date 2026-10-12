@@ -7,6 +7,12 @@ type t = {
   attach : string list;
   attach_headless : string list;
   notify : string list;
+  (* Reopens an interrupted attempt's session by its {session_id}; the
+     recovery prompt is appended like a harness prompt. *)
+  continue_session : string list;
+  (* Run in the workspace before and after each attempt; the output is
+     stored on the attempt. *)
+  probe : string list;
   (* Named alternates to the default harness, for steps that declare a
      tier - the map from an abstract cost tier to a concrete command. *)
   tiers : (string * string list) list;
@@ -75,6 +81,8 @@ let of_yaml yaml =
       let* attach = string_list_field fields ~key:"attach" in
       let* attach_headless = string_list_field fields ~key:"attach_headless" in
       let* notify = string_list_field fields ~key:"notify" in
+      let* continue_session = string_list_field fields ~key:"continue" in
+      let* probe = string_list_field fields ~key:"probe" in
       match harness with
       | None -> Error "config: missing required key: harness"
       | Some [] -> Error "config: harness must not be empty"
@@ -88,6 +96,8 @@ let of_yaml yaml =
               attach = Option.value attach ~default:[];
               attach_headless = Option.value attach_headless ~default:[];
               notify = Option.value notify ~default:[];
+              continue_session = Option.value continue_session ~default:[];
+              probe = Option.value probe ~default:[];
               tiers;
             })
   | _ -> Error "config: expected a mapping at the top level"

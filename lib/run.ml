@@ -12,6 +12,14 @@ type attempt = {
   command : string list;
   started_at : string;
   child_pid : int option;
+  (* Assigned by jig before the start when the command has {session_id}. *)
+  session_id : string option;
+  (* What a resume does if this attempt is cut off. *)
+  on_interrupt : Skill.on_interrupt;
+  probe_before : string option;
+  probe_after : string option;
+  (* The live capture file; a resume reads the partial output from it. *)
+  stdout_path : string option;
 }
 
 module Step_key_map = Map.Make (String)
@@ -166,6 +174,51 @@ let unrouted_finished_step run ~step_key =
       Some step
   | _ -> None
 
+let attempt_number attempt =
+  match String.rindex_opt attempt.attempt_id '#' with
+  | None -> 0
+  | Some hash -> (
+      let digits =
+        String.sub attempt.attempt_id (hash + 1)
+          (String.length attempt.attempt_id - hash - 1)
+      in
+      match int_of_string_opt digits with Some number -> number | None -> 0)
+
+(* A skip or attach that moved the position past the attempt resolved it. *)
+let attempt_at_position run attempt =
+  attempt.step_key = step_key_of_position ~run_id:run.id ~position:run.position
+
+(* An interrupted attempt at the run's position that no later attempt of
+   its step has followed: the cut-off work a resume or an attach must face. *)
+let unresolved_interrupted_attempts run =
+  let candidates =
+    List.map snd (Step_key_map.bindings run.attempts_in_flight)
+    @ run.interrupted_attempts
+  in
+  let followed attempt =
+    List.exists
+      (fun step ->
+        match step.attempt with
+        | Some later ->
+            later.step_key = attempt.step_key
+            && attempt_number later > attempt_number attempt
+        | None -> false)
+      run.steps
+    || List.exists
+         (fun later ->
+           later.step_key = attempt.step_key
+           && attempt_number later > attempt_number attempt)
+         candidates
+  in
+  List.filter
+    (fun attempt -> attempt_at_position run attempt && not (followed attempt))
+    candidates
+
+let unresolved_interrupted_attempt run ~step_key =
+  List.find_opt
+    (fun attempt -> attempt.step_key = step_key)
+    (unresolved_interrupted_attempts run)
+
 (* Called under the run lock, so no live jig drives these attempts. *)
 let mark_attempts_interrupted run =
   {
@@ -218,10 +271,22 @@ let attempt_to_json attempt =
         ("command", `List (List.map (fun part -> `String part) attempt.command));
         ("started_at", `String attempt.started_at);
       ]
-    @
-    match attempt.child_pid with
-    | Some pid -> [ ("child_pid", `Int pid) ]
-    | None -> [])
+    @ (match attempt.child_pid with
+      | Some pid -> [ ("child_pid", `Int pid) ]
+      | None -> [])
+    @ [
+        ( "on_interrupt",
+          `String (Skill.string_of_on_interrupt attempt.on_interrupt) );
+      ]
+    @ List.filter_map
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
+        [
+          ("session_id", attempt.session_id);
+          ("probe_before", attempt.probe_before);
+          ("probe_after", attempt.probe_after);
+          ("stdout_path", attempt.stdout_path);
+        ])
 
 let step_to_json step =
   let handoff_field =
@@ -424,6 +489,14 @@ let attempt_of_json json =
     | _ -> Error "run: attempt command must be a list"
   in
   let* started_at = member_string json "started_at" in
+  (* Attempts recorded before the policy existed take the default. *)
+  let* on_interrupt =
+    match optional_string json "on_interrupt" with
+    | None -> Ok Skill.Recover
+    | Some text ->
+        Result.map_error (fun message -> "run: " ^ message)
+          (Skill.on_interrupt_of_string text)
+  in
   Ok
     {
       step_key;
@@ -433,6 +506,11 @@ let attempt_of_json json =
       command;
       started_at;
       child_pid = optional_int json "child_pid";
+      session_id = optional_string json "session_id";
+      on_interrupt;
+      probe_before = optional_string json "probe_before";
+      probe_after = optional_string json "probe_after";
+      stdout_path = optional_string json "stdout_path";
     }
 
 let optional_attempt json =

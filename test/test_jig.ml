@@ -500,6 +500,8 @@ let test_store_saves_run () =
       position = { Run.entry_index = 2; iterations_used = 1; for_each = None };
       workspace = Some "/somewhere/worktree";
       steps = [];
+      attempts_in_flight = Run.Step_key_map.empty;
+      interrupted_attempts = [];
       started_at = "2026-07-02T12:00:00Z";
       finished_at = None;
     }
@@ -741,7 +743,7 @@ end = struct
 
   let prompts () = !recorded_prompts
 
-  let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt () =
+  let execute ?on_spawn:_ ?environment:_ ~command:_ ~cwd:_ ~prompt () =
     recorded_prompts := !recorded_prompts @ [ prompt ];
     let stdout =
       match !queued_outputs with
@@ -1387,10 +1389,13 @@ let test_run_json_roundtrips_for_each_position () =
             session_id = None;
             item_index = Some 1;
             item_key = Some "alpha";
+            attempt = None;
             started_at = "";
             finished_at = "";
           };
         ];
+      attempts_in_flight = Run.Step_key_map.empty;
+      interrupted_attempts = [];
       started_at = "";
       finished_at = None;
     }
@@ -1428,7 +1433,13 @@ let test_old_run_json_still_loads () =
         (run.Run.position.Run.for_each = None);
       let step = List.hd run.Run.steps in
       Alcotest.(check (option int)) "no item_index" None step.Run.item_index;
-      Alcotest.(check (option string)) "no item_key" None step.Run.item_key
+      Alcotest.(check (option string)) "no item_key" None step.Run.item_key;
+      Alcotest.(check bool) "no attempt on the step" true
+        (step.Run.attempt = None);
+      Alcotest.(check bool) "no attempts in flight" true
+        (Run.Step_key_map.is_empty run.Run.attempts_in_flight);
+      Alcotest.(check int) "no interrupted attempts" 0
+        (List.length run.Run.interrupted_attempts)
 
 let test_context_renders_into_every_prompt () =
   let root = make_temp_root () in
@@ -1983,6 +1994,7 @@ let test_last_handoff_picks_latest () =
       session_id = None;
       item_index = None;
       item_key = None;
+      attempt = None;
       started_at = "";
       finished_at = "";
     }
@@ -1998,6 +2010,8 @@ let test_last_handoff_picks_latest () =
       workspace = None;
       steps =
         [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
+      attempts_in_flight = Run.Step_key_map.empty;
+      interrupted_attempts = [];
       started_at = "";
       finished_at = None;
     }
@@ -2134,6 +2148,8 @@ let test_resume_honors_recorded_workspace_location () =
       position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
       workspace = Some old_workspace;
       steps = [];
+      attempts_in_flight = Run.Step_key_map.empty;
+      interrupted_attempts = [];
       started_at = "2026-07-03T00:00:00Z";
       finished_at = None;
     }
@@ -2161,7 +2177,7 @@ let probe_runs_dir = ref ""
 let probe_seen : Run.t list ref = ref []
 
 module Probe_executor : Executor.S = struct
-  let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt:_ () =
+  let execute ?on_spawn:_ ?environment:_ ~command:_ ~cwd:_ ~prompt:_ () =
     (match Store.Filesystem.list_runs ~runs_dir:!probe_runs_dir with
     | Ok listing -> probe_seen := listing.Store.runs
     | Error _ -> probe_seen := []);
@@ -2259,6 +2275,8 @@ let sample_stored_run ~id ~task =
     position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
     workspace = None;
     steps = [];
+    attempts_in_flight = Run.Step_key_map.empty;
+    interrupted_attempts = [];
     started_at = "2026-07-02T12:00:00Z";
     finished_at = None;
   }
@@ -3118,6 +3136,7 @@ let finished skill outcome =
       session_id = None;
       item_index = None;
       item_key = None;
+      attempt = None;
       started_at = "";
       finished_at = "";
     }
@@ -3423,6 +3442,7 @@ let finished_with ~started_at ~finished_at ~cost skill outcome =
       session_id = None;
       item_index = None;
       item_key = None;
+      attempt = None;
       started_at;
       finished_at;
     }
@@ -3491,6 +3511,7 @@ let recorded ?item_index ?item_key ?(outcome = Run.Pass) skill =
     session_id = None;
     item_index;
     item_key;
+    attempt = None;
     started_at = "";
     finished_at = "";
   }
@@ -3505,6 +3526,8 @@ let persisted_run ~steps ~status ~position =
     position;
     workspace = None;
     steps;
+    attempts_in_flight = Run.Step_key_map.empty;
+    interrupted_attempts = [];
     started_at = "";
     finished_at = None;
   }
@@ -3902,7 +3925,7 @@ let test_skill_without_frontmatter_is_untouched () =
 let capture_commands : string list list ref = ref []
 
 module Capturing_executor : Executor.S = struct
-  let execute ?on_spawn:_ ~command ~cwd:_ ~prompt:_ () =
+  let execute ?on_spawn:_ ?environment:_ ~command ~cwd:_ ~prompt:_ () =
     capture_commands := !capture_commands @ [ command ];
     Ok { Executor.exit_code = 0; stdout = handoff_block (); stderr = "" }
 end
@@ -3966,6 +3989,7 @@ let test_step_record_json_round_trips_tier () =
         session_id = None;
         item_index = None;
         item_key = None;
+        attempt = None;
         started_at = "";
         finished_at = "";
       }
@@ -3990,6 +4014,7 @@ let tiered_step ~skill ~tier ~cost =
     session_id = None;
     item_index = None;
     item_key = None;
+    attempt = None;
     started_at = "2026-01-01T00:00:00Z";
     finished_at = "2026-01-01T00:01:30Z";
   }
@@ -4014,6 +4039,8 @@ let test_cost_by_tier_groups_in_first_seen_order () =
           tiered_step ~skill:"open-pr" ~tier:(Some "mechanical")
             ~cost:(Metering.Cost_usd 0.02);
         ];
+      attempts_in_flight = Run.Step_key_map.empty;
+      interrupted_attempts = [];
       started_at = "";
       finished_at = None;
     }
@@ -4146,6 +4173,491 @@ let test_field_guide_append_reaches_next_step () =
         (contains ~affix:"learned by step one" (step_stdout run 0));
       Alcotest.(check bool) "step two did" true
         (contains ~affix:"learned by step one" (step_stdout run 1))
+
+(* Telemetry *)
+
+let test_subprocess_environment_reaches_only_the_child () =
+  Unix.putenv "JIG_TEST_OVERRIDDEN" "parent";
+  match
+    Subprocess.run
+      ~environment:
+        [ ("JIG_TEST_OVERRIDDEN", "child"); ("JIG_TEST_ADDED", "added") ]
+      ~argv:
+        [ "sh"; "-c"; "printf '%s %s' \"$JIG_TEST_OVERRIDDEN\" \"$JIG_TEST_ADDED\"" ]
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok outcome ->
+      Alcotest.(check string) "child sees the overrides" "child added"
+        outcome.Subprocess.stdout;
+      Alcotest.(check (option string)) "parent keeps its value" (Some "parent")
+        (Sys.getenv_opt "JIG_TEST_OVERRIDDEN");
+      Alcotest.(check (option string)) "parent gains nothing" None
+        (Sys.getenv_opt "JIG_TEST_ADDED")
+
+(* Attempts *)
+
+let metering_lines root =
+  let path = Filename.concat root ".jig/runs/metering.jsonl" in
+  if not (Sys.file_exists path) then []
+  else
+    In_channel.with_open_text path In_channel.input_all
+    |> String.split_on_char '\n'
+    |> List.filter (fun line -> String.trim line <> "")
+    |> List.map Yojson.Safe.from_string
+
+let metered_attempt_ids root =
+  List.map
+    (fun line -> Yojson.Safe.Util.(line |> member "attempt_id" |> to_string))
+    (metering_lines root)
+
+let read_text path = In_channel.with_open_text path In_channel.input_all
+
+(* A harness that writes the step key and attempt id it sees to [path]. *)
+let environment_reporting_harness ~path ~then_run =
+  [
+    "sh";
+    "-c";
+    Printf.sprintf "printf '%%s %%s' \"$JIG_STEP_KEY\" \"$JIG_ATTEMPT_ID\" > %s; %s"
+      (Filename.quote path) then_run;
+  ]
+
+let write_harness_config root harness =
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    (Printf.sprintf "harness:\n%s"
+       (String.concat ""
+          (List.map (fun part -> Printf.sprintf "  - %S\n" part) harness)))
+
+(* The child must never return into the test runner. *)
+let in_child_process action =
+  match Unix.fork () with
+  | 0 ->
+      (try action () with _ -> ());
+      Unix._exit 0
+  | child_pid ->
+      let _, status = Unix.waitpid [] child_pid in
+      status
+
+let pass_handoff_command = "printf '```handoff\\nstatus: pass\\n```\\n'"
+
+let test_killed_step_leaves_its_attempt_in_flight () =
+  let root = make_temp_root () in
+  let first_environment = Filename.concat root "first-environment" in
+  (* $PPID of the harness is the jig process driving the step. *)
+  setup_project root
+    ~harness:
+      (environment_reporting_harness ~path:first_environment
+         ~then_run:"kill -9 $PPID");
+  let status =
+    in_child_process (fun () ->
+        ignore
+          (Runner.Default.execute_run ~run_id:"killed-run" ~root
+             ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()))
+  in
+  Alcotest.(check bool) "the jig process was killed" true
+    (status = Unix.WSIGNALED Sys.sigkill);
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"killed-run" with
+  | Error message -> Alcotest.fail message
+  | Ok run -> (
+      Alcotest.(check int) "no step finished" 0 (List.length run.Run.steps);
+      match Run.Step_key_map.bindings run.Run.attempts_in_flight with
+      | [ (step_key, attempt) ] ->
+          Alcotest.(check string) "the key names the step's place"
+            "killed-run/e0/r0/s0" step_key;
+          Alcotest.(check string) "first attempt of the key"
+            "killed-run/e0/r0/s0#1" attempt.Run.attempt_id;
+          Alcotest.(check string) "the attempt names its skill" "say-hi"
+            attempt.Run.skill;
+          Alcotest.(check bool) "the child pid is recorded" true
+            (attempt.Run.child_pid <> None);
+          Alcotest.(check string) "the harness saw the same key and id"
+            "killed-run/e0/r0/s0 killed-run/e0/r0/s0#1"
+            (read_text first_environment)
+      | bindings ->
+          Alcotest.fail
+            (Printf.sprintf "expected one attempt in flight, found %d"
+               (List.length bindings)))
+
+let test_resume_records_the_interrupted_attempt_and_meters_each_once () =
+  let root = make_temp_root () in
+  setup_project root
+    ~harness:
+      (environment_reporting_harness
+         ~path:(Filename.concat root "unused")
+         ~then_run:"kill -9 $PPID");
+  ignore
+    (in_child_process (fun () ->
+         ignore
+           (Runner.Default.execute_run ~run_id:"resumed-run" ~root
+              ~workflow_name:"hello" ~task:"say hi" ~isolated:false ())));
+  let resume_with ~then_run =
+    let environment_path = Filename.concat root "resume-environment" in
+    write_harness_config root
+      (environment_reporting_harness ~path:environment_path ~then_run);
+    let result =
+      Runner.Default.resume_run ~root ~run_id:"resumed-run" ~guidance:None ()
+    in
+    (result, read_text environment_path)
+  in
+  (* The first resume pauses, so a second resume replays the reconciliation. *)
+  (match resume_with ~then_run:"printf '```handoff\\nstatus: escalate\\n```\\n'" with
+  | Error message, _ -> Alcotest.fail message
+  | Ok (run, _), environment ->
+      Alcotest.(check string) "paused" "paused"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "the re-run keeps the key, with a new attempt"
+        "resumed-run/e0/r0/s0 resumed-run/e0/r0/s0#2" environment);
+  match resume_with ~then_run:pass_handoff_command with
+  | Error message, _ -> Alcotest.fail message
+  | Ok (run, _), environment ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "third attempt of the same key"
+        "resumed-run/e0/r0/s0 resumed-run/e0/r0/s0#3" environment;
+      Alcotest.(check (list string)) "the interrupted attempt is recorded"
+        [ "resumed-run/e0/r0/s0#1" ]
+        (List.map
+           (fun attempt -> attempt.Run.attempt_id)
+           run.Run.interrupted_attempts);
+      Alcotest.(check bool) "nothing is left in flight" true
+        (Run.Step_key_map.is_empty run.Run.attempts_in_flight);
+      Alcotest.(check (list string)) "exactly one event per attempt"
+        [
+          "resumed-run/e0/r0/s0#1";
+          "resumed-run/e0/r0/s0#2";
+          "resumed-run/e0/r0/s0#3";
+        ]
+        (metered_attempt_ids root);
+      let interrupted_event = List.hd (metering_lines root) in
+      Alcotest.(check string) "an interrupted attempt costs unknown, not zero"
+        "unknown"
+        Yojson.Safe.Util.(interrupted_event |> member "cost_usd" |> to_string);
+      Alcotest.(check bool) "the event says it was interrupted" true
+        Yojson.Safe.Util.(interrupted_event |> member "interrupted" |> to_bool)
+
+(* Dies exactly between the step save and the metering append. *)
+module Crashing_metering : Metering.S = struct
+  let record ~runs_dir:_ ~event:_ = Unix._exit 3
+  let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
+end
+
+module Crashing_metering_runner =
+  Runner.Make (Executor.Local) (Model_provider.Default) (Crashing_metering)
+    (Store.Filesystem)
+
+let test_resume_meters_a_step_saved_before_a_crash () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  ignore
+    (in_child_process (fun () ->
+         ignore
+           (Crashing_metering_runner.execute_run ~run_id:"saved-run" ~root
+              ~workflow_name:"hello" ~task:"say hi" ~isolated:false ())));
+  (match
+     Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"saved-run"
+   with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check int) "the step was saved" 1 (List.length run.Run.steps);
+      Alcotest.(check (list string)) "but not metered" []
+        (metered_attempt_ids root));
+  match Runner.Default.resume_run ~root ~run_id:"saved-run" ~guidance:None () with
+  | Error message -> Alcotest.fail message
+  | Ok _ ->
+      Alcotest.(check (list string))
+        "the saved attempt is metered once, then the re-run"
+        [ "saved-run/e0/r0/s0#1"; "saved-run/e0/r0/s0#2" ]
+        (metered_attempt_ids root)
+
+let sample_metering_event =
+  {
+    Metering.run_id = "run";
+    skill = "say-hi";
+    command = [ "harness" ];
+    tier = None;
+    cost = Metering.Cost_usd 0.01;
+    usage = None;
+    step_key = Some "run/e0/r0/s0";
+    attempt_id = Some "run/e0/r0/s0#1";
+    interrupted = false;
+    recorded_at = "";
+  }
+
+let test_ledger_lists_the_attempt_ids_of_one_run () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  let record event =
+    match Metering.Jsonl.record ~runs_dir ~event with
+    | Ok () -> ()
+    | Error message -> Alcotest.fail message
+  in
+  record sample_metering_event;
+  record { sample_metering_event with run_id = "other"; attempt_id = Some "other/e0/r0/s0#1" };
+  record { sample_metering_event with attempt_id = None };
+  record { sample_metering_event with attempt_id = Some "run/e0/r0/s0#2" };
+  match Metering.Jsonl.recorded_attempt_ids ~runs_dir ~run_id:"run" with
+  | Error message -> Alcotest.fail message
+  | Ok attempt_ids ->
+      Alcotest.(check (list string)) "only this run's attempts"
+        [ "run/e0/r0/s0#1"; "run/e0/r0/s0#2" ]
+        attempt_ids
+
+(* Counts ledger reads and keeps the ledger in memory. *)
+let ledger_reads = ref 0
+let ledger_events : Metering.event list ref = ref []
+
+module Counting_metering : Metering.S = struct
+  let record ~runs_dir:_ ~event =
+    ledger_events := !ledger_events @ [ event ];
+    Ok ()
+
+  let recorded_attempt_ids ~runs_dir:_ ~run_id =
+    incr ledger_reads;
+    Ok
+      (List.filter_map
+         (fun event ->
+           if event.Metering.run_id = run_id then event.Metering.attempt_id
+           else None)
+         !ledger_events)
+end
+
+module Counting_metering_runner =
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Counting_metering)
+    (Store.Filesystem)
+
+let test_a_drive_reads_the_ledger_at_most_once () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  ledger_reads := 0;
+  ledger_events := [];
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
+  (match
+     Counting_metering_runner.execute_run ~run_id:"counted" ~root
+       ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  Alcotest.(check int) "a new run never reads the ledger" 0 !ledger_reads;
+  match
+    Counting_metering_runner.resume_run ~root ~run_id:"counted"
+      ~guidance:None ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "the resume reads the ledger once" 1 !ledger_reads;
+      Alcotest.(check (list string)) "one event per attempt"
+        [ "counted/e0/r0/s0#1"; "counted/e1/r0/s0#1"; "counted/e1/r0/s0#2"; "counted/e2/r0/s0#1" ]
+        (List.filter_map
+           (fun event -> event.Metering.attempt_id)
+           !ledger_events)
+
+let test_metering_appends_after_a_torn_line () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  write_file (Filename.concat runs_dir "metering.jsonl") "{\"run_id\": \"tor";
+  let event = sample_metering_event in
+  (match Metering.Jsonl.record ~runs_dir ~event with
+  | Ok () -> ()
+  | Error message -> Alcotest.fail message);
+  let lines =
+    read_text (Filename.concat runs_dir "metering.jsonl")
+    |> String.split_on_char '\n'
+  in
+  Alcotest.(check bool) "the event is a whole line of its own" true
+    (List.exists
+       (fun line ->
+         match Yojson.Safe.from_string line with
+         | json ->
+             Yojson.Safe.Util.(json |> member "attempt_id" |> to_string)
+             = "run/e0/r0/s0#1"
+         | exception _ -> false)
+       lines)
+
+let captured_environments : (string * string) list list ref = ref []
+
+module Environment_capturing_executor : Executor.S = struct
+  let execute ?on_spawn:_ ?(environment = []) ~command:_ ~cwd:_ ~prompt:_ () =
+    captured_environments := !captured_environments @ [ environment ];
+    Scripted_executor.execute ~command:[] ~cwd:"" ~prompt:"" ()
+end
+
+module Environment_capturing_runner =
+  Runner.Make (Environment_capturing_executor) (Model_provider.Default)
+    (Metering.Noop) (Store.Filesystem)
+
+let test_step_keys_follow_items_iterations_and_retry_steps () =
+  let root = make_temp_root () in
+  setup_fanout_project ~workflow:retry_fanout_workflow_yaml root;
+  captured_environments := [];
+  Scripted_executor.reset
+    ~outputs:
+      [
+        handoff_block ();
+        handoff_block ~status:"fail" ();
+        handoff_block ();
+        handoff_block ();
+        handoff_block ();
+        handoff_block ();
+      ];
+  match
+    Environment_capturing_runner.execute_run ~run_id:"keyed" ~root
+      ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      let expected_keys =
+        [
+          "keyed/e0/i0/b0/r0/s0";
+          "keyed/e0/i0/b0/r0/s1";
+          "keyed/e0/i0/b0/r1/s0";
+          "keyed/e0/i0/b0/r1/s1";
+          "keyed/e0/i1/b0/r0/s0";
+          "keyed/e0/i1/b0/r0/s1";
+        ]
+      in
+      Alcotest.(check (list string)) "each step record carries its key"
+        expected_keys
+        (List.map
+           (fun step ->
+             match step.Run.attempt with
+             | Some attempt -> attempt.Run.step_key
+             | None -> "no attempt")
+           run.Run.steps);
+      Alcotest.(check (list (pair string string))) "the harness gets the key"
+        (List.map
+           (fun key -> (key, key ^ "#1"))
+           expected_keys)
+        (List.map
+           (fun environment ->
+             ( List.assoc "JIG_STEP_KEY" environment,
+               List.assoc "JIG_ATTEMPT_ID" environment ))
+           !captured_environments)
+
+let sample_attempt ~step_key ~number =
+  {
+    Run.step_key;
+    attempt_id = Printf.sprintf "%s#%d" step_key number;
+    skill = "port-one";
+    tier = Some "cheap";
+    command = [ "harness"; "--flag" ];
+    started_at = "2026-10-12T10:00:00Z";
+    child_pid = Some 4242;
+  }
+
+let test_run_json_round_trips_attempts () =
+  let first = sample_attempt ~step_key:"run/e0/i0/b0/r0/s0" ~number:1 in
+  let second = sample_attempt ~step_key:"run/e0/i1/b0/r0/s0" ~number:1 in
+  let interrupted = sample_attempt ~step_key:"run/e1/r0/s0" ~number:1 in
+  let finished =
+    {
+      (recorded "say-hi") with
+      Run.attempt = Some (sample_attempt ~step_key:"run/e1/r0/s0" ~number:2);
+    }
+  in
+  let run =
+    {
+      (persisted_run ~steps:[ finished ] ~status:Run.Running
+         ~position:(pos 1))
+      with
+      Run.attempts_in_flight =
+        Run.Step_key_map.(
+          empty |> add first.Run.step_key first |> add second.Run.step_key second);
+      interrupted_attempts = [ { interrupted with Run.child_pid = None } ];
+    }
+  in
+  let saved_text = Yojson.Safe.to_string (Run.to_json run) in
+  match Run.of_json (Yojson.Safe.from_string saved_text) with
+  | Error message -> Alcotest.fail message
+  | Ok loaded ->
+      let without_map (run : Run.t) =
+        { run with Run.attempts_in_flight = Run.Step_key_map.empty }
+      in
+      Alcotest.(check bool) "attempts in flight survive, keyed by step" true
+        (Run.Step_key_map.bindings loaded.Run.attempts_in_flight
+        = Run.Step_key_map.bindings run.Run.attempts_in_flight);
+      Alcotest.(check bool) "the rest of the record survives" true
+        (without_map loaded = without_map run)
+
+(* The harness runs, then reading its output fails. *)
+module Spawn_then_fail_executor : Executor.S = struct
+  let execute ?on_spawn ?environment:_ ~command:_ ~cwd:_ ~prompt:_ () =
+    Option.iter
+      (fun notify -> notify ~child_pid:4242 ~stdout_path:"" ~stderr_path:"")
+      on_spawn;
+    Error "executor: lost the capture files"
+end
+
+module Spawn_then_fail_runner =
+  Runner.Make (Spawn_then_fail_executor) (Model_provider.Default)
+    (Metering.Jsonl) (Store.Filesystem)
+
+let test_an_error_after_spawn_keeps_the_attempt () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  (match
+     Spawn_then_fail_runner.execute_run ~run_id:"lost-output" ~root
+       ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
+   with
+  | Ok _ -> Alcotest.fail "expected the executor error"
+  | Error _ -> ());
+  match
+    Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"lost-output"
+  with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check (list string)) "the attempt that ran is recorded"
+        [ "lost-output/e0/r0/s0#1" ]
+        (List.map
+           (fun attempt -> attempt.Run.attempt_id)
+           run.Run.interrupted_attempts);
+      Alcotest.(check (list string)) "and metered once"
+        [ "lost-output/e0/r0/s0#1" ]
+        (metered_attempt_ids root)
+
+(* Lets one event through, then refuses like a budget gate at its cap. *)
+let budget_events_left = ref 0
+
+module Budget_gate_metering : Metering.S = struct
+  let record ~runs_dir:_ ~event:_ =
+    if !budget_events_left > 0 then (
+      decr budget_events_left;
+      Ok ())
+    else Error "budget: spend cap reached"
+
+  let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
+end
+
+module Budget_gate_runner =
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Budget_gate_metering)
+    (Store.Filesystem)
+
+let test_infrastructure_error_keeps_the_saved_steps () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset ~outputs:[];
+  budget_events_left := 1;
+  (match
+     Budget_gate_runner.execute_run ~run_id:"capped" ~root
+       ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
+   with
+  | Ok _ -> Alcotest.fail "expected the budget gate to stop the run"
+  | Error message ->
+      Alcotest.(check string) "the gate's message" "budget: spend cap reached"
+        message);
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"capped" with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check string) "failed" "failed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check (list string)) "both executed steps stay recorded"
+        [ "one"; "two" ]
+        (List.map (fun step -> step.Run.skill) run.Run.steps);
+      Alcotest.(check (option string)) "the error is recorded"
+        (Some "budget: spend cap reached") run.Run.error
 
 let () =
   Random.self_init ();
@@ -4608,5 +5120,34 @@ let () =
             test_resume_refuses_completed_runs;
           Alcotest.test_case "state persists incrementally" `Quick
             test_record_persisted_incrementally;
+        ] );
+      ( "attempts",
+        [
+          Alcotest.test_case "a killed step leaves its attempt in flight"
+            `Quick test_killed_step_leaves_its_attempt_in_flight;
+          Alcotest.test_case "resume records the interrupted attempt"
+            `Quick
+            test_resume_records_the_interrupted_attempt_and_meters_each_once;
+          Alcotest.test_case "resume meters a step saved before a crash"
+            `Quick test_resume_meters_a_step_saved_before_a_crash;
+          Alcotest.test_case "the ledger lists one run's attempt ids" `Quick
+            test_ledger_lists_the_attempt_ids_of_one_run;
+          Alcotest.test_case "a drive reads the ledger at most once" `Quick
+            test_a_drive_reads_the_ledger_at_most_once;
+          Alcotest.test_case "metering appends after a torn line" `Quick
+            test_metering_appends_after_a_torn_line;
+          Alcotest.test_case "step keys follow items, iterations, steps"
+            `Quick test_step_keys_follow_items_iterations_and_retry_steps;
+          Alcotest.test_case "run json round-trips attempts" `Quick
+            test_run_json_round_trips_attempts;
+          Alcotest.test_case "an error after spawn keeps the attempt" `Quick
+            test_an_error_after_spawn_keeps_the_attempt;
+          Alcotest.test_case "an infrastructure error keeps saved steps"
+            `Quick test_infrastructure_error_keeps_the_saved_steps;
+        ] );
+      ( "telemetry",
+        [
+          Alcotest.test_case "subprocess environment reaches only the child"
+            `Quick test_subprocess_environment_reaches_only_the_child;
         ] );
     ]

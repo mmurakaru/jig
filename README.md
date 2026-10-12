@@ -41,6 +41,10 @@ marked `escalate` pauses the run for you:
 jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lexer"
 ```
 
+jig saves each step attempt in the run record before the harness starts, so
+a run killed mid-step resumes too: the record keeps the interrupted attempt,
+and the step runs again.
+
 ## Tiers
 
 Only the steps that need judgment - diagnosis, design, tradeoffs - need a

@@ -17,6 +17,21 @@ let posix_signal_number signal =
   else if signal = Sys.sigterm then 15
   else abs signal
 
+(* The parent's environment with each [overrides] name replaced or added,
+   as execve expects it: "NAME=value" strings. *)
+let environment_with_overrides overrides =
+  let overridden entry =
+    List.exists
+      (fun (name, _) -> String.starts_with ~prefix:(name ^ "=") entry)
+      overrides
+  in
+  let inherited =
+    List.filter (fun entry -> not (overridden entry))
+      (Array.to_list (Unix.environment ()))
+  in
+  Array.of_list
+    (inherited @ List.map (fun (name, value) -> name ^ "=" ^ value) overrides)
+
 let read_and_remove path =
   let content = In_channel.with_open_text path In_channel.input_all in
   Sys.remove path;
@@ -25,13 +40,20 @@ let read_and_remove path =
 (* Capture into temp files instead of pipes: a child that fills a pipe buffer
    on one stream while we drain the other would deadlock. Fork/exec by hand
    because Unix.create_process cannot change the child's working directory.
-   [on_spawn] fires in the parent once the child is running, with the capture
-   paths - a live view can tail them while this call blocks in waitpid. *)
-let run ?cwd ?on_spawn ~argv () =
+   [on_spawn] fires in the parent once the child is running, with its pid
+   and the capture paths - a live view can tail them while this call blocks
+   in waitpid.
+   [environment] adds or replaces variables for the child only. *)
+let run ?cwd ?on_spawn ?(environment = []) ~argv () =
   match argv with
   | [] -> Error "subprocess: empty command"
   | program :: _ -> (
       let argv_array = Array.of_list argv in
+      let child_environment =
+        match environment with
+        | [] -> None
+        | overrides -> Some (environment_with_overrides overrides)
+      in
       try
         let stdout_path = Filename.temp_file "jig-stdout" ".log" in
         let stderr_path = Filename.temp_file "jig-stderr" ".log" in
@@ -51,13 +73,18 @@ let run ?cwd ?on_spawn ~argv () =
           Unix.close stdin_fd;
           Unix.close stdout_fd;
           Unix.close stderr_fd;
-          try Unix.execvp program argv_array with _ -> Unix._exit 127)
+          try
+            match child_environment with
+            | None -> Unix.execvp program argv_array
+            | Some child_environment ->
+                Unix.execvpe program argv_array child_environment
+          with _ -> Unix._exit 127)
         else (
           Unix.close stdin_fd;
           Unix.close stdout_fd;
           Unix.close stderr_fd;
           Option.iter
-            (fun notify -> notify ~stdout_path ~stderr_path)
+            (fun notify -> notify ~child_pid ~stdout_path ~stderr_path)
             on_spawn;
           let _, status = Unix.waitpid [] child_pid in
           let stdout = read_and_remove stdout_path in

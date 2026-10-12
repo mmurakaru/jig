@@ -65,6 +65,21 @@ success.
 The skill's part of the contract is meaning, not mechanics: say what the
 statuses mean *for this step* - its completion criterion.
 
+## The environment
+
+The harness process gets two variables:
+
+- `JIG_STEP_KEY` names the step's place in the run: the run id, the
+  workflow entry, the forEach item and body step, the retry iteration, and
+  the step inside the retry group.
+  It is the same each time that step runs again, also after a resume.
+- `JIG_ATTEMPT_ID` is the step key plus `#<n>`, the n-th attempt of that
+  step in the run.
+
+A skill with external effects can use the step key as an idempotency key:
+put it in a commit trailer or a PR body, and search for it before it
+creates the effect again.
+
 ## The field guide
 
 `.jig/FIELDGUIDE.md` is repo knowledge that agents accumulate across runs:

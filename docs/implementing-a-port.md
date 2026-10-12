@@ -15,7 +15,9 @@ module My_runner =
 
 ```ocaml
 val execute :
-  command:string list -> cwd:string -> prompt:string ->
+  ?on_spawn:(child_pid:int -> stdout_path:string -> stderr_path:string -> unit) ->
+  ?environment:(string * string) list ->
+  command:string list -> cwd:string -> prompt:string -> unit ->
   (Executor.exec_result, string) result
 ```
 
@@ -23,6 +25,11 @@ The default spawns a local subprocess (prompt appended as the final
 argument, output captured via temp files). A Docker or microVM executor
 implements the same signature; workspace isolation (`--isolated` worktrees)
 and the config `wrapper` already live at this layer.
+
+Call `on_spawn` once the harness process runs: the runner saves its pid in
+the attempt record, and the live view tails the capture files. Pass every
+`environment` pair to the harness process; it carries `JIG_STEP_KEY` and
+`JIG_ATTEMPT_ID`.
 
 **ModelProvider** - resolves a step to a concrete harness command.
 
@@ -33,7 +40,7 @@ val resolve : config:Config.t -> skill:string -> (string list, string) result
 The default returns `wrapper @ harness` from `.jig/config.yaml`. A smarter
 provider could pick different harnesses or models per skill.
 
-**Metering** - records one usage event per step invocation.
+**Metering** - records one usage event per step attempt.
 
 ```ocaml
 val record : runs_dir:string -> event:Metering.event -> (unit, string) result
@@ -41,6 +48,13 @@ val record : runs_dir:string -> event:Metering.event -> (unit, string) result
 
 The default appends JSONL to `.jig/runs/metering.jsonl`. A budget gate would
 return `Error` when spend crosses a cap - the run stops with that message.
+
+`record` must be idempotent per `attempt_id`: when an event with the same
+attempt id is already recorded, it records nothing and returns `Ok`. The
+runner records an event after it saves the step, and a resume records the
+event of every attempt in the run again, so an attempt whose event a crash
+lost is metered once. An attempt that a crash interrupted is metered with
+cost `unknown` and `interrupted: true`.
 
 **Store** - persists and loads run records, and owns the lock that lets
 one process at a time drive a run.
@@ -79,9 +93,11 @@ the error names the lock file for a human to remove.
 ## Ground rules
 
 - Errors are `result`, never exceptions across the port boundary.
-- The runner re-saves the record after every step; `save` must be safe to
-  call repeatedly with the same id, and a process killed during a save must
-  leave the previous complete record.
+- The runner saves the record before each step's harness starts (the
+  attempt in flight), when the harness process runs (its pid), and after
+  the step ends; `save` must be safe to call repeatedly with the same id,
+  and a process killed during a save must leave the previous complete
+  record.
 - A Store that keeps records somewhere other processes can reach must make
   its run lock exclusive across all of them.
 - Do not leak port specifics into the workflow schema - if your

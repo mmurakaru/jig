@@ -1199,7 +1199,9 @@ struct
             ("run: cannot open a forEach worker pipe: "
             ^ Unix.error_message error)
       | worker_input, worker_output -> (
-          match Unix.fork () with
+          match
+            Process_group.fork_worker_process ~pipe_from_worker:worker_input
+          with
           | exception Unix.Unix_error (error, _, _) ->
               Unix.close worker_input;
               Unix.close worker_output;
@@ -1207,7 +1209,6 @@ struct
                 ("run: cannot fork a forEach worker: "
                 ^ Unix.error_message error)
           | 0 ->
-              Subprocess.become_worker_process ();
               Unix.close worker_input;
               (* Another worker's end of file must not wait on this one. *)
               List.iter
@@ -1219,7 +1220,6 @@ struct
                 ~state:worker_state ~item ~worker_output
           | worker_pid ->
               Unix.close worker_output;
-              Subprocess.register_worker_process worker_pid;
               workers :=
                 !workers
                 @ [
@@ -1380,7 +1380,7 @@ struct
     let reap worker =
       Unix.close worker.worker_input;
       wait_for_exit worker.worker_pid;
-      Subprocess.unregister_worker_process worker.worker_pid;
+      Process_group.forget_worker_process worker.worker_pid;
       workers :=
         List.filter
           (fun other -> other.worker_pid <> worker.worker_pid)
@@ -1404,13 +1404,13 @@ struct
               Unix.select
                 (List.map (fun worker -> worker.worker_input) running)
                 [] []
-                Subprocess.child_poll_interval_seconds
+                Process_group.child_poll_interval_seconds
             with
             | ready, _, _ -> ready
             | exception Unix.Unix_error (Unix.EINTR, _, _) -> []
           in
           (* A forwarded signal may land on another thread, so poll for it. *)
-          Subprocess.exit_if_stop_requested ();
+          Process_group.exit_if_stop_requested ();
           List.iter
             (fun worker ->
               if List.mem worker.worker_input ready then (

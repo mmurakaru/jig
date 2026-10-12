@@ -948,7 +948,7 @@ let test_hung_notify_does_not_block_finishing () =
       Alcotest.(check bool) "finished within the notify limit plus grace" true
         (Unix.gettimeofday () -. started_at
         < Runner.notify_time_limit_seconds
-          +. Subprocess.termination_grace_seconds);
+          +. Process_group.termination_grace_seconds);
       Alcotest.(check bool) "the hook's background sleep was stopped" true
         (process_exits_within ~seconds:3.0
            (read_pid_file (Filename.concat root "notify-sleep.pid")))
@@ -6168,9 +6168,9 @@ let test_time_limit_escalates_to_sigkill () =
       Alcotest.(check int) "child ended by SIGKILL" 137
         outcome.Subprocess.exit_code;
       Alcotest.(check bool) "SIGKILL waited for the grace period" true
-        (elapsed >= Subprocess.termination_grace_seconds);
+        (elapsed >= Process_group.termination_grace_seconds);
       Alcotest.(check bool) "and not much longer" true
-        (elapsed < 0.2 +. Subprocess.termination_grace_seconds +. 2.0)
+        (elapsed < 0.2 +. Process_group.termination_grace_seconds +. 2.0)
 
 let test_grandchild_gets_grace_after_leader_exits () =
   let root = make_temp_root () in

@@ -8,7 +8,6 @@ type run_listing = {
 }
 
 module type S = sig
-  (* Proof that this process drives one run; see [acquire_run_lock]. *)
   type run_lock
 
   (* An atomic full replacement: readers see the old or the new record. *)
@@ -181,7 +180,7 @@ module Filesystem : S = struct
     (* EPERM: the pid exists but belongs to another user. *)
     | exception Unix.Unix_error _ -> true
 
-  (* A pid on another host cannot be checked, so only same-host locks go stale. *)
+  (* A pid on another host cannot be checked. *)
   let lock_is_stale holder =
     holder.host = Unix.gethostname () && not (process_is_alive holder.pid)
 

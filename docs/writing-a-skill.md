@@ -10,11 +10,12 @@ content reaches the harness byte-for-byte.
 
 A leading YAML frontmatter block (between `---` lines) is runner metadata,
 not instructions - it is stripped before the body reaches the harness. jig
-reads one key:
+reads two keys:
 
 ```markdown
 ---
 tier: mechanical
+on_interrupt: rerun
 ---
 # Run the tests
 ...
@@ -23,7 +24,30 @@ tier: mechanical
 `tier` names the cost tier the skill runs on by default; the workflow step
 can override it, and `config.yaml` maps tier names to harness commands. A
 skill that is mechanical by nature (running tests, capturing output)
-declares that here once, instead of in every workflow that uses it. Other
+declares that here once, instead of in every workflow that uses it.
+
+`on_interrupt` says what a resume does with an attempt of this skill that
+stopped mid-step (jig was killed, the machine went down). Such an attempt
+may have done part of its work: changed files, made commits, pushed, or
+opened a pull request.
+
+- `recover` (the default): a new attempt starts, and its prompt says that
+  the previous attempt was interrupted, with its partial output and the
+  `probe:` output from before it and from now. The agent checks the
+  workspace before it acts. When `config.yaml` has `continue:` and the
+  attempt has a session id that jig assigned, jig reopens that session
+  instead and asks it to finish the step.
+- `rerun`: a new attempt starts with the normal prompt. Use it only when
+  the skill is safe to run twice, for example a read-only check.
+- `escalate`: the resume pauses the run for a human. The next
+  `jig run --resume` (or a first resume that already carries `--guidance`)
+  continues as `recover`; `--skip` and `jig attach` work as for any paused
+  step.
+
+This follows pi-durable's rule that an interrupted call is never replayed
+unless it is marked safe to replay
+([earendil-works/pi, packages/durable](https://github.com/earendil-works/pi/tree/main/packages/durable)).
+`jig validate` rejects any other value. Command steps always rerun. Other
 frontmatter keys (a `name:` or `description:` from harness skill
 ecosystems) are ignored. A file with no leading `---` has no frontmatter
 and passes byte-for-byte.
@@ -46,6 +70,9 @@ Step inputs (bound by the workflow; treat each value as a literal):
 
 Human guidance:            (only on the first step after a resume)
 <the --guidance text>
+
+Interrupted attempt:       (only when recovering an interrupted attempt)
+<what to check, the probe output, the partial output>
 
 Previous handoff:          (from the second step on)
 status: ...
@@ -78,7 +105,8 @@ The harness process gets two variables:
 
 A skill with external effects can use the step key as an idempotency key:
 put it in a commit trailer or a PR body, and search for it before it
-creates the effect again.
+creates the effect again. A recovery attempt has the same step key as the
+attempt it recovers.
 
 ## The field guide
 

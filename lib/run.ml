@@ -195,6 +195,36 @@ let parallel_items_in_progress position =
   | Some state when state.concurrency > 1 -> state.items_in_progress
   | _ -> []
 
+(* A paused run has no running item. *)
+let pause_running_items position =
+  match position.for_each with
+  | Some state when state.concurrency > 1 ->
+      let pause item =
+        if item.item_status = Running then { item with item_status = Paused }
+        else item
+      in
+      {
+        position with
+        for_each =
+          Some
+            {
+              state with
+              items_in_progress = List.map pause state.items_in_progress;
+            };
+      }
+  | _ -> position
+
+let item_in_progress_of_attempt run (attempt : attempt) =
+  List.find_opt
+    (fun item ->
+      String.starts_with
+        ~prefix:
+          (item_step_key_prefix ~run_id:run.id
+             ~entry_index:run.position.entry_index
+             ~item_index:item.started_item_index)
+        attempt.step_key)
+    (parallel_items_in_progress run.position)
+
 (* Every attempt of the key so far, finished or interrupted. *)
 let attempt_count run ~step_key =
   List.length

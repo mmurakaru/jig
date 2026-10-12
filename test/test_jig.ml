@@ -5726,6 +5726,57 @@ let rec wait_until ~deadline condition =
     Unix.sleepf 0.05;
     wait_until ~deadline condition)
 
+(* Kills the run's whole process group like a lost machine, then waits out the orphans a resume refuses. *)
+let crash_parallel_run root ~run_id ~attempts_in_flight ~ready =
+  let runs_dir = Project.runs_dir ~root in
+  let driver =
+    match Unix.fork () with
+    | 0 ->
+        ignore (Unix.setsid ());
+        (try ignore (run_fan ~run_id root) with _ -> ());
+        Unix._exit 0
+    | pid -> pid
+  in
+  let attempts (run : Run.t) =
+    List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight)
+  in
+  let all_recorded () =
+    ready ()
+    &&
+    match Store.Filesystem.load ~runs_dir ~id:run_id with
+    | Ok run ->
+        List.length (attempts run) = attempts_in_flight
+        && List.for_all
+             (fun (attempt : Run.attempt) ->
+               attempt.Run.child_pid <> None
+               && attempt.Run.child_start_time <> None)
+             (attempts run)
+    | Error _ -> false
+  in
+  let reached =
+    wait_until ~deadline:(Unix.gettimeofday () +. 20.0) all_recorded
+  in
+  (* The group is gone already when the run ended before the kill. *)
+  (try Unix.kill (-driver) Sys.sigkill with Unix.Unix_error _ -> ());
+  ignore (Unix.waitpid [] driver);
+  Alcotest.(check bool)
+    (Printf.sprintf "%d attempts were in flight at the kill" attempts_in_flight)
+    true reached;
+  let crashed =
+    match Store.Filesystem.load ~runs_dir ~id:run_id with
+    | Ok run -> run
+    | Error message -> Alcotest.fail message
+  in
+  ignore
+    (wait_until ~deadline:(Unix.gettimeofday () +. 10.0) (fun () ->
+         List.for_all
+           (fun (attempt : Run.attempt) ->
+             match attempt.Run.child_pid with
+             | Some pid -> not (Process_identity.pid_exists pid)
+             | None -> true)
+           (attempts crashed)));
+  crashed
+
 let test_crash_with_items_in_flight_resumes_each_item () =
   let root = make_temp_root () in
   let quoted = Filename.quote root in
@@ -5737,54 +5788,16 @@ let test_crash_with_items_in_flight_resumes_each_item () =
       quoted quoted quoted
   in
   setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b"; "c" ] ~body;
-  let runs_dir = Project.runs_dir ~root in
   let run_id = "parallel-crash" in
-  let driver =
-    match Unix.fork () with
-    | 0 ->
-        (* Its own process group, so one kill takes the driver, the item
-           workers, and their commands down together, like a lost machine. *)
-        ignore (Unix.setsid ());
-        (try ignore (run_fan ~run_id root) with _ -> ());
-        Unix._exit 0
-    | pid -> pid
-  in
-  let all_in_second () =
-    List.for_all
-      (fun item -> Sys.file_exists (Filename.concat root ("in-second-" ^ item)))
-      [ "a"; "b"; "c" ]
-    &&
-    match Store.Filesystem.load ~runs_dir ~id:run_id with
-    | Ok run ->
-        let attempts = List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight) in
-        List.length attempts = 3
-        && List.for_all
-             (fun (attempt : Run.attempt) ->
-               attempt.Run.child_pid <> None
-               && attempt.Run.child_start_time <> None)
-             attempts
-    | Error _ -> false
-  in
-  let reached = wait_until ~deadline:(Unix.gettimeofday () +. 20.0) all_in_second in
-  Unix.kill (-driver) Sys.sigkill;
-  ignore (Unix.waitpid [] driver);
-  Alcotest.(check bool) "three items were in flight at the kill" true reached;
   let crashed =
-    match Store.Filesystem.load ~runs_dir ~id:run_id with
-    | Ok run -> run
-    | Error message -> Alcotest.fail message
+    crash_parallel_run root ~run_id ~attempts_in_flight:3 ~ready:(fun () ->
+        List.for_all
+          (fun item ->
+            Sys.file_exists (Filename.concat root ("in-second-" ^ item)))
+          [ "a"; "b"; "c" ])
   in
   Alcotest.(check int) "three items in progress in the record" 3
     (List.length (Run.parallel_items_in_progress crashed.Run.position));
-  (* Orphaned commands are reaped by init; the resume refuses live ones. *)
-  ignore
-    (wait_until ~deadline:(Unix.gettimeofday () +. 10.0) (fun () ->
-         List.for_all
-           (fun (attempt : Run.attempt) ->
-             match attempt.Run.child_pid with
-             | Some pid -> not (Process_identity.pid_exists pid)
-             | None -> true)
-           (List.map snd (Run.Step_key_map.bindings crashed.Run.attempts_in_flight))));
   write_file (Filename.concat root "resume") "";
   match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
   | Error message -> Alcotest.fail message
@@ -5814,6 +5827,57 @@ let test_crash_with_items_in_flight_resumes_each_item () =
         [ "a"; "b"; "c" ];
       Alcotest.(check int) "each item's cut-off attempt is on record" 3
         (List.length run.Run.interrupted_attempts)
+
+let test_an_escalating_interruption_pauses_every_item () =
+  let root = make_temp_root () in
+  write_file
+    (Filename.concat root ".jig/skills/work/SKILL.md")
+    "---\non_interrupt: escalate\n---\n# Work\n\nDo the item.\n";
+  setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ]
+    ~body:"        - skill: work\n";
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    "harness:\n  - sh\n  - -c\n  - sleep 30\nconcurrency: 2\n";
+  let run_id = "parallel-escalate" in
+  ignore
+    (crash_parallel_run root ~run_id ~attempts_in_flight:2 ~ready:(fun () ->
+         true));
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    (Printf.sprintf "harness:\n  - sh\n  - -c\n  - %S\nconcurrency: 2\n"
+       pass_handoff_command);
+  match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
+  | Error message -> Alcotest.fail message
+  | Ok (paused, _) -> (
+      Alcotest.(check string) "the run pauses for a human" "paused"
+        (Run.string_of_status paused.Run.status);
+      let items = Run.parallel_items_in_progress paused.Run.position in
+      Alcotest.(check (list string)) "every item reads paused, none running"
+        [ "paused"; "paused" ]
+        (List.map
+           (fun (item : Run.item_in_progress) ->
+             Run.string_of_status item.Run.item_status)
+           items);
+      let json = Yojson.Safe.to_string (Run.to_json paused) in
+      Alcotest.(check bool) "status --json says paused for the items" false
+        (contains ~affix:{|"status":"running"|} json);
+      let entries =
+        match
+          Workflow.load
+            ~path:(Filename.concat root ".jig/workflows/fan/workflow.yaml")
+        with
+        | Ok workflow -> workflow.Workflow.entries
+        | Error message -> Alcotest.fail message
+      in
+      Alcotest.(check (list string)) "watch draws both items paused"
+        [ "\u{25c9} forEach (0/2)"; "  \u{25c9} a"; "  \u{25c9} b" ]
+        (Progress.render ~working:"@" (Progress.restore ~entries paused));
+      match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
+      | Error message -> Alcotest.fail message
+      | Ok (finished, _) ->
+          Alcotest.(check string) "a human's resume recovers each item"
+            "completed"
+            (Run.string_of_status finished.Run.status))
 
 (* Escalates the items named in [escalating_items] and sleeps on "slow"; a
    forked worker inherits the list as it was at the fork. *)
@@ -6574,6 +6638,8 @@ let () =
             test_parallel_items_need_an_isolated_run;
           Alcotest.test_case "a crash with items in flight resumes each item"
             `Quick test_crash_with_items_in_flight_resumes_each_item;
+          Alcotest.test_case "an escalating interruption pauses every item"
+            `Quick test_an_escalating_interruption_pauses_every_item;
           Alcotest.test_case
             "an escalating item lets items in flight finish, then pauses"
             `Quick

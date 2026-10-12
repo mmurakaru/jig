@@ -1795,13 +1795,29 @@ struct
      --guidance instead"
 
   let pause_for_interruption engine progress (attempts : Run.attempt list) =
-    let probe_now = run_probe engine in
+    (* A parallel forEach item's attempt ran in the item's own worktree. *)
+    let probe_after (attempt : Run.attempt) =
+      match Run.item_in_progress_of_attempt progress.run attempt with
+      | Some { Run.item_workspace = Some workspace; _ } ->
+          run_probe { engine with workspace }
+      | _ -> run_probe engine
+    in
     let progress =
       List.fold_left
         (fun progress (attempt : Run.attempt) ->
           with_interrupted_attempt progress
-            { attempt with Run.probe_after = probe_now })
+            { attempt with Run.probe_after = probe_after attempt })
         progress attempts
+    in
+    let progress =
+      {
+        progress with
+        run =
+          {
+            progress.run with
+            Run.position = Run.pause_running_items progress.run.Run.position;
+          };
+      }
     in
     let message =
       Printf.sprintf

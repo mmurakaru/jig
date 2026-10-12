@@ -858,23 +858,23 @@ let process_is_alive pid =
   | () -> true
   | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
 
-let rec process_exits_within ~seconds pid =
-  if not (process_is_alive pid) then true
+let rec poll_until ~seconds condition =
+  if condition () then true
   else if seconds <= 0.0 then false
   else (
     Unix.sleepf 0.05;
-    process_exits_within ~seconds:(seconds -. 0.05) pid)
+    poll_until ~seconds:(seconds -. 0.05) condition)
 
-let rec wait_for_pid_file ~seconds path =
-  let has_pid () =
+let process_exits_within ~seconds pid =
+  poll_until ~seconds (fun () -> not (process_is_alive pid))
+
+let wait_for_pid_file ~seconds path =
+  let pid_written () =
     Sys.file_exists path
     && String.trim (In_channel.with_open_text path In_channel.input_all) <> ""
   in
-  if has_pid () then read_pid_file path
-  else if seconds <= 0.0 then Alcotest.failf "no pid appeared in %s" path
-  else (
-    Unix.sleepf 0.05;
-    wait_for_pid_file ~seconds:(seconds -. 0.05) path)
+  if poll_until ~seconds pid_written then read_pid_file path
+  else Alcotest.failf "no pid appeared in %s" path
 
 let write_notify_config root ~notify_command =
   write_file
@@ -4242,6 +4242,27 @@ let test_time_limit_escalates_to_sigkill () =
       Alcotest.(check bool) "and not much longer" true
         (elapsed < 0.2 +. Subprocess.termination_grace_seconds +. 2.0)
 
+let test_grandchild_gets_grace_after_leader_exits () =
+  let root = make_temp_root () in
+  let cleaned_path = Filename.concat root "cleaned" in
+  match
+    Subprocess.run ~time_limit_seconds:0.3
+      ~argv:
+        [
+          "sh";
+          "-c";
+          Printf.sprintf
+            "(trap 'sleep 1; echo done > %s; exit' TERM; while :; do sleep 0.1; done) \
+             & wait"
+            (Filename.quote cleaned_path);
+        ]
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ ->
+      Alcotest.(check bool) "the grandchild ran its SIGTERM cleanup" true
+        (Sys.file_exists cleaned_path)
+
 let test_child_within_time_limit_keeps_exit_code () =
   let started_at = Unix.gettimeofday () in
   match
@@ -4270,8 +4291,7 @@ let test_child_leads_its_own_process_group () =
 
 let jig_binary = Filename.concat (Sys.getcwd ()) "../bin/main.exe"
 
-(* The step's sh records jig's pid ($PPID), then waits on a background
-   sleep - the grandchild a signal to jig must reach. *)
+(* $PPID of the step's sh is jig; the background sleep is the grandchild. *)
 let setup_hanging_command_project root =
   setup_command_project root
     ~yaml:
@@ -4804,6 +4824,8 @@ let () =
             `Quick test_time_limit_stops_child_and_grandchild;
           Alcotest.test_case "a time limit escalates to SIGKILL" `Slow
             test_time_limit_escalates_to_sigkill;
+          Alcotest.test_case "a grandchild gets the grace period" `Quick
+            test_grandchild_gets_grace_after_leader_exits;
           Alcotest.test_case "a child within its time limit keeps its exit code"
             `Quick test_child_within_time_limit_keeps_exit_code;
           Alcotest.test_case "SIGINT to a foreground run stops the grandchild"

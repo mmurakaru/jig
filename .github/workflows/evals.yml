@@ -1,0 +1,65 @@
+name: evals
+
+# Spends model tokens, so it runs only when started by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model for jig and the claude-code baseline
+        required: true
+        default: anthropic/claude-sonnet-4-6
+      mechanical_model:
+        description: Model for jig's mechanical tier (empty keeps one harness)
+        required: false
+        default: ""
+      attempts:
+        description: Trials per task and arm
+        required: true
+        default: "1"
+      baseline:
+        description: Also run the plain claude-code baseline
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.4"
+          dune-cache: true
+      - run: opam install . --deps-only
+      - run: opam exec -- dune build --profile release bin/main.exe
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Test the eval code, with a stub harness in Docker
+        working-directory: evals
+        env:
+          JIG_EVALS_LINUX_JIG_BINARY: ${{ github.workspace }}/_build/default/bin/main.exe
+        run: uv run pytest --quiet
+      - name: Run the eval suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ inputs.model }}
+          MECHANICAL_MODEL: ${{ inputs.mechanical_model }}
+          ATTEMPTS: ${{ inputs.attempts }}
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          arguments=(--model "$MODEL" --attempts "$ATTEMPTS" --concurrency 4
+            --jig-binary _build/default/bin/main.exe --job-name evals --jobs-dir evals/jobs)
+          if [ -n "$MECHANICAL_MODEL" ]; then arguments+=(--mechanical-model "$MECHANICAL_MODEL"); fi
+          if [ "$BASELINE" != "true" ]; then arguments+=(--no-baseline); fi
+          mkdir -p evals/jobs
+          uv run --project evals jig-evals "${arguments[@]}" | tee evals/jobs/report.txt
+      - name: Keep the job results (they hold prompts and code)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-jobs
+          path: evals/jobs/
+          retention-days: 14

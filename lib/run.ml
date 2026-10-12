@@ -49,11 +49,13 @@ type for_each_state = {
 }
 
 (* Where the run is in the workflow: the entry being executed, how many
-   full iterations a retry has used and, for a forEach entry, the item
-   cursor and snapshot. Enough to resume. *)
+   full iterations a retry has used, the step inside the retry group and,
+   for a forEach entry, the item cursor and snapshot. Enough to resume. *)
 type position = {
   entry_index : int;
   iterations_used : int;
+  (* The step being executed inside a retry group; 0 outside one. *)
+  step_index : int;
   for_each : for_each_state option;
 }
 
@@ -70,6 +72,8 @@ type t = {
   attempts_in_flight : attempt Step_key_map.t;
   (* Found in flight by a resume: their process ended with no outcome. *)
   interrupted_attempts : attempt list;
+  (* The attempt whose result paused the run, so a resume runs it again. *)
+  paused_on_attempt : string option;
   started_at : string;
   finished_at : string option;
 }
@@ -118,31 +122,49 @@ let make_id ~workflow ~time ~pid =
     utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec pid !sequence
 
 (* Every coordinate of the step's place, so the key survives a resume. *)
-let step_key_of_position ~run_id ~(position : position) ~step_index =
+let step_key_of_position ~run_id ~(position : position) =
   let for_each_part =
     match position.for_each with
     | Some state -> Printf.sprintf "/i%d/b%d" state.item_index state.body_index
     | None -> ""
   in
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
-    position.iterations_used step_index
+    position.iterations_used position.step_index
 
-(* Counts every earlier attempt of the key, finished or interrupted. *)
-let next_attempt_id run ~step_key =
-  let earlier =
-    List.length
+(* Every attempt of the key so far, finished or interrupted. *)
+let attempt_count run ~step_key =
+  List.length
+    (List.filter
+       (fun step ->
+         match step.attempt with
+         | Some attempt -> attempt.step_key = step_key
+         | None -> false)
+       run.steps)
+  + List.length
       (List.filter
-         (fun step ->
-           match step.attempt with
-           | Some attempt -> attempt.step_key = step_key
-           | None -> false)
-         run.steps)
-    + List.length
-        (List.filter
-           (fun attempt -> attempt.step_key = step_key)
-           run.interrupted_attempts)
-  in
-  Printf.sprintf "%s#%d" step_key (earlier + 1)
+         (fun attempt -> attempt.step_key = step_key)
+         run.interrupted_attempts)
+
+let attempt_id_of_number ~step_key number =
+  Printf.sprintf "%s#%d" step_key number
+
+let next_attempt_id run ~step_key =
+  attempt_id_of_number ~step_key (attempt_count run ~step_key + 1)
+
+let last_step_attempt_id steps =
+  match List.rev steps with
+  | { attempt = Some attempt; _ } :: _ -> Some attempt.attempt_id
+  | _ -> None
+
+(* The key's newest attempt, if it finished and did not pause the run. *)
+let unrouted_finished_step run ~step_key =
+  match List.rev run.steps with
+  | ({ attempt = Some attempt; _ } as step) :: _
+    when attempt.attempt_id
+         = attempt_id_of_number ~step_key (attempt_count run ~step_key)
+         && run.paused_on_attempt <> Some attempt.attempt_id ->
+      Some step
+  | _ -> None
 
 (* Called under the run lock, so no live jig drives these attempts. *)
 let mark_attempts_interrupted run =
@@ -281,6 +303,8 @@ let to_json run =
                ("entry_index", `Int run.position.entry_index);
                ("iterations_used", `Int run.position.iterations_used);
              ]
+            @ (if run.position.step_index = 0 then []
+               else [ ("step_index", `Int run.position.step_index) ])
             @
             (* Emitted only while a forEach entry is in flight, so runs that
                never fan out serialize exactly as before. *)
@@ -321,6 +345,9 @@ let to_json run =
       | [] -> []
       | attempts ->
           [ ("interrupted_attempts", `List (List.map attempt_to_json attempts)) ])
+    @ (match run.paused_on_attempt with
+      | None -> []
+      | Some attempt_id -> [ ("paused_on_attempt", `String attempt_id) ])
     @ [ ("started_at", `String run.started_at) ]
     @ finished_field)
 
@@ -461,6 +488,13 @@ let of_json json =
   let position_json = Yojson.Safe.Util.member "position" json in
   let* entry_index = member_int position_json "entry_index" in
   let* iterations_used = member_int position_json "iterations_used" in
+  (* Absent outside a retry group, and in older records. *)
+  let* step_index =
+    match Yojson.Safe.Util.member "step_index" position_json with
+    | `Null -> Ok 0
+    | `Int value when value >= 0 -> Ok value
+    | _ -> Error "run: position step_index must be a non-negative integer"
+  in
   let* for_each =
     match Yojson.Safe.Util.member "for_each" position_json with
     | `Null -> Ok None
@@ -532,6 +566,13 @@ let of_json json =
     | _ -> Error "run: interrupted_attempts must be a list"
   in
   let* started_at = member_string json "started_at" in
+  (* An older paused record has no field; its last step is what paused it. *)
+  let paused_on_attempt =
+    match optional_string json "paused_on_attempt" with
+    | Some _ as attempt_id -> attempt_id
+    | None when status = Paused -> last_step_attempt_id steps
+    | None -> None
+  in
   Ok
     {
       id;
@@ -539,11 +580,12 @@ let of_json json =
       task;
       status;
       error = optional_string json "error";
-      position = { entry_index; iterations_used; for_each };
+      position = { entry_index; iterations_used; step_index; for_each };
       workspace = optional_string json "workspace";
       steps;
       attempts_in_flight;
       interrupted_attempts;
+      paused_on_attempt;
       started_at;
       finished_at = optional_string json "finished_at";
     }

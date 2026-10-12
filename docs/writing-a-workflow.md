@@ -104,6 +104,9 @@ strings - jig never evaluates, inlines, or resolves them;
   handoff threads into the next attempt - that is the self-correction loop.
   The group completes when its `until: pass` step passes (or when all steps
   pass). Exhausting `max_iterations` triggers `on_exhausted`.
+- A resume inside a retry block continues the same iteration at the step
+  that paused or was interrupted; the steps that already passed in that
+  iteration do not run again.
 - A forEach block runs its body once per item, in order. Items come from a
   checked-in file: TSV with a header row (no quoting - values cannot
   contain tabs or newlines) or a JSON array of objects with string values.

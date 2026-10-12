@@ -282,7 +282,13 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
         (Runner.Step_started
            {
              skill = record.Run.skill;
-             position = { Run.entry_index; iterations_used = 0; for_each };
+             position =
+               {
+                 Run.entry_index;
+                 iterations_used = 0;
+                 step_index = 0;
+                 for_each;
+               };
              item_key = record.Run.item_key;
              tier = record.Run.tier;
            });

@@ -7,6 +7,7 @@ type exec_result = {
 module type S = sig
   val execute :
     ?on_spawn:(stdout_path:string -> stderr_path:string -> unit) ->
+    ?environment:(string * string) list ->
     command:string list ->
     cwd:string ->
     prompt:string ->
@@ -15,7 +16,7 @@ module type S = sig
 end
 
 module Local : S = struct
-  let execute ?on_spawn ~command ~cwd ~prompt () =
+  let execute ?on_spawn ?environment ~command ~cwd ~prompt () =
     match command with
     | [] -> Error "executor: harness command is empty"
     | _ ->
@@ -28,5 +29,5 @@ module Local : S = struct
             })
           (Result.map_error
              (fun message -> "executor: " ^ message)
-             (Subprocess.run ~cwd ?on_spawn ~argv:(command @ [ prompt ]) ()))
+             (Subprocess.run ~cwd ?on_spawn ?environment ~argv:(command @ [ prompt ]) ()))
 end

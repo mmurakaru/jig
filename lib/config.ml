@@ -13,6 +13,8 @@ type t = {
   (* Named alternates to the default harness, for steps that declare a
      tier - the map from an abstract cost tier to a concrete command. *)
   tiers : (string * string list) list;
+  (* How many forEach items run at once; above 1 needs an isolated run. *)
+  concurrency : int;
 }
 
 let expand_home path =
@@ -68,6 +70,15 @@ let tiers_field fields =
         pairs (Ok [])
   | Some _ -> Error "config: tiers must be a mapping of names to commands"
 
+(* YAML numbers parse as floats, so a whole float is the integer form. *)
+let concurrency_field fields =
+  match List.assoc_opt "concurrency" fields with
+  | None -> Ok 1
+  | Some (`Float value)
+    when Float.is_integer value && value >= 1.0 && value <= 1024.0 ->
+      Ok (int_of_float value)
+  | Some _ -> Error "config: concurrency must be a whole number from 1 to 1024"
+
 let of_yaml yaml =
   match yaml with
   | `O fields -> (
@@ -80,6 +91,7 @@ let of_yaml yaml =
       let* notify = string_list_field fields ~key:"notify" in
       let* continue_session = string_list_field fields ~key:"continue" in
       let* probe = string_list_field fields ~key:"probe" in
+      let* concurrency = concurrency_field fields in
       match harness with
       | None -> Error "config: missing required key: harness"
       | Some [] -> Error "config: harness must not be empty"
@@ -96,6 +108,7 @@ let of_yaml yaml =
               continue_session = Option.value continue_session ~default:[];
               probe = Option.value probe ~default:[];
               tiers;
+              concurrency;
             })
   | _ -> Error "config: expected a mapping at the top level"
 

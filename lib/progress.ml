@@ -35,6 +35,8 @@ type node =
       body_skills : string list;
       mutable items : item list;
       mutable lstatus : status;
+      (* Items run at once and each ends on its own Item_finished. *)
+      mutable parallel : bool;
     }
 
 type t = { nodes : node array }
@@ -60,6 +62,7 @@ let init (entries : Workflow.entry list) =
                 (Workflow.steps_of_entries for_each.Workflow.body);
             items = [];
             lstatus = Pending;
+            parallel = false;
           }
   in
   { nodes = Array.of_list (List.map node_of_entry entries) }
@@ -114,9 +117,10 @@ let apply t (event : Runner.run_event) =
   match event with
   (* Output paths matter to a log tail, not to the step tree. *)
   | Runner.Step_output _ -> ()
-  | Runner.Items_resolved { entry_index; item_keys } -> (
+  | Runner.Items_resolved { entry_index; item_keys; concurrency } -> (
       match t.nodes.(entry_index) with
       | Loop_node l ->
+          l.parallel <- concurrency > 1;
           l.items <-
             List.map
               (fun key ->
@@ -143,7 +147,7 @@ let apply t (event : Runner.run_event) =
           | Some fe ->
               List.iteri
                 (fun idx it ->
-                  if idx < fe.Run.item_index then (
+                  if idx < fe.Run.item_index && not l.parallel then (
                     it.istatus <- Done;
                     List.iter
                       (fun b -> if not (is_terminal b.bstatus) then b.bstatus <- Done)
@@ -170,8 +174,8 @@ let apply t (event : Runner.run_event) =
         | Run.Escalate -> Paused
       in
       let detail = detail_of_record record in
-      (* Apply to the leaf currently working; the run is sequential, so
-         exactly one leaf is Working when a step finishes. *)
+      (* Apply to the leaf currently working: the only one in a sequential
+         run, or the record's own item in a parallel forEach. *)
       Array.iter
         (fun node ->
           match node with
@@ -180,9 +184,12 @@ let apply t (event : Runner.run_event) =
                 s.status <- outcome_status;
                 s.detail <- detail)
           | Loop_node l ->
-              List.iter
-                (fun it ->
-                  if it.istatus = Working then
+              List.iteri
+                (fun idx it ->
+                  if
+                    it.istatus = Working
+                    && ((not l.parallel) || record.Run.item_index = Some idx)
+                  then
                     List.iter
                       (fun b ->
                         if b.bstatus = Working then (
@@ -194,9 +201,35 @@ let apply t (event : Runner.run_event) =
                           if List.length it.body = 1 then it.idetail <- detail))
                       it.body)
                 l.items;
-              if is_terminal outcome_status && l.lstatus = Working then
-                l.lstatus <- outcome_status)
+              if
+                is_terminal outcome_status && l.lstatus = Working
+                && not l.parallel
+              then l.lstatus <- outcome_status)
         t.nodes
+  | Runner.Item_finished { entry_index; item_index; status } -> (
+      match t.nodes.(entry_index) with
+      | Loop_node l -> (
+          let item_status =
+            match status with
+            | Run.Completed -> Done
+            | Run.Paused -> Paused
+            | Run.Failed | Run.Aborted -> Failed
+            | Run.Running -> Working
+          in
+          (match List.nth_opt l.items item_index with
+          | Some it ->
+              it.istatus <- item_status;
+              if item_status = Done then
+                List.iter
+                  (fun b -> if not (is_terminal b.bstatus) then b.bstatus <- Done)
+                  it.body
+          | None -> ());
+          (* The loop shows a stop once no other item is still working. *)
+          let any status = List.exists (fun it -> it.istatus = status) l.items in
+          if not (any Working) then
+            if any Failed then l.lstatus <- Failed
+            else if any Paused then l.lstatus <- Paused)
+      | Step_node _ -> ())
 
 (* Rebuild the model of an existing run from its persisted record - the
    watcher's entry point, where no live events exist. Each recorded step is
@@ -242,6 +275,14 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
   (* Pass 2: item keys per loop entry - the in-flight snapshot when the run
      is paused or working inside it (it knows the pending items too),
      otherwise the keys the records mention, in first-seen order. *)
+  let parallel_state entry_index =
+    match run.Run.position.Run.for_each with
+    | Some state
+      when run.Run.position.Run.entry_index = entry_index
+           && state.Run.concurrency > 1 ->
+        Some state
+    | _ -> None
+  in
   let loop_keys entry_index =
     match run.Run.position.Run.for_each with
     | Some state when run.Run.position.Run.entry_index = entry_index ->
@@ -268,14 +309,28 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
       Hashtbl.add announced entry_index ();
       apply t
         (Runner.Items_resolved
-           { entry_index; item_keys = loop_keys entry_index }))
+           {
+             entry_index;
+             item_keys = loop_keys entry_index;
+             concurrency =
+               (match parallel_state entry_index with
+               | Some state -> state.Run.concurrency
+               | None -> 1);
+           }))
   in
   List.iter
     (fun (entry_index, (record : Run.step_record)) ->
       announce entry_index;
       let for_each =
         Option.map
-          (fun item_index -> { Run.item_index; body_index = 0; items = [] })
+          (fun item_index ->
+            {
+              Run.item_index;
+              body_index = 0;
+              items = [];
+              concurrency = 1;
+              items_in_progress = [];
+            })
           record.Run.item_index
       in
       apply t
@@ -300,6 +355,30 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
      match run.Run.position.Run.for_each with
      | Some _ -> announce run.Run.position.Run.entry_index
      | None -> ());
+  (* A parallel forEach: items below the next one to start that are no
+     longer in progress passed; stopped items keep their status. *)
+  (let entry_index = run.Run.position.Run.entry_index in
+   match parallel_state entry_index with
+   | None -> ()
+   | Some state ->
+       let in_progress index =
+         List.find_opt
+           (fun (item : Run.item_in_progress) ->
+             item.Run.started_item_index = index)
+           state.Run.items_in_progress
+       in
+       for item_index = 0 to state.Run.item_index - 1 do
+         let status =
+           match in_progress item_index with
+           | None -> Some Run.Completed
+           | Some { Run.item_status = Run.Running; _ } -> None
+           | Some item -> Some item.Run.item_status
+         in
+         Option.iter
+           (fun status ->
+             apply t (Runner.Item_finished { entry_index; item_index; status }))
+           status
+       done);
   t
 
 (* Called when the run completes: anything still Working actually finished. *)

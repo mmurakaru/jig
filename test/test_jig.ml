@@ -1086,6 +1086,7 @@ let test_lifecycle_events_fire_across_step_kinds () =
             | Runner.Items_resolved { item_keys; _ } ->
                 "items:" ^ String.concat "," item_keys
             | Runner.Step_output _ -> "output"
+            | Runner.Item_finished _ -> "item-finished"
             | Runner.Step_finished record ->
                 Printf.sprintf "finish:%s:%s" record.Run.skill
                   (Option.value record.Run.item_key ~default:"-"))
@@ -1376,7 +1377,14 @@ let test_run_json_roundtrips_for_each_position () =
           iterations_used = 1;
           step_index = 0;
           for_each =
-            Some { Run.item_index = 1; body_index = 0; items = [ bindings ] };
+            Some
+              {
+                Run.item_index = 1;
+                body_index = 0;
+                items = [ bindings ];
+                concurrency = 1;
+                items_in_progress = [];
+              };
         };
       workspace = None;
       steps =
@@ -3155,7 +3163,7 @@ let finished skill outcome =
       finished_at = "";
     }
 
-let loop_pos ~item_index = pos ~for_each:{ Run.item_index; body_index = 0; items = [] } 2
+let loop_pos ~item_index = pos ~for_each:{ Run.item_index; body_index = 0; items = []; concurrency = 1; items_in_progress = [] } 2
 
 let test_progress_renders_mid_run () =
   let t = progress_plan () in
@@ -3164,7 +3172,7 @@ let test_progress_renders_mid_run () =
   apply (finished "read-issue" Run.Pass);
   apply (started "prepare" (pos 1));
   apply (finished "prepare" Run.Pass);
-  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ] });
+  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
   apply (started ~item_key:"alpha" "a" (loop_pos ~item_index:0));
   apply (finished "a" Run.Pass);
   apply (started ~item_key:"alpha" "b" (loop_pos ~item_index:0));
@@ -3189,7 +3197,7 @@ let test_progress_renders_completed () =
   apply (finished "read-issue" Run.Pass);
   apply (started "prepare" (pos 1));
   apply (finished "prepare" Run.Pass);
-  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ] });
+  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
   apply (started ~item_key:"alpha" "a" (loop_pos ~item_index:0));
   apply (finished "a" Run.Pass);
   apply (started ~item_key:"alpha" "b" (loop_pos ~item_index:0));
@@ -3491,17 +3499,17 @@ let test_progress_detail_survives_item_collapse () =
     | Error m -> Alcotest.fail m
   in
   let apply = Progress.apply plan in
-  apply (Runner.Items_resolved { entry_index = 0; item_keys = [ "alpha"; "beta" ] });
+  apply (Runner.Items_resolved { entry_index = 0; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
   apply
     (started ~item_key:"alpha" "work"
-       (pos ~for_each:{ Run.item_index = 0; body_index = 0; items = [] } 0));
+       (pos ~for_each:{ Run.item_index = 0; body_index = 0; items = []; concurrency = 1; items_in_progress = [] } 0));
   apply
     (finished_with ~started_at:"2026-01-01T00:01:00Z"
        ~finished_at:"2026-01-01T00:02:02Z" ~cost:Metering.Unknown_cost "work"
        Run.Pass);
   apply
     (started ~item_key:"beta" "work"
-       (pos ~for_each:{ Run.item_index = 1; body_index = 0; items = [] } 0));
+       (pos ~for_each:{ Run.item_index = 1; body_index = 0; items = []; concurrency = 1; items_in_progress = [] } 0));
   let alpha_row =
     List.find (fun r -> r.Progress.label = "alpha") (Progress.rows plan)
   in
@@ -3561,6 +3569,8 @@ let test_progress_restore_mid_run () =
                Run.item_index = 0;
                body_index = 0;
                items = [ [ ("it", "alpha") ]; [ ("it", "beta") ] ];
+               concurrency = 1;
+               items_in_progress = [];
              }
            2)
   in
@@ -3647,15 +3657,18 @@ let test_current_round_trip () =
     {
       Current.skill = "implement-fix";
       item_key = Some "alpha";
+      item_index = Some 0;
       tier = Some "mechanical";
       stdout_path = "/tmp/out";
       stderr_path = "/tmp/err";
       started_at = "2026-01-01T00:00:00Z";
     }
   in
-  Current.write ~runs_dir ~run_id:"r1" pointer;
+  Current.write ~runs_dir ~run_id:"r1" [ pointer ];
   (match Current.read ~runs_dir ~run_id:"r1" with
-  | Some read_back ->
+  | [ read_back ] ->
+      Alcotest.(check (option int))
+        "item index" pointer.Current.item_index read_back.Current.item_index;
       Alcotest.(check string) "skill" pointer.Current.skill read_back.Current.skill;
       Alcotest.(check (option string))
         "item key" pointer.Current.item_key read_back.Current.item_key;
@@ -3665,18 +3678,18 @@ let test_current_round_trip () =
         "stdout path" pointer.Current.stdout_path read_back.Current.stdout_path;
       Alcotest.(check string)
         "started at" pointer.Current.started_at read_back.Current.started_at
-  | None -> Alcotest.fail "pointer did not read back");
+  | _ -> Alcotest.fail "pointer did not read back");
   Current.remove ~runs_dir ~run_id:"r1";
   Alcotest.(check bool) "gone after remove" true
-    (Current.read ~runs_dir ~run_id:"r1" = None)
+    (Current.read ~runs_dir ~run_id:"r1" = [])
 
 let test_current_tolerates_absence_and_garbage () =
   let runs_dir = make_temp_root () in
   Alcotest.(check bool) "absent reads as none" true
-    (Current.read ~runs_dir ~run_id:"missing" = None);
+    (Current.read ~runs_dir ~run_id:"missing" = []);
   write_file (Filename.concat runs_dir "broken.current") "{not json";
   Alcotest.(check bool) "garbage reads as none" true
-    (Current.read ~runs_dir ~run_id:"broken" = None);
+    (Current.read ~runs_dir ~run_id:"broken" = []);
   (* removing what does not exist is a no-op, not a crash *)
   Current.remove ~runs_dir ~run_id:"missing"
 
@@ -3700,7 +3713,7 @@ let test_current_written_during_step_removed_after () =
               In_channel.input_all));
       Alcotest.(check bool) "and is gone once the run finished" true
         (Current.read ~runs_dir:(Project.runs_dir ~root) ~run_id:run.Run.id
-        = None)
+        = [])
 
 (* ---- box layout (pure) ---- *)
 

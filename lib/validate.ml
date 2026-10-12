@@ -73,3 +73,22 @@ let workflow ~workflow_dir ~jig_dir ~skill_paths (workflow : Workflow.t) =
       Error
         (Printf.sprintf "workflow %S: %s" workflow.Workflow.name
            (String.concat "; " problems))
+
+let concurrency_isolation_message concurrency =
+  Printf.sprintf
+    "concurrency %d needs --isolated: forEach items that run in parallel \
+     each work in their own git worktree. Start the run with --isolated, or \
+     set concurrency: 1 in .jig/config.yaml"
+    concurrency
+
+(* Parallel forEach items each get a git worktree, which only an isolated
+   run creates; a workflow with no forEach ignores concurrency. *)
+let concurrency_isolation ~concurrency ~isolated (workflow : Workflow.t) =
+  let has_for_each =
+    List.exists
+      (function Workflow.For_each _ -> true | _ -> false)
+      workflow.Workflow.entries
+  in
+  if concurrency > 1 && has_for_each && not isolated then
+    Error (concurrency_isolation_message concurrency)
+  else Ok ()

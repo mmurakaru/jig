@@ -56,11 +56,55 @@ type run_event =
          harness. A live view shows it next to the running step. *)
       tier : string option;
     }
-  | Items_resolved of { entry_index : int; item_keys : string list }
+  | Items_resolved of {
+      entry_index : int;
+      item_keys : string list;
+      (* Above 1, several items run at once and each ends on its own. *)
+      concurrency : int;
+    }
   (* The running step's captured-output files, the moment its subprocess
      spawns - a live view can tail them while the step executes. *)
-  | Step_output of { stdout_path : string; stderr_path : string }
+  | Step_output of {
+      stdout_path : string;
+      stderr_path : string;
+      item_index : int option;
+    }
   | Step_finished of Run.step_record
+  (* An item of a parallel forEach ended: Completed when its body passed,
+     else the status it stopped with. *)
+  | Item_finished of { entry_index : int; item_index : int; status : Run.status }
+
+(* The write end of a forked item worker's pipe, and how much of the item's
+   lane it has reported, so each report carries only what is new. *)
+type worker_link = {
+  worker_output : Unix.file_descr;
+  mutable reported_step_count : int;
+}
+
+(* What a parallel forEach item worker tells the driving process. The
+   driver alone saves the run record, meters, and renders. *)
+type worker_message =
+  | Worker_progress of {
+      position : Run.position;
+      attempts_in_flight : Run.attempt list;
+      new_steps : Run.step_record list;
+      (* All of the item's, since a recovery updates them in place. *)
+      interrupted_attempts : Run.attempt list;
+    }
+  | Worker_metering of Metering.event
+  | Worker_event of run_event
+  | Worker_step of Run.step_record
+  | Worker_pointer of Current.t option
+  | Worker_item_passed
+  | Worker_item_stopped of {
+      status : Run.status;
+      position : Run.position;
+      paused_on_attempt : string option;
+    }
+  | Worker_item_error of string
+
+let send_to_driver link (message : worker_message) =
+  Worker_channel.send_worker_message link.worker_output message
 
 let position_line ~workflow_name ~entries ~entry_index ~skill ~item =
   let item_part =
@@ -102,11 +146,15 @@ let tail_text ~limit text =
 
 let interruption_text_limit = 4000
 
-let session_id_random_state = lazy (Random.State.make_self_init ())
+let session_id_random_state = ref (lazy (Random.State.make_self_init ()))
+
+(* Each forked item worker reseeds, so sibling workers never share ids. *)
+let reseed_session_ids () =
+  session_id_random_state := lazy (Random.State.make_self_init ())
 
 (* Version 4 UUID shape: claude --session-id rejects anything else. *)
 let new_session_id () =
-  let state = Lazy.force session_id_random_state in
+  let state = Lazy.force !session_id_random_state in
   let bytes = Bytes.init 16 (fun _ -> Char.chr (Random.State.int state 256)) in
   let set index transform =
     Bytes.set bytes index
@@ -234,6 +282,9 @@ struct
     on_event : run_event -> unit;
     (* Loaded from the ledger at most once per drive; None until first use. *)
     metered_attempt_ids : (string, unit) Hashtbl.t option ref;
+    (* Set inside a parallel forEach item worker, which reports to the
+       driving process instead of saving, metering, or rendering. *)
+    worker_link : worker_link option;
   }
 
   type progress = {
@@ -271,6 +322,40 @@ struct
     in
     let* path = Store_port.save ~runs_dir:(runs_dir engine) run in
     Ok ({ progress with run }, path)
+
+  (* A step's mid-run save; a worker reports only what changed since its
+     last report, and the driver saves it into the whole run record. *)
+  let save_step_progress engine progress =
+    match engine.worker_link with
+    | None ->
+        let* progress, _ =
+          persist engine progress ~status:Run.Running ~finished:false
+        in
+        Ok progress
+    | Some link ->
+        let run = progress.run in
+        let after count list = List.filteri (fun index _ -> index >= count) list in
+        send_to_driver link
+          (Worker_progress
+             {
+               position = run.Run.position;
+               attempts_in_flight =
+                 List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight);
+               new_steps = after link.reported_step_count run.Run.steps;
+               interrupted_attempts = run.Run.interrupted_attempts;
+             });
+        link.reported_step_count <- List.length run.Run.steps;
+        Ok progress
+
+  let set_step_pointer engine ~run_id pointer =
+    match engine.worker_link with
+    | None -> Current.write ~runs_dir:(runs_dir engine) ~run_id [ pointer ]
+    | Some link -> send_to_driver link (Worker_pointer (Some pointer))
+
+  let clear_step_pointer engine ~run_id =
+    match engine.worker_link with
+    | None -> Current.remove ~runs_dir:(runs_dir engine) ~run_id
+    | Some link -> send_to_driver link (Worker_pointer None)
 
   let outcome_of_exec exec_result =
     if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
@@ -343,9 +428,12 @@ struct
 
   (* At most one event per attempt id, so a resume can re-record safely. *)
   let record_attempt_metering engine (event : Metering.event) =
-    match event.Metering.attempt_id with
-    | None -> Metering_port.record ~runs_dir:(runs_dir engine) ~event
-    | Some attempt_id ->
+    match (engine.worker_link, event.Metering.attempt_id) with
+    | Some link, _ ->
+        send_to_driver link (Worker_metering event);
+        Ok ()
+    | None, None -> Metering_port.record ~runs_dir:(runs_dir engine) ~event
+    | None, Some attempt_id ->
         let* attempt_ids =
           metered_attempt_ids engine ~run_id:event.Metering.run_id
         in
@@ -465,6 +553,7 @@ struct
   let run_step_process engine progress ~item (step : Workflow.step) =
     let label = Workflow.step_label step in
     let item_key = Option.map (fun context -> Items.key context.bindings) item in
+    let item_index = Option.map (fun context -> context.item_index) item in
     let interpolate value =
       match item with
       | None -> value
@@ -630,10 +719,8 @@ struct
         stdout_path = None;
       }
     in
-    let* progress, _ =
-      persist engine
-        (with_attempt_in_flight progress attempt)
-        ~status:Run.Running ~finished:false
+    let* progress =
+      save_step_progress engine (with_attempt_in_flight progress attempt)
     in
     let spawned_attempt = ref attempt in
     let on_spawn ~child_pid ~stdout_path ~stderr_path =
@@ -641,9 +728,7 @@ struct
       let save_spawned_attempt spawned =
         spawned_attempt := spawned;
         ignore
-          (persist engine
-             (with_attempt_in_flight progress spawned)
-             ~status:Run.Running ~finished:false)
+          (save_step_progress engine (with_attempt_in_flight progress spawned))
       in
       let spawned =
         {
@@ -654,11 +739,10 @@ struct
         }
       in
       save_spawned_attempt spawned;
-      Current.write ~runs_dir:(runs_dir engine)
-        ~run_id:progress.run.Run.id
-        { Current.skill = label; item_key; tier; stdout_path; stderr_path;
-          started_at };
-      engine.on_event (Step_output { stdout_path; stderr_path });
+      set_step_pointer engine ~run_id:progress.run.Run.id
+        { Current.skill = label; item_key; item_index; tier; stdout_path;
+          stderr_path; started_at };
+      engine.on_event (Step_output { stdout_path; stderr_path; item_index });
       (* Last: the ps read must not delay the pid record or the live pointer. *)
       save_spawned_attempt
         {
@@ -667,14 +751,14 @@ struct
         }
     in
     let process_result = start_process ~on_spawn in
-    Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
+    clear_step_pointer engine ~run_id:progress.run.Run.id;
     let progress = without_attempt_in_flight progress attempt in
     let* exec_result =
       match process_result with
       | Ok exec_result -> Ok exec_result
       | Error message when Option.is_none !spawned_attempt.Run.child_pid ->
           (* The process never started, so the attempt leaves no trace. *)
-          ignore (persist engine progress ~status:Run.Running ~finished:false);
+          ignore (save_step_progress engine progress);
           Error message
       | Error message ->
           (* The harness ran, so its unknown spend stays on record. *)
@@ -689,7 +773,7 @@ struct
                 };
             }
           in
-          let* _ = persist engine progress ~status:Run.Running ~finished:false in
+          let* _ = save_step_progress engine progress in
           let* () =
             record_attempt_metering engine
               (interrupted_metering_event ~run_id:progress.run.Run.id
@@ -752,7 +836,7 @@ struct
         handoff;
         handoff_error;
         session_id;
-        item_index = Option.map (fun context -> context.item_index) item;
+        item_index;
         item_key;
         attempt = Some finished_attempt;
         started_at;
@@ -770,7 +854,7 @@ struct
         guidance = None;
       }
     in
-    let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
+    let* progress = save_step_progress engine progress in
     let* () =
       record_attempt_metering engine
         (finished_metering_event ~run_id:progress.run.Run.id step_record
@@ -876,10 +960,481 @@ struct
     set_position progress
       { progress.run.Run.position with Run.entry_index }
 
-  (* One forEach entry: the body runs once per item, in order. The item
-     snapshot and cursor live in the persisted position, so a resume
-     re-enters exactly the item and body entry that paused; the items file
-     is read once, when the entry first starts. *)
+  let restart_retry_position progress =
+    set_position progress
+      { progress.run.Run.position with Run.iterations_used = 0; step_index = 0 }
+
+  (* Each item is an independent unit of the fan-out: it must not inherit
+     the previous item's (or the pre-forEach step's) handoff. Threading
+     within an item - step-to-step and retry - is untouched. *)
+  let clear_handoff progress = { progress with last_handoff = None }
+
+  (* One item's body, from [body_index] to its end or its first stop. *)
+  let execute_item engine progress (for_each : Workflow.for_each)
+      ~(state : Run.for_each_state) ~item_index ~body_index =
+    let items = state.Run.items in
+    let body = for_each.Workflow.body in
+    let body_count = List.length body in
+    let item =
+      Some
+        {
+          var = for_each.Workflow.var;
+          bindings = List.nth items item_index;
+          item_index;
+          item_count = List.length items;
+        }
+    in
+    let set_cursor progress body_index =
+      set_position progress
+        {
+          progress.run.Run.position with
+          Run.for_each = Some { state with Run.item_index; body_index };
+        }
+    in
+    let rec loop progress body_index =
+      if body_index >= body_count then Ok (Proceed progress)
+      else
+        let progress = set_cursor progress body_index in
+        let* verdict =
+          match List.nth body body_index with
+          | Workflow.Step step -> execute_plain_entry engine progress ~item step
+          | Workflow.Retry retry ->
+              execute_retry_entry engine progress ~item retry
+          | Workflow.For_each _ ->
+              Error "run: forEach bodies cannot contain forEach"
+        in
+        match verdict with
+        | Proceed progress ->
+            loop (restart_retry_position progress) (body_index + 1)
+        | Stop (status, progress) -> Ok (Stop (status, progress))
+    in
+    loop progress body_index
+
+  (* Created in the worker, so items set up their worktrees in parallel. A
+     missing worktree is recreated only for an item that never ran a step. *)
+  let ensure_item_worktree engine progress (item : Run.item_in_progress) =
+    let item_number = item.Run.started_item_index + 1 in
+    let never_ran =
+      progress.run.Run.steps = [] && progress.run.Run.interrupted_attempts = []
+    in
+    match item.Run.item_workspace with
+    | Some path when Sys.file_exists path -> Ok path
+    | Some path when never_ran ->
+        let* () =
+          Workspace.create_item_worktree ~root:engine.root
+            ~run_workspace:engine.workspace ~path
+        in
+        Ok path
+    | Some path ->
+        Error
+          (Printf.sprintf
+             "run: forEach item %d used worktree %s, which no longer exists"
+             item_number path)
+    | None ->
+        Error (Printf.sprintf "run: forEach item %d has no worktree" item_number)
+
+  (* Runs in a forked process: the item's body against its own worktree,
+     reporting every save and event to the driver. Never returns. *)
+  let run_item_worker engine progress (for_each : Workflow.for_each) ~state
+      ~(item : Run.item_in_progress) ~worker_output =
+    let link =
+      {
+        worker_output;
+        reported_step_count = List.length progress.run.Run.steps;
+      }
+    in
+    reseed_session_ids ();
+    let worker_engine workspace =
+      {
+        engine with
+        workspace;
+        worker_link = Some link;
+        on_step = (fun record -> send_to_driver link (Worker_step record));
+        on_event = (fun event -> send_to_driver link (Worker_event event));
+      }
+    in
+    (try
+       let result =
+         let* workspace = ensure_item_worktree engine progress item in
+         execute_item (worker_engine workspace) progress for_each ~state
+           ~item_index:item.Run.started_item_index
+           ~body_index:item.Run.item_body_index
+       in
+       send_to_driver link
+         (match result with
+         | Ok (Proceed _) -> Worker_item_passed
+         | Ok (Stop (status, stopped)) ->
+             Worker_item_stopped
+               {
+                 status;
+                 position = stopped.run.Run.position;
+                 paused_on_attempt =
+                   (if status = Run.Paused then
+                      Run.last_step_attempt_id stopped.run.Run.steps
+                    else None);
+               }
+         | Error message -> Worker_item_error message)
+     with exception_raised -> (
+       try
+         send_to_driver link
+           (Worker_item_error (Printexc.to_string exception_raised))
+       with _ -> ()));
+    (* _exit: the driver's at_exit handlers and buffers are not the worker's. *)
+    Unix._exit 0
+
+  type item_worker = {
+    worker_pid : int;
+    worker_input : Unix.file_descr;
+    worker_reader : Worker_channel.reader;
+    worker_item_index : int;
+    mutable worker_reported_end : bool;
+  }
+
+  (* A failed or aborted item decides the run over a paused one. *)
+  let combine_stop_status current status =
+    match current with
+    | None | Some Run.Paused -> Some status
+    | Some _ -> current
+
+  let body_index_of_position (position : Run.position) ~default =
+    match position.Run.for_each with
+    | Some cursor -> cursor.Run.body_index
+    | None -> default
+
+  (* A forEach with concurrency above 1: up to that many items run at once,
+     each in a forked worker process with its own worktree. The driver
+     holds the run lock and does every save, so saves stay serial. When an
+     item stops (pause, fail, abort) or errors, no new item starts; the
+     items in flight run to their own end, then the entry stops. A passed
+     item's worktree is removed; one that stopped stays for a resume or a
+     human, named in the run record. *)
+  let execute_parallel_for_each engine progress (for_each : Workflow.for_each)
+      (initial_state : Run.for_each_state) =
+    let entry_index = progress.run.Run.position.Run.entry_index in
+    let run_id = progress.run.Run.id in
+    let item_count = List.length initial_state.Run.items in
+    let guidance = progress.guidance in
+    let master = ref { progress with guidance = None; last_handoff = None } in
+    let state = ref initial_state in
+    let first_error = ref None in
+    let stop_status = ref None in
+    let workers = ref [] in
+    let pending_resumes = ref initial_state.Run.items_in_progress in
+    let pointers = Hashtbl.create 8 in
+    let note_error message =
+      if Option.is_none !first_error then first_error := Some message
+    in
+    let save () =
+      master :=
+        set_position !master
+          { !master.run.Run.position with Run.for_each = Some !state };
+      match persist engine !master ~status:Run.Running ~finished:false with
+      | Ok (saved, _) -> master := saved
+      | Error message -> note_error message
+    in
+    let update_item item_index change =
+      state :=
+        {
+          !state with
+          Run.items_in_progress =
+            List.map
+              (fun (item : Run.item_in_progress) ->
+                if item.Run.started_item_index = item_index then change item
+                else item)
+              !state.Run.items_in_progress;
+        }
+    in
+    let write_pointers () =
+      let runs_directory = runs_dir engine in
+      match
+        List.sort compare
+          (Hashtbl.fold
+             (fun index pointer all -> (index, pointer) :: all)
+             pointers [])
+      with
+      | [] -> Current.remove ~runs_dir:runs_directory ~run_id
+      | indexed ->
+          Current.write ~runs_dir:runs_directory ~run_id
+            (List.map snd indexed)
+    in
+    let step_key_prefix item_index =
+      Run.item_step_key_prefix ~run_id ~entry_index ~item_index
+    in
+    let start_worker (item : Run.item_in_progress) ~resumed =
+      let item_index = item.Run.started_item_index in
+      let worker_state = { !state with Run.items_in_progress = [] } in
+      let lane =
+        {
+          (Run.item_lane !master.run
+             ~step_key_prefix:(step_key_prefix item_index))
+          with
+          Run.position =
+            {
+              Run.entry_index;
+              iterations_used = item.Run.item_iterations_used;
+              step_index = item.Run.item_step_index;
+              for_each =
+                Some
+                  {
+                    worker_state with
+                    Run.item_index;
+                    body_index = item.Run.item_body_index;
+                  };
+            };
+          paused_on_attempt = item.Run.item_paused_on_attempt;
+        }
+      in
+      let worker_progress =
+        {
+          run = lane;
+          last_handoff = (if resumed then Run.last_handoff lane else None);
+          guidance = (if resumed then guidance else None);
+        }
+      in
+      match Unix.pipe ~cloexec:true () with
+      | exception Unix.Unix_error (error, _, _) ->
+          note_error
+            ("run: cannot open a forEach worker pipe: "
+            ^ Unix.error_message error)
+      | worker_input, worker_output -> (
+          match Unix.fork () with
+          | exception Unix.Unix_error (error, _, _) ->
+              Unix.close worker_input;
+              Unix.close worker_output;
+              note_error
+                ("run: cannot fork a forEach worker: "
+                ^ Unix.error_message error)
+          | 0 ->
+              Unix.close worker_input;
+              (* Another worker's end of file must not wait on this one. *)
+              List.iter
+                (fun worker ->
+                  try Unix.close worker.worker_input
+                  with Unix.Unix_error _ -> ())
+                !workers;
+              run_item_worker engine worker_progress for_each
+                ~state:worker_state ~item ~worker_output
+          | worker_pid ->
+              Unix.close worker_output;
+              workers :=
+                !workers
+                @ [
+                    {
+                      worker_pid;
+                      worker_input;
+                      worker_reader = Worker_channel.create_reader worker_input;
+                      worker_item_index = item_index;
+                      worker_reported_end = false;
+                    };
+                  ])
+    in
+    let start_next_item () =
+      let item_index = !state.Run.item_index in
+      let path =
+        Workspace.item_worktree_path ~root:engine.root ~run_id ~entry_index
+          ~item_index
+      in
+      let item =
+        {
+          Run.started_item_index = item_index;
+          item_body_index = 0;
+          item_iterations_used = 0;
+          item_step_index = 0;
+          item_workspace = Some path;
+          item_status = Run.Running;
+          item_paused_on_attempt = None;
+        }
+      in
+      state :=
+        {
+          !state with
+          Run.item_index = item_index + 1;
+          items_in_progress = !state.Run.items_in_progress @ [ item ];
+        };
+      (* Saved before the worker creates the worktree, so none is orphaned. *)
+      save ();
+      start_worker item ~resumed:false
+    in
+    let resume_item (item : Run.item_in_progress) =
+      let running = { item with Run.item_status = Run.Running } in
+      update_item item.Run.started_item_index (fun _ -> running);
+      save ();
+      start_worker running ~resumed:true
+    in
+    let rec fill_free_slots () =
+      if
+        Option.is_none !first_error
+        && Option.is_none !stop_status
+        && List.length !workers < !state.Run.concurrency
+      then
+        match !pending_resumes with
+        | item :: rest ->
+            pending_resumes := rest;
+            resume_item item;
+            fill_free_slots ()
+        | [] ->
+            if !state.Run.item_index < item_count then (
+              start_next_item ();
+              fill_free_slots ())
+    in
+    let handle_message worker (message : worker_message) =
+      let item_index = worker.worker_item_index in
+      match message with
+      | Worker_progress
+          { position; attempts_in_flight; new_steps; interrupted_attempts }
+        ->
+          let prefix = step_key_prefix item_index in
+          let run = !master.run in
+          let other_attempts =
+            Run.Step_key_map.filter
+              (fun step_key _ -> not (String.starts_with ~prefix step_key))
+              run.Run.attempts_in_flight
+          in
+          let other_interrupted_attempts =
+            List.filter
+              (fun (attempt : Run.attempt) ->
+                not (String.starts_with ~prefix attempt.Run.step_key))
+              run.Run.interrupted_attempts
+          in
+          master :=
+            {
+              !master with
+              run =
+                {
+                  run with
+                  Run.attempts_in_flight =
+                    List.fold_left
+                      (fun map (attempt : Run.attempt) ->
+                        Run.Step_key_map.add attempt.Run.step_key attempt map)
+                      other_attempts attempts_in_flight;
+                  steps = run.Run.steps @ new_steps;
+                  interrupted_attempts =
+                    other_interrupted_attempts @ interrupted_attempts;
+                };
+            };
+          update_item item_index (fun item ->
+              {
+                item with
+                Run.item_body_index =
+                  body_index_of_position position
+                    ~default:item.Run.item_body_index;
+                item_iterations_used = position.Run.iterations_used;
+                item_step_index = position.Run.step_index;
+              });
+          save ()
+      | Worker_metering event -> (
+          match record_attempt_metering engine event with
+          | Ok () -> ()
+          | Error message -> note_error message)
+      | Worker_event event -> engine.on_event event
+      | Worker_step record -> engine.on_step record
+      | Worker_pointer pointer ->
+          (match pointer with
+          | Some pointer -> Hashtbl.replace pointers item_index pointer
+          | None -> Hashtbl.remove pointers item_index);
+          write_pointers ()
+      | Worker_item_passed ->
+          worker.worker_reported_end <- true;
+          let passed, others =
+            List.partition
+              (fun (item : Run.item_in_progress) ->
+                item.Run.started_item_index = item_index)
+              !state.Run.items_in_progress
+          in
+          state := { !state with Run.items_in_progress = others };
+          save ();
+          List.iter
+            (fun (item : Run.item_in_progress) ->
+              match item.Run.item_workspace with
+              | Some path -> (
+                  match Workspace.remove ~root:engine.root ~path with
+                  | Ok () -> ()
+                  | Error message -> note_error message)
+              | None -> ())
+            passed;
+          engine.on_event
+            (Item_finished { entry_index; item_index; status = Run.Completed })
+      | Worker_item_stopped { status; position; paused_on_attempt } ->
+          worker.worker_reported_end <- true;
+          update_item item_index (fun item ->
+              {
+                item with
+                Run.item_body_index =
+                  body_index_of_position position
+                    ~default:item.Run.item_body_index;
+                item_iterations_used = position.Run.iterations_used;
+                item_step_index = position.Run.step_index;
+                item_status = status;
+                item_paused_on_attempt = paused_on_attempt;
+              });
+          stop_status := combine_stop_status !stop_status status;
+          save ();
+          engine.on_event (Item_finished { entry_index; item_index; status })
+      | Worker_item_error message ->
+          worker.worker_reported_end <- true;
+          note_error message
+    in
+    let rec wait_for_exit pid =
+      match Unix.waitpid [] pid with
+      | _ -> ()
+      | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for_exit pid
+      | exception Unix.Unix_error _ -> ()
+    in
+    let reap worker =
+      Unix.close worker.worker_input;
+      wait_for_exit worker.worker_pid;
+      workers :=
+        List.filter
+          (fun other -> other.worker_pid <> worker.worker_pid)
+          !workers;
+      if Hashtbl.mem pointers worker.worker_item_index then (
+        Hashtbl.remove pointers worker.worker_item_index;
+        write_pointers ());
+      if not worker.worker_reported_end then
+        note_error
+          (Printf.sprintf
+             "run: forEach item %d: its worker process ended without a result"
+             (worker.worker_item_index + 1))
+    in
+    let rec drain () =
+      fill_free_slots ();
+      match !workers with
+      | [] -> ()
+      | running ->
+          let ready =
+            match
+              Unix.select
+                (List.map (fun worker -> worker.worker_input) running)
+                [] [] (-1.0)
+            with
+            | ready, _, _ -> ready
+            | exception Unix.Unix_error (Unix.EINTR, _, _) -> []
+          in
+          List.iter
+            (fun worker ->
+              if List.mem worker.worker_input ready then (
+                let (messages : worker_message list), closed =
+                  Worker_channel.receive_worker_messages worker.worker_reader
+                in
+                List.iter (handle_message worker) messages;
+                if closed then reap worker))
+            running;
+          drain ()
+    in
+    drain ();
+    master :=
+      set_position !master
+        { !master.run.Run.position with Run.for_each = Some !state };
+    match (!first_error, !stop_status) with
+    | Some message, _ -> Error message
+    | None, Some status -> Ok (Stop (status, !master))
+    | None, None -> Ok (Proceed !master)
+
+  (* One forEach entry: the body runs once per item, in order, or with
+     concurrency above 1 several items at once. The item snapshot and
+     cursors live in the persisted position, so a resume re-enters exactly
+     the item and body entry that paused; the items file is read once,
+     when the entry first starts. *)
   let execute_for_each_entry engine progress (for_each : Workflow.for_each) =
     (* A resume re-enters with a snapshot and a seeded handoff mid-item;
        a fresh entry has neither. Only a fresh entry isolates its first
@@ -898,7 +1453,20 @@ struct
               ~required:(Workflow.for_each_columns for_each)
               items
           in
-          Ok { Run.item_index = 0; body_index = 0; items }
+          let concurrency = engine.config.Config.concurrency in
+          let* () =
+            if concurrency > 1 && Option.is_none progress.run.Run.workspace
+            then Error (Validate.concurrency_isolation_message concurrency)
+            else Ok ()
+          in
+          Ok
+            {
+              Run.item_index = 0;
+              body_index = 0;
+              items;
+              concurrency;
+              items_in_progress = [];
+            }
     in
     let items = state.Run.items in
     engine.on_event
@@ -906,52 +1474,26 @@ struct
          {
            entry_index = progress.run.Run.position.Run.entry_index;
            item_keys = List.map Items.key items;
+           concurrency = state.Run.concurrency;
          });
-    let item_count = List.length items in
-    let body = for_each.Workflow.body in
-    let body_count = List.length body in
-    let set_cursor progress item_index body_index =
-      set_position progress
-        {
-          progress.run.Run.position with
-          Run.for_each = Some { Run.item_index; body_index; items };
-        }
-    in
-    let restart_retry_position progress =
-      set_position progress
-        { progress.run.Run.position with Run.iterations_used = 0; step_index = 0 }
-    in
-    (* Each item is an independent unit of the fan-out: it must not inherit
-       the previous item's (or the pre-forEach step's) handoff. Threading
-       within an item - step-to-step and retry - is untouched. *)
-    let clear_handoff progress = { progress with last_handoff = None } in
-    let progress = if fresh_entry then clear_handoff progress else progress in
-    let rec loop progress item_index body_index =
-      if item_index >= item_count then Ok (Proceed progress)
-      else if body_index >= body_count then
-        loop (clear_handoff progress) (item_index + 1) 0
-      else
-        let progress = set_cursor progress item_index body_index in
-        let bindings = List.nth items item_index in
-        let item =
-          Some
-            { var = for_each.Workflow.var; bindings; item_index; item_count }
-        in
-        let* verdict =
-          match List.nth body body_index with
-          | Workflow.Step step ->
-              execute_plain_entry engine progress ~item step
-          | Workflow.Retry retry ->
-              execute_retry_entry engine progress ~item retry
-          | Workflow.For_each _ ->
-              Error "run: forEach bodies cannot contain forEach"
-        in
-        match verdict with
-        | Proceed progress ->
-            loop (restart_retry_position progress) item_index (body_index + 1)
-        | Stop (status, progress) -> Ok (Stop (status, progress))
-    in
-    loop progress state.Run.item_index state.Run.body_index
+    if state.Run.concurrency > 1 then
+      execute_parallel_for_each engine progress for_each state
+    else
+      let item_count = List.length items in
+      let progress = if fresh_entry then clear_handoff progress else progress in
+      let rec loop progress item_index body_index =
+        if item_index >= item_count then Ok (Proceed progress)
+        else
+          let* verdict =
+            execute_item engine progress for_each ~state ~item_index
+              ~body_index
+          in
+          match verdict with
+          | Proceed progress ->
+              loop (clear_handoff progress) (item_index + 1) 0
+          | Stop (status, progress) -> Ok (Stop (status, progress))
+      in
+      loop progress state.Run.item_index state.Run.body_index
 
   let execute_entries engine progress =
     let entry_count = List.length engine.entries in
@@ -1067,6 +1609,10 @@ struct
       ?run_id ~root ~workflow_name ~task
       ~isolated () =
     let* jig_dir, workflow_dir, workflow, config = load_project ~root ~workflow_name in
+    let* () =
+      Validate.concurrency_isolation ~concurrency:config.Config.concurrency
+        ~isolated workflow
+    in
     let started = Unix.gettimeofday () in
     (* A detaching caller pre-issues the id so it can print it and name
        the log file before forking. *)
@@ -1098,6 +1644,7 @@ struct
         on_event;
         (* A new run id has no events in the ledger yet. *)
         metered_attempt_ids = ref (Some (Hashtbl.create 64));
+        worker_link = None;
       }
     in
     let run =
@@ -1251,6 +1798,12 @@ struct
           position = advance_after_human_pass ~entries run.Run.position;
         } )
 
+  (* Several items can be paused at once; one human hand-back cannot pick. *)
+  let parallel_items_refuse_one_item_message =
+    "run: --skip and attach complete one paused step, but this run is \
+     paused inside a forEach that runs items in parallel; resume it with \
+     --guidance instead"
+
   let pause_for_interruption engine progress (attempts : Run.attempt list) =
     let probe_now = run_probe engine in
     let progress =
@@ -1320,7 +1873,13 @@ struct
         on_step;
         on_event;
         metered_attempt_ids = ref None;
+        worker_link = None;
       }
+    in
+    let* () =
+      if skip && Run.runs_items_in_parallel existing.Run.position then
+        Error parallel_items_refuse_one_item_message
+      else Ok ()
     in
     let last_handoff = Run.last_handoff existing in
     let run =
@@ -1386,6 +1945,11 @@ struct
                run_id path)
       | _ -> Ok ()
     in
+    let* () =
+      if Run.runs_items_in_parallel existing.Run.position then
+        Error parallel_items_refuse_one_item_message
+      else Ok ()
+    in
     let* exec_result = collect_handoff () in
     let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     let* () =
@@ -1417,6 +1981,7 @@ struct
         on_step;
         on_event;
         metered_attempt_ids = ref None;
+        worker_link = None;
       }
     in
     let cost, usage = Metering.parse_cost exec_result.Executor.stdout in

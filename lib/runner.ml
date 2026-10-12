@@ -143,6 +143,9 @@ let build_prompt ~context ~field_guide ~task ~position ~inputs ~skill_body
     field_guide_section task position inputs_section guidance_section
     handoff_section skill_body protocol
 
+(** Fixed time limit for the notify hook, in seconds. *)
+let notify_time_limit_seconds = 30.0
+
 module Make
     (Executor_port : Executor.S)
     (Model_provider_port : Model_provider.S)
@@ -608,7 +611,7 @@ struct
     loop progress progress.run.Run.position.Run.entry_index
 
   (* Best-effort announcement that the run stopped executing; a notify
-     failure never affects the run's outcome. *)
+     failure never affects the run's outcome, and a hung one is stopped. *)
   let notify engine run =
     match engine.config.Config.notify with
     | [] -> ()
@@ -622,7 +625,9 @@ struct
                    ~value:(Run.string_of_status run.Run.status))
             template
         in
-        ignore (Subprocess.run ~cwd:engine.root ~argv ())
+        ignore
+          (Subprocess.run ~cwd:engine.root
+             ~time_limit_seconds:notify_time_limit_seconds ~argv ())
 
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
      finds the work in progress exactly where the agent left it. *)

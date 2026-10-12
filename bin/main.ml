@@ -129,6 +129,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
     | None, None, _ -> Error "pass a workflow name or --resume <run-id>"
   in
   if not detach then (
+    Jig_core.Subprocess.install_signal_forwarding ();
     match execute () with
     | Error message ->
         Printf.eprintf "jig: %s\n" message;
@@ -180,6 +181,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
         if Unix.fork () > 0 then exit 0
         else (
           ignore (Unix.setsid ());
+          Jig_core.Subprocess.install_signal_forwarding ();
           let devnull = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
           Unix.dup2 devnull Unix.stdin;
           Unix.close devnull;
@@ -385,6 +387,8 @@ let attach_run run_id latest step_number =
                   (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
               in
               ignore (Unix.waitpid [] chat);
+              (* Only after the chat, which owns the terminal and its Ctrl-C. *)
+              Jig_core.Subprocess.install_signal_forwarding ();
               print_endline "collecting the step's handoff...";
               Jig_core.Executor.Local.execute ~command:headless_command
                 ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt

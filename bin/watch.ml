@@ -28,37 +28,86 @@ let item_key_of_position (position : Run.position) =
         (List.nth_opt state.Run.items state.Run.item_index)
   | None -> None
 
-(* The model for one frame: replay the record, then mark the in-flight step
-   Working - its identity comes from the pointer while the subprocess runs,
-   and from the persisted position between steps. *)
-let build_model ~entries ~entry_count (record : Run.t) pointer =
+(* The position of one item of the forEach the run stands in. *)
+let position_of_item (position : Run.position) ~item_index =
+  match (position.Run.for_each, item_index) with
+  | Some state, Some item_index ->
+      { position with Run.for_each = Some { state with Run.item_index } }
+  | _ -> position
+
+let mark_step_working ~entries model (position : Run.position) =
+  match Jig_core.Runner.Default.skip_target_skill ~entries ~position with
+  | Ok skill ->
+      Progress.apply model
+        (Jig_core.Runner.Step_started
+           {
+             skill;
+             position;
+             item_key = item_key_of_position position;
+             tier = None;
+           })
+  | Error _ -> ()
+
+(* Replay the record, then mark in-flight steps from pointers or cursors. *)
+let build_model ~entries ~entry_count (record : Run.t) pointers =
   let model = Progress.restore ~entries record in
-  (if
-     record.Run.status = Run.Running
-     && record.Run.position.Run.entry_index < entry_count
+  let position = record.Run.position in
+  let mark_pointer current =
+    Progress.apply model
+      (Jig_core.Runner.Step_started
+         {
+           skill = current.Current.skill;
+           position =
+             position_of_item position ~item_index:current.Current.item_index;
+           item_key = current.Current.item_key;
+           tier = current.Current.tier;
+         })
+  in
+  (if record.Run.status = Run.Running && position.Run.entry_index < entry_count
    then
-     let skill, item_key, tier =
-       match pointer with
-       | Some current ->
-           ( Some current.Current.skill,
-             current.Current.item_key,
-             current.Current.tier )
-       | None -> (
-           match
-             Jig_core.Runner.Default.skip_target_skill ~entries
-               ~position:record.Run.position
-           with
-           | Ok skill ->
-               (Some skill, item_key_of_position record.Run.position, None)
-           | Error _ -> (None, None, None))
-     in
-     match skill with
-     | Some skill ->
-         Progress.apply model
-           (Jig_core.Runner.Step_started
-              { skill; position = record.Run.position; item_key; tier })
-     | None -> ());
+     match (Run.parallel_items_in_progress position, pointers) with
+     | [], _ :: _ -> List.iter mark_pointer pointers
+     | [], [] -> mark_step_working ~entries model position
+     | items, _ ->
+         (* An item between steps has no pointer; its cursor names the step. *)
+         List.iter
+           (fun (item : Run.item_in_progress) ->
+             let item_index = item.Run.started_item_index in
+             if item.Run.item_status = Run.Running then
+               match
+                 List.find_opt
+                   (fun current -> current.Current.item_index = Some item_index)
+                   pointers
+               with
+               | Some current -> mark_pointer current
+               | None ->
+                   mark_step_working ~entries model
+                     {
+                       position with
+                       Run.iterations_used = item.Run.item_iterations_used;
+                       step_index = item.Run.item_step_index;
+                       for_each =
+                         Option.map
+                           (fun state ->
+                             {
+                               state with
+                               Run.item_index;
+                               body_index = item.Run.item_body_index;
+                             })
+                           position.Run.for_each;
+                     })
+           items);
   model
+
+(* The Log box follows the last item's step, the row the elapsed time is on. *)
+let focused_pointer pointers =
+  List.fold_left
+    (fun focus current ->
+      match focus with
+      | Some best when best.Current.item_index >= current.Current.item_index ->
+          focus
+      | _ -> Some current)
+    None pointers
 
 (* skill · item · tier - the same title the foreground live view shows. *)
 let log_title pointer =
@@ -146,10 +195,10 @@ let watch ~root ~run_id =
                     | Error _ -> ())
                 | _ | (exception Unix.Unix_error _) -> ()
               in
-              let pointer () =
+              let pointers () =
                 if !record.Run.status = Run.Running then
                   Current.read ~runs_dir ~run_id
-                else None
+                else []
               in
               let tail_lines current =
                 match current with
@@ -181,9 +230,10 @@ let watch ~root ~run_id =
                     Tail.lines live_tail
               in
               let paint ~final =
-                let current = if final then None else pointer () in
+                let pointers = if final then [] else pointers () in
+                let current = focused_pointer pointers in
                 let model =
-                  build_model ~entries ~entry_count !record current
+                  build_model ~entries ~entry_count !record pointers
                 in
                 if final then Progress.finalize model;
                 let state = state_of_status !record.Run.status in

@@ -61,7 +61,9 @@ jig status <run-id> --json
 React to `status`:
 
 - `running` - keep polling. Do not resume a run another process still
-  drives: jig refuses it ("is driven by live pid ...").
+  drives: jig refuses it ("is driven by live pid ..."). It also refuses
+  while a killed run's step harness still runs ("is still running as
+  pid ..."): tell the user to stop that process or wait.
 - `completed` - report: per-step outcomes, total cost, the PR link if a
   step opened one, and the run record path.
 - `paused` - a step escalated. Triage the last handoff (below).

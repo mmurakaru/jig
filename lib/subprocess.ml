@@ -17,8 +17,14 @@ let posix_signal_number signal =
   else if signal = Sys.sigterm then 15
   else abs signal
 
-(* The child [run] waits on; its pid is also its process group id. *)
-let current_child_process_group : int option ref = ref None
+(* Children [run] waits on, innermost first ([on_spawn] can start a nested run); pid = group id. *)
+let active_child_process_groups : int list ref = ref []
+
+(* Forked jig processes (parallel forEach items); each stops its own step on SIGTERM. *)
+let worker_process_ids : int list ref = ref []
+
+(* A forked worker must skip the at_exit handlers it inherited from the driver. *)
+let exit_after_stop = ref exit
 
 (* Set by a forwarded signal; the waiting thread stops the group and exits. *)
 let requested_stop_signal : int option ref = ref None
@@ -96,7 +102,61 @@ let wait_for_child child_pid ~deadline ~on_deadline =
       if Option.is_none !requested_stop_signal then on_deadline ();
       terminate_process_group child_pid
 
-let exit_for_signal signal = exit (128 + posix_signal_number signal)
+let rec wait_for_worker_exit worker_pid =
+  match Unix.waitpid [] worker_pid with
+  | _ -> ()
+  | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for_worker_exit worker_pid
+  | exception Unix.Unix_error _ -> ()
+
+let stop_all_children_and_exit signal =
+  List.iter
+    (fun group -> signal_process_group group Sys.sigterm)
+    !active_child_process_groups;
+  List.iter
+    (fun worker_pid ->
+      try Unix.kill worker_pid Sys.sigterm
+      with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
+    !worker_process_ids;
+  List.iter
+    (fun group ->
+      try ignore (terminate_process_group group)
+      with Unix.Unix_error (Unix.ECHILD, _, _) ->
+        signal_process_group_only group Sys.sigkill)
+    !active_child_process_groups;
+  List.iter wait_for_worker_exit !worker_process_ids;
+  !exit_after_stop (128 + posix_signal_number signal)
+
+(** Exits, after stopping every child and worker, once a forwarded signal arrived. *)
+let exit_if_stop_requested () =
+  Option.iter stop_all_children_and_exit !requested_stop_signal
+
+(** Tracks a forked parallel forEach worker, so a forwarded signal reaches it. *)
+let register_worker_process worker_pid =
+  worker_process_ids := worker_pid :: !worker_process_ids
+
+let unregister_worker_process worker_pid =
+  worker_process_ids := List.filter (( <> ) worker_pid) !worker_process_ids
+
+(** Called first in a forked parallel forEach worker. *)
+let become_worker_process () =
+  worker_process_ids := [];
+  active_child_process_groups := [];
+  exit_after_stop := Unix._exit
+
+(* The parent's environment with each [overrides] name replaced or added,
+   as execve expects it: "NAME=value" strings. *)
+let environment_with_overrides overrides =
+  let overridden entry =
+    List.exists
+      (fun (name, _) -> String.starts_with ~prefix:(name ^ "=") entry)
+      overrides
+  in
+  let inherited =
+    List.filter (fun entry -> not (overridden entry))
+      (Array.to_list (Unix.environment ()))
+  in
+  Array.of_list
+    (inherited @ List.map (fun (name, value) -> name ^ "=" ^ value) overrides)
 
 let read_and_remove path =
   let content = In_channel.with_open_text path In_channel.input_all in
@@ -106,14 +166,21 @@ let read_and_remove path =
 (* Capture into temp files instead of pipes: a child that fills a pipe buffer
    on one stream while we drain the other would deadlock. Fork/exec by hand
    because Unix.create_process cannot change the child's working directory.
-   [on_spawn] fires in the parent once the child is running, with the capture
-   paths - a live view can tail them while this call waits. The child leads
-   its own process group; past [time_limit_seconds] that group is stopped. *)
-let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
+   [on_spawn] fires in the parent once the child is running, with its pid
+   and the capture paths - a live view can tail them while this call waits.
+   [environment] adds or replaces variables for the child only.
+   The child leads its own process group; past [time_limit_seconds] that
+   group is stopped. *)
+let run ?cwd ?on_spawn ?(environment = []) ?time_limit_seconds ~argv () =
   match argv with
   | [] -> Error "subprocess: empty command"
   | program :: _ -> (
       let argv_array = Array.of_list argv in
+      let child_environment =
+        match environment with
+        | [] -> None
+        | overrides -> Some (environment_with_overrides overrides)
+      in
       try
         let stdout_path = Filename.temp_file "jig-stdout" ".log" in
         let stderr_path = Filename.temp_file "jig-stderr" ".log" in
@@ -134,18 +201,26 @@ let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
           Unix.close stdin_fd;
           Unix.close stdout_fd;
           Unix.close stderr_fd;
-          try Unix.execvp program argv_array with _ -> Unix._exit 127)
+          try
+            match child_environment with
+            | None -> Unix.execvp program argv_array
+            | Some child_environment ->
+                Unix.execvpe program argv_array child_environment
+          with _ -> Unix._exit 127)
         else (
           Unix.close stdin_fd;
           Unix.close stdout_fd;
           Unix.close stderr_fd;
-          current_child_process_group := Some child_pid;
+          active_child_process_groups :=
+            child_pid :: !active_child_process_groups;
           let status =
             Fun.protect
-              ~finally:(fun () -> current_child_process_group := None)
+              ~finally:(fun () ->
+                active_child_process_groups :=
+                  List.filter (( <> ) child_pid) !active_child_process_groups)
               (fun () ->
                 Option.iter
-                  (fun notify -> notify ~stdout_path ~stderr_path)
+                  (fun notify -> notify ~child_pid ~stdout_path ~stderr_path)
                   on_spawn;
                 wait_for_child child_pid
                   ~deadline:
@@ -156,7 +231,7 @@ let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
           in
           let stdout = read_and_remove stdout_path in
           let stderr = read_and_remove stderr_path in
-          Option.iter exit_for_signal !requested_stop_signal;
+          exit_if_stop_requested ();
           let exit_code =
             match status with
             | Unix.WEXITED code -> code
@@ -175,9 +250,9 @@ let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
 let install_signal_forwarding () =
   (* The handler can run on the live view's thread; only [run]'s thread may reap. *)
   let forward_signal signal =
-    match !current_child_process_group with
-    | Some _ -> requested_stop_signal := Some signal
-    | None -> exit_for_signal signal
+    match (!active_child_process_groups, !worker_process_ids) with
+    | [], [] -> !exit_after_stop (128 + posix_signal_number signal)
+    | _ -> requested_stop_signal := Some signal
   in
   List.iter
     (fun signal -> Sys.set_signal signal (Sys.Signal_handle forward_signal))

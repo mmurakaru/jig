@@ -33,6 +33,11 @@ let signal_process_group process_group_id signal =
     try Unix.kill process_group_id signal
     with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
 
+(* Only after the leader is reaped: its pid may belong to another process by then. *)
+let signal_process_group_only process_group_id signal =
+  try Unix.kill (-process_group_id) signal
+  with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+
 let process_group_has_members process_group_id =
   match Unix.kill (-process_group_id) 0 with
   | () -> true
@@ -73,7 +78,7 @@ let terminate_process_group child_pid =
           (wait_for_child_until child_pid ~stop_waiting:(fun () -> false))
   in
   wait_for_empty_group child_pid ~until:grace_ends_at;
-  signal_process_group child_pid Sys.sigkill;
+  signal_process_group_only child_pid Sys.sigkill;
   status
 
 let wait_for_child child_pid ~deadline ~on_deadline =

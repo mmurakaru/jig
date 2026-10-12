@@ -9,12 +9,16 @@ let status_of_string = function
   | "fail" -> Ok Fail
   | "escalate" -> Ok Escalate
   | other ->
-      Error (Printf.sprintf "handoff: unknown status %S (expected pass, fail or escalate)" other)
+      Error
+        (Printf.sprintf
+           "handoff: unknown status %S (expected pass, fail or escalate)" other)
 
-let string_of_status = function Pass -> "pass" | Fail -> "fail" | Escalate -> "escalate"
+let string_of_status = function
+  | Pass -> "pass"
+  | Fail -> "fail"
+  | Escalate -> "escalate"
 
 let fence_opening = "```handoff"
-
 let fence_closing = "```"
 
 (* The handoff is the LAST ```handoff fenced block in the step's output, so
@@ -26,7 +30,8 @@ let extract_block output =
       (fun (inside, current, last_found) line ->
         let trimmed = String.trim line in
         if inside then
-          if trimmed = fence_closing then (false, [], Some (String.concat "\n" (List.rev current)))
+          if trimmed = fence_closing then
+            (false, [], Some (String.concat "\n" (List.rev current)))
           else (true, line :: current, last_found)
         else if trimmed = fence_opening then (true, [], last_found)
         else (false, [], last_found))
@@ -62,7 +67,9 @@ let of_yaml yaml =
         | Some _ -> Error "handoff: artifacts must be a list of paths"
       in
       let summary =
-        match List.assoc_opt "summary" fields with Some (`String value) -> value | _ -> ""
+        match List.assoc_opt "summary" fields with
+        | Some (`String value) -> value
+        | _ -> ""
       in
       Ok { status; artifacts; summary }
   | _ -> Error "handoff: expected a mapping inside the handoff block"
@@ -77,7 +84,9 @@ let agent_text output =
       match Yojson.Safe.from_string output with
       | exception _ -> output
       | json -> (
-          match Yojson.Safe.Util.member "result" json with `String result -> result | _ -> output))
+          match Yojson.Safe.Util.member "result" json with
+          | `String result -> result
+          | _ -> output))
 
 let parse output =
   match extract_block (agent_text output) with
@@ -85,7 +94,8 @@ let parse output =
   | Some block -> (
       match Yaml.of_string block with
       | Ok yaml -> of_yaml yaml
-      | Error (`Msg message) -> Error (Printf.sprintf "handoff: invalid yaml: %s" message))
+      | Error (`Msg message) ->
+          Error (Printf.sprintf "handoff: invalid yaml: %s" message))
 
 let render handoff =
   let artifacts =
@@ -93,9 +103,12 @@ let render handoff =
     | [] -> ""
     | paths ->
         Printf.sprintf "artifacts:\n%s"
-          (String.concat "" (List.map (fun path -> Printf.sprintf "  - %s\n" path) paths))
+          (String.concat ""
+             (List.map (fun path -> Printf.sprintf "  - %s\n" path) paths))
   in
-  Printf.sprintf "status: %s\n%s%s" (string_of_status handoff.status) artifacts handoff.summary
+  Printf.sprintf "status: %s\n%s%s"
+    (string_of_status handoff.status)
+    artifacts handoff.summary
 
 let of_json json =
   let* status =
@@ -105,11 +118,16 @@ let of_json json =
   in
   let artifacts =
     match Yojson.Safe.Util.member "artifacts" json with
-    | `List entries -> List.filter_map (function `String path -> Some path | _ -> None) entries
+    | `List entries ->
+        List.filter_map
+          (function `String path -> Some path | _ -> None)
+          entries
     | _ -> []
   in
   let summary =
-    match Yojson.Safe.Util.member "summary" json with `String value -> value | _ -> ""
+    match Yojson.Safe.Util.member "summary" json with
+    | `String value -> value
+    | _ -> ""
   in
   Ok { status; artifacts; summary }
 

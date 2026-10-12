@@ -19,12 +19,18 @@ type step = {
 }
 
 (* The human-facing name of a step: the skill name, or the command itself. *)
-let step_label step = match step.action with Skill_step name -> name | Command_step cmd -> cmd
+let step_label step =
+  match step.action with Skill_step name -> name | Command_step cmd -> cmd
 
 (* The skill a step resolves, if it is a skill step. *)
-let step_skill step = match step.action with Skill_step name -> Some name | Command_step _ -> None
+let step_skill step =
+  match step.action with Skill_step name -> Some name | Command_step _ -> None
 
-type retry = { max_iterations : int; on_exhausted : on_failure; retry_steps : step list }
+type retry = {
+  max_iterations : int;
+  on_exhausted : on_failure;
+  retry_steps : step list;
+}
 
 type entry = Step of step | Retry of retry | For_each of for_each
 
@@ -48,16 +54,22 @@ let on_failure_of_string ~context = function
   | "escalate" -> Ok Escalate
   | "abort" -> Ok Abort
   | other ->
-      Error (Printf.sprintf "workflow: %s must be \"escalate\" or \"abort\", got %S" context other)
+      Error
+        (Printf.sprintf
+           "workflow: %s must be \"escalate\" or \"abort\", got %S" context
+           other)
 
 (* The schema is frozen (recorded decision: on_fail + retry, plus `with`
    as pure data binding and `forEach` as bounded fan-out over data);
    unknown keys are rejected so typos and schema drift fail loudly. *)
 let check_no_unknown_keys ~context ~allowed fields =
-  match List.find_opt (fun (key, _) -> not (List.mem key allowed)) fields with
+  match
+    List.find_opt (fun (key, _) -> not (List.mem key allowed)) fields
+  with
   | Some (key, _) ->
       Error
-        (Printf.sprintf "workflow: unknown key %S in %s (allowed: %s)" key context
+        (Printf.sprintf "workflow: unknown key %S in %s (allowed: %s)" key
+           context
            (String.concat ", " allowed))
   | None -> Ok ()
 
@@ -79,10 +91,13 @@ let inputs_of_yaml fields =
       let* () =
         match
           List.find_opt
-            (fun (key, _) -> List.length (List.filter (fun (other, _) -> other = key) pairs) > 1)
+            (fun (key, _) ->
+              List.length (List.filter (fun (other, _) -> other = key) pairs)
+              > 1)
             pairs
         with
-        | Some (key, _) -> Error (Printf.sprintf "workflow: duplicate with key %S" key)
+        | Some (key, _) ->
+            Error (Printf.sprintf "workflow: duplicate with key %S" key)
         | None -> Ok ()
       in
       traverse
@@ -92,7 +107,9 @@ let inputs_of_yaml fields =
           | _ ->
               Error
                 (Printf.sprintf
-                   "workflow: with value for %S must be a string (quote numbers and booleans)" key))
+                   "workflow: with value for %S must be a string (quote \
+                    numbers and booleans)"
+                   key))
         pairs
   | Some _ -> Error "workflow: with must be a mapping of strings to strings"
 
@@ -119,14 +136,17 @@ let step_of_yaml ~inside_retry yaml =
             else Ok (Command_step command)
         | Some _, None -> Error "workflow: step skill must be a string"
         | None, Some _ -> Error "workflow: step command must be a string"
-        | Some _, Some _ -> Error "workflow: a step sets either skill or command, not both"
+        | Some _, Some _ ->
+            Error "workflow: a step sets either skill or command, not both"
         | None, None -> Error "workflow: step is missing required key: skill or command"
       in
       let* on_fail =
         match List.assoc_opt "on_fail" fields with
         | None -> Ok None
         | Some (`String value) ->
-            let* on_failure = on_failure_of_string ~context:"step on_fail" value in
+            let* on_failure =
+              on_failure_of_string ~context:"step on_fail" value
+            in
             Ok (Some on_failure)
         | Some _ -> Error "workflow: step on_fail must be a string"
       in
@@ -134,7 +154,8 @@ let step_of_yaml ~inside_retry yaml =
         match List.assoc_opt "until" fields with
         | None -> Ok false
         | Some (`String "pass") -> Ok true
-        | Some _ -> Error "workflow: until only supports the value \"pass\""
+        | Some _ ->
+            Error "workflow: until only supports the value \"pass\""
       in
       let* inputs = inputs_of_yaml fields in
       let* tier =
@@ -144,7 +165,9 @@ let step_of_yaml ~inside_retry yaml =
         | Some (`String name) ->
             Error
               (Printf.sprintf
-                 "workflow: step tier %S must contain only letters, digits, '.', '_' or '-'" name)
+                 "workflow: step tier %S must contain only letters, digits, \
+                  '.', '_' or '-'"
+                 name)
         | Some _ -> Error "workflow: step tier must be a string"
       in
       Ok { action; on_fail; until_pass; inputs; tier }
@@ -160,15 +183,23 @@ let retry_of_yaml yaml =
       in
       let* max_iterations =
         match List.assoc_opt "max_iterations" fields with
-        | Some (`Float value) when Float.is_integer value && value >= 1.0 -> Ok (int_of_float value)
-        | Some _ -> Error "workflow: retry max_iterations must be a positive integer"
-        | None -> Error "workflow: retry block is missing required key: max_iterations"
+        | Some (`Float value) when Float.is_integer value && value >= 1.0 ->
+            Ok (int_of_float value)
+        | Some _ ->
+            Error
+              "workflow: retry max_iterations must be a positive integer"
+        | None ->
+            Error
+              "workflow: retry block is missing required key: max_iterations"
       in
       let* on_exhausted =
         match List.assoc_opt "on_exhausted" fields with
-        | Some (`String value) -> on_failure_of_string ~context:"retry on_exhausted" value
+        | Some (`String value) ->
+            on_failure_of_string ~context:"retry on_exhausted" value
         | Some _ -> Error "workflow: retry on_exhausted must be a string"
-        | None -> Error "workflow: retry block is missing required key: on_exhausted"
+        | None ->
+            Error
+              "workflow: retry block is missing required key: on_exhausted"
       in
       let* retry_steps =
         match List.assoc_opt "steps" fields with
@@ -177,7 +208,8 @@ let retry_of_yaml yaml =
               traverse
                 (fun entry ->
                   match entry with
-                  | `O entry_fields when List.mem_assoc "retry" entry_fields ->
+                  | `O entry_fields
+                    when List.mem_assoc "retry" entry_fields ->
                       Error "workflow: retry blocks cannot nest"
                   | _ -> step_of_yaml ~inside_retry:true entry)
                 entries
@@ -206,7 +238,9 @@ let is_valid_placeholder_part text =
 let malformed_placeholder value =
   Error
     (Printf.sprintf
-       "workflow: malformed placeholder in with value %S; expected {{ <var>.<column> }}" value)
+       "workflow: malformed placeholder in with value %S; expected {{ \
+        <var>.<column> }}"
+       value)
 
 (* Scans one with: value; returns the referenced columns, or an error for a
    malformed placeholder or one that names anything but [var]. *)
@@ -221,12 +255,19 @@ let check_placeholders ~var value =
           match String.index_opt inner '.' with
           | Some dot ->
               let name = String.sub inner 0 dot in
-              let column = String.sub inner (dot + 1) (String.length inner - dot - 1) in
-              if not (is_valid_placeholder_part name && is_valid_placeholder_part column) then
-                malformed_placeholder value
+              let column =
+                String.sub inner (dot + 1) (String.length inner - dot - 1)
+              in
+              if
+                not
+                  (is_valid_placeholder_part name
+                  && is_valid_placeholder_part column)
+              then malformed_placeholder value
               else if name <> var then
                 Error
-                  (Printf.sprintf "workflow: with value references {{ %s.%s }} but forEach binds %S"
+                  (Printf.sprintf
+                     "workflow: with value references {{ %s.%s }} but \
+                      forEach binds %S"
                      name column var)
               else scan (close + 2) (column :: columns)
           | None -> malformed_placeholder value)
@@ -242,13 +283,15 @@ let interpolate ~var ~bindings value =
   let buffer = Buffer.create length in
   let rec go i =
     if i >= length then ()
-    else if i + 1 < length && value.[i] = '{' && value.[i + 1] = '{' then (
+    else if i + 1 < length && value.[i] = '{' && value.[i + 1] = '{' then
       match String.index_from_opt value (i + 2) '}' with
       | Some close when close + 1 < length && value.[close + 1] = '}' -> (
           let inner = String.trim (String.sub value (i + 2) (close - i - 2)) in
           match String.index_opt inner '.' with
           | Some dot when String.sub inner 0 dot = var -> (
-              let column = String.sub inner (dot + 1) (String.length inner - dot - 1) in
+              let column =
+                String.sub inner (dot + 1) (String.length inner - dot - 1)
+              in
               match List.assoc_opt column bindings with
               | Some bound ->
                   Buffer.add_string buffer bound;
@@ -261,7 +304,7 @@ let interpolate ~var ~bindings value =
               go (i + 1))
       | _ ->
           Buffer.add_char buffer value.[i];
-          go (i + 1))
+          go (i + 1)
     else (
       Buffer.add_char buffer value.[i];
       go (i + 1))
@@ -323,14 +366,19 @@ let rec for_each_of_yaml yaml =
   match yaml with
   | `O fields ->
       let* () =
-        check_no_unknown_keys ~context:"a forEach block" ~allowed:[ "items"; "as"; "steps" ] fields
+        check_no_unknown_keys ~context:"a forEach block"
+          ~allowed:[ "items"; "as"; "steps" ] fields
       in
       let* items_file =
         match List.assoc_opt "items" fields with
         | Some (`String path)
-          when Filename.check_suffix path ".tsv" || Filename.check_suffix path ".json" ->
+          when Filename.check_suffix path ".tsv"
+               || Filename.check_suffix path ".json" ->
             Ok path
-        | Some _ -> Error "workflow: forEach items must be a string path ending in .tsv or .json"
+        | Some _ ->
+            Error
+              "workflow: forEach items must be a string path ending in .tsv \
+               or .json"
         | None -> Error "workflow: forEach block is missing required key: items"
       in
       let* var =
@@ -339,7 +387,9 @@ let rec for_each_of_yaml yaml =
         | Some (`String name) ->
             Error
               (Printf.sprintf
-                 "workflow: forEach as %S must contain only letters, digits, '_' or '-'" name)
+                 "workflow: forEach as %S must contain only letters, digits, \
+                  '_' or '-'"
+                 name)
         | Some _ -> Error "workflow: forEach as must be a string"
         | None -> Error "workflow: forEach block is missing required key: as"
       in
@@ -350,7 +400,8 @@ let rec for_each_of_yaml yaml =
               traverse
                 (fun entry ->
                   match entry with
-                  | `O entry_fields when List.mem_assoc "forEach" entry_fields ->
+                  | `O entry_fields when List.mem_assoc "forEach" entry_fields
+                    ->
                       Error "workflow: forEach blocks cannot nest"
                   | entry -> body_entry_of_yaml entry)
                 entries
@@ -359,7 +410,8 @@ let rec for_each_of_yaml yaml =
             | [] -> Error "workflow: forEach steps must not be empty"
             | body -> Ok body)
         | Some _ -> Error "workflow: forEach steps must be a list"
-        | None -> Error "workflow: forEach block is missing required key: steps"
+        | None ->
+            Error "workflow: forEach block is missing required key: steps"
       in
       let* () = validate_body_placeholders ~var body in
       Ok { items_file; var; body }
@@ -368,7 +420,10 @@ let rec for_each_of_yaml yaml =
 and body_entry_of_yaml yaml =
   match yaml with
   | `O fields when List.mem_assoc "retry" fields ->
-      let* () = check_no_unknown_keys ~context:"a retry entry" ~allowed:[ "retry" ] fields in
+      let* () =
+        check_no_unknown_keys ~context:"a retry entry" ~allowed:[ "retry" ]
+          fields
+      in
       let* retry = retry_of_yaml (List.assoc "retry" fields) in
       Ok (Retry retry)
   | yaml ->
@@ -378,7 +433,10 @@ and body_entry_of_yaml yaml =
 let entry_of_yaml yaml =
   match yaml with
   | `O fields when List.mem_assoc "forEach" fields ->
-      let* () = check_no_unknown_keys ~context:"a forEach entry" ~allowed:[ "forEach" ] fields in
+      let* () =
+        check_no_unknown_keys ~context:"a forEach entry"
+          ~allowed:[ "forEach" ] fields
+      in
       let* for_each = for_each_of_yaml (List.assoc "forEach" fields) in
       Ok (For_each for_each)
   | yaml -> body_entry_of_yaml yaml
@@ -387,7 +445,8 @@ let of_yaml yaml =
   match yaml with
   | `O fields ->
       let* () =
-        check_no_unknown_keys ~context:"the workflow" ~allowed:[ "name"; "context"; "steps" ] fields
+        check_no_unknown_keys ~context:"the workflow"
+          ~allowed:[ "name"; "context"; "steps" ] fields
       in
       let* name =
         match List.assoc_opt "name" fields with
@@ -399,7 +458,9 @@ let of_yaml yaml =
         if is_valid_name name then Ok ()
         else
           Error
-            (Printf.sprintf "workflow: name %S must contain only letters, digits, '.', '_' or '-'"
+            (Printf.sprintf
+               "workflow: name %S must contain only letters, digits, '.', '_' \
+                or '-'"
                name)
       in
       (* Constant framing for the whole workflow (recorded decision: data,
@@ -423,10 +484,13 @@ let of_yaml yaml =
 let of_string content =
   match Yaml.of_string content with
   | Ok yaml -> of_yaml yaml
-  | Error (`Msg message) -> Error (Printf.sprintf "workflow: invalid yaml: %s" message)
+  | Error (`Msg message) ->
+      Error (Printf.sprintf "workflow: invalid yaml: %s" message)
 
 let load ~path =
-  let* content = Result.map_error (fun message -> "workflow: " ^ message) (File.read path) in
+  let* content =
+    Result.map_error (fun message -> "workflow: " ^ message) (File.read path)
+  in
   let* workflow = of_string content in
   (* A sibling AGENTS.md (convention-based auto-discovery, like Terraform's
      terraform.tfvars) supplies the workflow's context. It is one source of
@@ -434,16 +498,23 @@ let load ~path =
   let agents_path = Filename.concat (Filename.dirname path) "AGENTS.md" in
   if Sys.file_exists agents_path && not (Sys.is_directory agents_path) then
     match workflow.context with
-    | Some _ -> Error "workflow: context is set both inline and via AGENTS.md - use one"
+    | Some _ ->
+        Error
+          "workflow: context is set both inline and via AGENTS.md - use one"
     | None ->
         let* agents =
-          Result.map_error (fun message -> "workflow: " ^ message) (File.read agents_path)
+          Result.map_error
+            (fun message -> "workflow: " ^ message)
+            (File.read agents_path)
         in
         Ok { workflow with context = Some agents }
   else Ok workflow
 
-let referenced_skills workflow = List.filter_map step_skill (steps_of_entries workflow.entries)
+let referenced_skills workflow =
+  List.filter_map step_skill (steps_of_entries workflow.entries)
 
 let referenced_tiers workflow =
   List.sort_uniq compare
-    (List.filter_map (fun step -> step.tier) (steps_of_entries workflow.entries))
+    (List.filter_map
+       (fun step -> step.tier)
+       (steps_of_entries workflow.entries))

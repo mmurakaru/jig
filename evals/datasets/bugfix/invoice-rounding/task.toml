@@ -1,0 +1,19 @@
+schema_version = "1.4"
+
+[task]
+name = "jig/invoice-rounding"
+description = "Invoice totals truncate half cents; the symptom is in invoice.py, the cause in money.py."
+keywords = ["bugfix", "python", "two-module"]
+
+[metadata]
+difficulty = "medium"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 600.0

@@ -11,7 +11,8 @@ let git_output ~root arguments =
   let* outcome = Subprocess.run ~cwd:root ~argv:("git" :: arguments) () in
   if outcome.Subprocess.exit_code <> 0 then
     Error
-      (Printf.sprintf "workspace: git %s failed: %s" (String.concat " " arguments)
+      (Printf.sprintf "workspace: git %s failed: %s"
+         (String.concat " " arguments)
          (String.trim outcome.Subprocess.stderr))
   else Ok (String.trim outcome.Subprocess.stdout)
 
@@ -24,7 +25,8 @@ let create ~root ~run_id =
 
 (* Named like the item's step keys, so two forEach entries never collide. *)
 let item_worktree_path ~root ~run_id ~entry_index ~item_index =
-  worktree_path ~root ~run_id:(Printf.sprintf "%s-e%d-i%d" run_id entry_index item_index)
+  worktree_path ~root
+    ~run_id:(Printf.sprintf "%s-e%d-i%d" run_id entry_index item_index)
 
 (* A detached worktree at the run workspace's HEAD commit, for one forEach
    item that runs in parallel with others. *)
@@ -40,4 +42,5 @@ let keep_item_commits ~run_workspace ~path =
   if item_head = run_head then Ok ()
   else run_git ~root:path [ "branch"; item_branch_name ~path; item_head ]
 
-let remove ~root ~path = run_git ~root [ "worktree"; "remove"; "--force"; path ]
+let remove ~root ~path =
+  run_git ~root [ "worktree"; "remove"; "--force"; path ]

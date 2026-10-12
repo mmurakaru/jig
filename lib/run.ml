@@ -1,6 +1,7 @@
 open Result_syntax
 
-type outcome = Pass | Fail | Escalate | Invalid_handoff
+(* Timeout: jig stopped the attempt at its deadline; it routes like Fail. *)
+type outcome = Pass | Fail | Escalate | Invalid_handoff | Timeout
 
 (* Saved before the step's process starts, so a crash leaves a record. *)
 type attempt = {
@@ -23,6 +24,11 @@ type attempt = {
   probe_after : string option;
   (* The live capture file; a resume reads the partial output from it. *)
   stdout_path : string option;
+  time_limit_seconds : int option;
+  (* Saved before the start, so a resume never grants the attempt a new limit. *)
+  deadline_at : string option;
+  (* Saved before jig signals the attempt, so a crash cannot lose the decision. *)
+  timeout_requested_at : string option;
 }
 
 module Step_key_map = Map.Make (String)
@@ -44,6 +50,8 @@ type step_record = {
   item_key : string option;
   (* None for a human skip, an attach hand-back, or an older record. *)
   attempt : attempt option;
+  (* True for the first step recorded after a paused run resumed. *)
+  resumed : bool;
   started_at : string;
   finished_at : string;
 }
@@ -108,8 +116,20 @@ type t = {
 
 let iso8601 time =
   let utc = Unix.gmtime time in
-  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (utc.Unix.tm_year + 1900) (utc.Unix.tm_mon + 1)
-    utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec
+  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ" (utc.Unix.tm_year + 1900)
+    (utc.Unix.tm_mon + 1) utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min
+    utc.Unix.tm_sec
+
+(** [iso8601] with milliseconds: the run record format; a 1s limit needs it. *)
+let iso8601_milliseconds time =
+  let total_milliseconds = int_of_float (Float.round (time *. 1000.0)) in
+  let whole_seconds = iso8601 (float_of_int (total_milliseconds / 1000)) in
+  Printf.sprintf "%s.%03dZ"
+    (String.sub whole_seconds 0 (String.length whole_seconds - 1))
+    (total_milliseconds mod 1000)
+
+(** Now, as run records store time: RFC 3339 UTC with milliseconds. *)
+let record_timestamp_now () = iso8601_milliseconds (Unix.gettimeofday ())
 
 (* Inverse of [iso8601], for durations between recorded timestamps without
    depending on the environment's timezone (civil-date day arithmetic). *)
@@ -118,17 +138,37 @@ let epoch_of_iso8601 text =
     let year = if month <= 2 then year - 1 else year in
     let era = (if year >= 0 then year else year - 399) / 400 in
     let year_of_era = year - (era * 400) in
-    let day_of_year = (((153 * if month > 2 then month - 3 else month + 9) + 2) / 5) + day - 1 in
-    let day_of_era = (year_of_era * 365) + (year_of_era / 4) - (year_of_era / 100) + day_of_year in
+    let day_of_year =
+      ((153 * (if month > 2 then month - 3 else month + 9)) + 2) / 5 + day - 1
+    in
+    let day_of_era =
+      (year_of_era * 365) + (year_of_era / 4) - (year_of_era / 100)
+      + day_of_year
+    in
     (era * 146097) + day_of_era - 719468
   in
+  let whole_seconds year month day hour minute second =
+    float_of_int
+      ((((days_from_civil year month day * 24) + hour) * 60 + minute) * 60
+      + second)
+  in
   match
-    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2dZ" (fun year month day hour minute second ->
-        float_of_int
-          ((((((days_from_civil year month day * 24) + hour) * 60) + minute) * 60) + second))
+    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2d%s%!"
+      (fun year month day hour minute second rest ->
+        let seconds = whole_seconds year month day hour minute second in
+        if rest = "Z" then Some seconds
+        else
+          Scanf.sscanf rest ".%3d%[0-9]Z%!" (fun milliseconds _ ->
+              Some (seconds +. (float_of_int milliseconds /. 1000.0))))
   with
-  | seconds -> Some seconds
+  | seconds -> seconds
   | exception _ -> None
+
+(** A record timestamp cut to whole seconds, for a terminal column. *)
+let whole_second_timestamp text =
+  match epoch_of_iso8601 text with
+  | Some seconds -> iso8601 (Float.of_int (int_of_float seconds))
+  | None -> text
 
 (* pid separates concurrent jig processes; the sequence separates runs
    started by one process within the same second. *)
@@ -137,9 +177,9 @@ let sequence = ref 0
 let make_id ~workflow ~time ~pid =
   incr sequence;
   let utc = Unix.gmtime time in
-  Printf.sprintf "%04d-%02d-%02d-%s-%02d%02d%02d-%d-%d" (utc.Unix.tm_year + 1900)
-    (utc.Unix.tm_mon + 1) utc.Unix.tm_mday workflow utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec
-    pid !sequence
+  Printf.sprintf "%04d-%02d-%02d-%s-%02d%02d%02d-%d-%d"
+    (utc.Unix.tm_year + 1900) (utc.Unix.tm_mon + 1) utc.Unix.tm_mday workflow
+    utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec pid !sequence
 
 (* Every coordinate of the step's place, so the key survives a resume. *)
 let step_key_of_position ~run_id ~(position : position) =
@@ -151,27 +191,78 @@ let step_key_of_position ~run_id ~(position : position) =
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
     position.iterations_used position.step_index
 
+(** Where a step key places its step: entry, forEach item and body entry, retry step. *)
+type step_coordinates = {
+  coordinate_entry_index : int;
+  coordinate_item_index : int option;
+  coordinate_body_index : int option;
+  coordinate_step_index : int;
+}
+
+(** Parses a key that [step_key_of_position] made; None for any other text. *)
+let coordinates_of_step_key ~run_id step_key =
+  let prefix = run_id ^ "/" in
+  if not (String.starts_with ~prefix step_key) then None
+  else
+    let rest =
+      String.sub step_key (String.length prefix)
+        (String.length step_key - String.length prefix)
+    in
+    let in_for_each () =
+      Scanf.sscanf rest "e%d/i%d/b%d/r%_d/s%d%!"
+        (fun entry_index item_index body_index step_index ->
+          {
+            coordinate_entry_index = entry_index;
+            coordinate_item_index = Some item_index;
+            coordinate_body_index = Some body_index;
+            coordinate_step_index = step_index;
+          })
+    in
+    let outside_for_each () =
+      Scanf.sscanf rest "e%d/r%_d/s%d%!" (fun entry_index step_index ->
+          {
+            coordinate_entry_index = entry_index;
+            coordinate_item_index = None;
+            coordinate_body_index = None;
+            coordinate_step_index = step_index;
+          })
+    in
+    match in_for_each () with
+    | coordinates -> Some coordinates
+    | exception _ -> (
+        match outside_for_each () with
+        | coordinates -> Some coordinates
+        | exception _ -> None)
+
 (* The step-key prefix shared by every attempt of one forEach item. *)
 let item_step_key_prefix ~run_id ~entry_index ~item_index =
   Printf.sprintf "%s/e%d/i%d/" run_id entry_index item_index
 
 (* Only one item's steps and attempts, so numbering and routing stay per item. *)
 let item_lane run ~step_key_prefix =
-  let belongs (attempt : attempt) = String.starts_with ~prefix:step_key_prefix attempt.step_key in
+  let belongs (attempt : attempt) =
+    String.starts_with ~prefix:step_key_prefix attempt.step_key
+  in
   {
     run with
     steps =
       List.filter
-        (fun step -> match step.attempt with Some attempt -> belongs attempt | None -> false)
+        (fun step ->
+          match step.attempt with
+          | Some attempt -> belongs attempt
+          | None -> false)
         run.steps;
     attempts_in_flight =
-      Step_key_map.filter (fun _ attempt -> belongs attempt) run.attempts_in_flight;
+      Step_key_map.filter (fun _ attempt -> belongs attempt)
+        run.attempts_in_flight;
     interrupted_attempts = List.filter belongs run.interrupted_attempts;
   }
 
 (* True while the position is inside a forEach that runs items in parallel. *)
 let runs_items_in_parallel position =
-  match position.for_each with Some state -> state.concurrency > 1 | None -> false
+  match position.for_each with
+  | Some state -> state.concurrency > 1
+  | None -> false
 
 (* The started, unfinished items of a forEach running items in parallel. *)
 let parallel_items_in_progress position =
@@ -184,11 +275,17 @@ let pause_running_items position =
   match position.for_each with
   | Some state when state.concurrency > 1 ->
       let pause item =
-        if item.item_status = Running then { item with item_status = Paused } else item
+        if item.item_status = Running then { item with item_status = Paused }
+        else item
       in
       {
         position with
-        for_each = Some { state with items_in_progress = List.map pause state.items_in_progress };
+        for_each =
+          Some
+            {
+              state with
+              items_in_progress = List.map pause state.items_in_progress;
+            };
       }
   | _ -> position
 
@@ -197,7 +294,8 @@ let item_in_progress_of_attempt run (attempt : attempt) =
     (fun item ->
       String.starts_with
         ~prefix:
-          (item_step_key_prefix ~run_id:run.id ~entry_index:run.position.entry_index
+          (item_step_key_prefix ~run_id:run.id
+             ~entry_index:run.position.entry_index
              ~item_index:item.started_item_index)
         attempt.step_key)
     (parallel_items_in_progress run.position)
@@ -207,13 +305,20 @@ let attempt_count run ~step_key =
   List.length
     (List.filter
        (fun step ->
-         match step.attempt with Some attempt -> attempt.step_key = step_key | None -> false)
+         match step.attempt with
+         | Some attempt -> attempt.step_key = step_key
+         | None -> false)
        run.steps)
-  + List.length (List.filter (fun attempt -> attempt.step_key = step_key) run.interrupted_attempts)
+  + List.length
+      (List.filter
+         (fun attempt -> attempt.step_key = step_key)
+         run.interrupted_attempts)
 
-let attempt_id_of_number ~step_key number = Printf.sprintf "%s#%d" step_key number
+let attempt_id_of_number ~step_key number =
+  Printf.sprintf "%s#%d" step_key number
 
-let next_attempt_id run ~step_key = attempt_id_of_number ~step_key (attempt_count run ~step_key + 1)
+let next_attempt_id run ~step_key =
+  attempt_id_of_number ~step_key (attempt_count run ~step_key + 1)
 
 let last_step_attempt_id steps =
   match List.rev steps with
@@ -224,7 +329,8 @@ let last_step_attempt_id steps =
 let unrouted_finished_step run ~step_key =
   match List.rev run.steps with
   | ({ attempt = Some attempt; _ } as step) :: _
-    when attempt.attempt_id = attempt_id_of_number ~step_key (attempt_count run ~step_key)
+    when attempt.attempt_id
+         = attempt_id_of_number ~step_key (attempt_count run ~step_key)
          && run.paused_on_attempt <> Some attempt.attempt_id ->
       Some step
   | _ -> None
@@ -234,7 +340,8 @@ let attempt_number attempt =
   | None -> 0
   | Some hash -> (
       let digits =
-        String.sub attempt.attempt_id (hash + 1) (String.length attempt.attempt_id - hash - 1)
+        String.sub attempt.attempt_id (hash + 1)
+          (String.length attempt.attempt_id - hash - 1)
       in
       match int_of_string_opt digits with Some number -> number | None -> 0)
 
@@ -245,26 +352,33 @@ let attempt_at_position run attempt =
 (* Interrupted attempts at the position that no later attempt followed. *)
 let unresolved_interrupted_attempts run =
   let candidates =
-    List.map snd (Step_key_map.bindings run.attempts_in_flight) @ run.interrupted_attempts
+    List.map snd (Step_key_map.bindings run.attempts_in_flight)
+    @ run.interrupted_attempts
   in
   let finished_attempts = List.filter_map (fun step -> step.attempt) run.steps in
   let followed attempt =
     List.exists
       (fun later ->
-        later.step_key = attempt.step_key && attempt_number later > attempt_number attempt)
+        later.step_key = attempt.step_key
+        && attempt_number later > attempt_number attempt)
       (finished_attempts @ candidates)
   in
-  List.filter (fun attempt -> attempt_at_position run attempt && not (followed attempt)) candidates
+  List.filter
+    (fun attempt -> attempt_at_position run attempt && not (followed attempt))
+    candidates
 
 let unresolved_interrupted_attempt run ~step_key =
-  List.find_opt (fun attempt -> attempt.step_key = step_key) (unresolved_interrupted_attempts run)
+  List.find_opt
+    (fun attempt -> attempt.step_key = step_key)
+    (unresolved_interrupted_attempts run)
 
 (* Called under the run lock, so no live jig drives these attempts. *)
 let mark_attempts_interrupted run =
   {
     run with
     interrupted_attempts =
-      run.interrupted_attempts @ List.map snd (Step_key_map.bindings run.attempts_in_flight);
+      run.interrupted_attempts
+      @ List.map snd (Step_key_map.bindings run.attempts_in_flight);
     attempts_in_flight = Step_key_map.empty;
   }
 
@@ -273,12 +387,14 @@ let string_of_outcome = function
   | Fail -> "fail"
   | Escalate -> "escalate"
   | Invalid_handoff -> "invalid-handoff"
+  | Timeout -> "timeout"
 
 let outcome_of_string = function
   | "pass" -> Ok Pass
   | "fail" -> Ok Fail
   | "escalate" -> Ok Escalate
   | "invalid-handoff" -> Ok Invalid_handoff
+  | "timeout" -> Ok Timeout
   | other -> Error (Printf.sprintf "run: unknown outcome %S" other)
 
 let string_of_status = function
@@ -303,23 +419,45 @@ let attempt_to_json attempt =
        ("attempt_id", `String attempt.attempt_id);
        ("skill", `String attempt.skill);
      ]
-    @ (match attempt.tier with Some tier -> [ ("tier", `String tier) ] | None -> [])
+    @ (match attempt.tier with
+      | Some tier -> [ ("tier", `String tier) ]
+      | None -> [])
     @ [
         ("command", `List (List.map (fun part -> `String part) attempt.command));
         ("started_at", `String attempt.started_at);
       ]
-    @ (match attempt.child_pid with Some pid -> [ ("child_pid", `Int pid) ] | None -> [])
+    @ (match attempt.child_pid with
+      | Some pid -> [ ("child_pid", `Int pid) ]
+      | None -> [])
     @ List.filter_map
-        (fun (key, value) -> Option.map (fun text -> (key, `String text)) value)
-        [ ("child_host", attempt.child_host); ("child_start_time", attempt.child_start_time) ]
-    @ [ ("on_interrupt", `String (Skill.string_of_on_interrupt attempt.on_interrupt)) ]
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
+        [
+          ("child_host", attempt.child_host);
+          ("child_start_time", attempt.child_start_time);
+        ]
+    @ [
+        ( "on_interrupt",
+          `String (Skill.string_of_on_interrupt attempt.on_interrupt) );
+      ]
     @ List.filter_map
-        (fun (key, value) -> Option.map (fun text -> (key, `String text)) value)
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
         [
           ("session_id", attempt.session_id);
           ("probe_before", attempt.probe_before);
           ("probe_after", attempt.probe_after);
           ("stdout_path", attempt.stdout_path);
+        ]
+    @ (match attempt.time_limit_seconds with
+      | Some seconds -> [ ("time_limit_seconds", `Int seconds) ]
+      | None -> [])
+    @ List.filter_map
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
+        [
+          ("deadline_at", attempt.deadline_at);
+          ("timeout_requested_at", attempt.timeout_requested_at);
         ])
 
 let item_in_progress_to_json item =
@@ -341,7 +479,9 @@ let item_in_progress_to_json item =
 
 let step_to_json step =
   let handoff_field =
-    match step.handoff with Some handoff -> [ ("handoff", Handoff.to_json handoff) ] | None -> []
+    match step.handoff with
+    | Some handoff -> [ ("handoff", Handoff.to_json handoff) ]
+    | None -> []
   in
   let handoff_error_field =
     match step.handoff_error with
@@ -349,12 +489,26 @@ let step_to_json step =
     | None -> []
   in
   let session_field =
-    match step.session_id with Some id -> [ ("session_id", `String id) ] | None -> []
+    match step.session_id with
+    | Some id -> [ ("session_id", `String id) ]
+    | None -> []
   in
-  let tier_field = match step.tier with Some tier -> [ ("tier", `String tier) ] | None -> [] in
+  let tier_field =
+    match step.tier with
+    | Some tier -> [ ("tier", `String tier) ]
+    | None -> []
+  in
   let item_fields =
-    (match step.item_index with Some index -> [ ("item_index", `Int index) ] | None -> [])
-    @ match step.item_key with Some key -> [ ("item_key", `String key) ] | None -> []
+    (match step.item_index with
+    | Some index -> [ ("item_index", `Int index) ]
+    | None -> [])
+    @
+    match step.item_key with
+    | Some key -> [ ("item_key", `String key) ]
+    | None -> []
+  in
+  let resumed_field =
+    if step.resumed then [ ("resumed", `Bool true) ] else []
   in
   `Assoc
     ([
@@ -363,7 +517,8 @@ let step_to_json step =
        ("exit_code", `Int step.exit_code);
        ("cost_usd", Metering.cost_to_json step.cost);
      ]
-    @ tier_field @ handoff_field @ handoff_error_field @ session_field @ item_fields
+    @ tier_field @ handoff_field @ handoff_error_field @ session_field
+    @ item_fields @ resumed_field
     @ (match step.attempt with
       | Some attempt -> [ ("attempt", attempt_to_json attempt) ]
       | None -> [])
@@ -376,7 +531,9 @@ let step_to_json step =
 
 let to_json run =
   let error_field =
-    match run.error with Some message -> [ ("error", `String message) ] | None -> []
+    match run.error with
+    | Some message -> [ ("error", `String message) ]
+    | None -> []
   in
   let finished_field =
     match run.finished_at with
@@ -384,7 +541,9 @@ let to_json run =
     | None -> []
   in
   let workspace_field =
-    match run.workspace with Some workspace -> [ ("workspace", `String workspace) ] | None -> []
+    match run.workspace with
+    | Some workspace -> [ ("workspace", `String workspace) ]
+    | None -> []
   in
   `Assoc
     ([
@@ -420,7 +579,10 @@ let to_json run =
                              (List.map
                                 (fun bindings ->
                                   `Assoc
-                                    (List.map (fun (key, value) -> (key, `String value)) bindings))
+                                    (List.map
+                                       (fun (key, value) ->
+                                         (key, `String value))
+                                       bindings))
                                 state.items) );
                        ]
                       @
@@ -429,7 +591,9 @@ let to_json run =
                         [
                           ("concurrency", `Int state.concurrency);
                           ( "items_in_progress",
-                            `List (List.map item_in_progress_to_json state.items_in_progress) );
+                            `List
+                              (List.map item_in_progress_to_json
+                                 state.items_in_progress) );
                         ]) );
                 ]) );
         ("steps", `List (List.map step_to_json run.steps));
@@ -440,12 +604,14 @@ let to_json run =
            ( "attempts_in_flight",
              `Assoc
                (List.map
-                  (fun (step_key, attempt) -> (step_key, attempt_to_json attempt))
+                  (fun (step_key, attempt) ->
+                    (step_key, attempt_to_json attempt))
                   (Step_key_map.bindings run.attempts_in_flight)) );
          ])
     @ (match run.interrupted_attempts with
       | [] -> []
-      | attempts -> [ ("interrupted_attempts", `List (List.map attempt_to_json attempts)) ])
+      | attempts ->
+          [ ("interrupted_attempts", `List (List.map attempt_to_json attempts)) ])
     @ (match run.paused_on_attempt with
       | None -> []
       | Some attempt_id -> [ ("paused_on_attempt", `String attempt_id) ])
@@ -484,7 +650,8 @@ let cost_by_tier run =
 
 let last_handoff run =
   List.fold_left
-    (fun previous step -> match step.handoff with Some _ as found -> found | None -> previous)
+    (fun previous step ->
+      match step.handoff with Some _ as found -> found | None -> previous)
     None run.steps
 
 let member_string json key =
@@ -498,10 +665,14 @@ let member_int json key =
   | _ -> Error (Printf.sprintf "run: missing or non-integer key %S" key)
 
 let optional_string json key =
-  match Yojson.Safe.Util.member key json with `String value -> Some value | _ -> None
+  match Yojson.Safe.Util.member key json with
+  | `String value -> Some value
+  | _ -> None
 
 let optional_int json key =
-  match Yojson.Safe.Util.member key json with `Int value -> Some value | _ -> None
+  match Yojson.Safe.Util.member key json with
+  | `Int value -> Some value
+  | _ -> None
 
 let attempt_of_json json =
   let* step_key = member_string json "step_key" in
@@ -525,7 +696,8 @@ let attempt_of_json json =
     match optional_string json "on_interrupt" with
     | None -> Ok Skill.Recover
     | Some text ->
-        Result.map_error (fun message -> "run: " ^ message) (Skill.on_interrupt_of_string text)
+        Result.map_error (fun message -> "run: " ^ message)
+          (Skill.on_interrupt_of_string text)
   in
   Ok
     {
@@ -543,6 +715,9 @@ let attempt_of_json json =
       probe_before = optional_string json "probe_before";
       probe_after = optional_string json "probe_after";
       stdout_path = optional_string json "stdout_path";
+      time_limit_seconds = optional_int json "time_limit_seconds";
+      deadline_at = optional_string json "deadline_at";
+      timeout_requested_at = optional_string json "timeout_requested_at";
     }
 
 let item_in_progress_of_json json =
@@ -603,6 +778,7 @@ let step_of_json json =
       item_index = optional_int json "item_index";
       item_key = optional_string json "item_key";
       attempt;
+      resumed = Yojson.Safe.Util.member "resumed" json = `Bool true;
       started_at;
       finished_at;
     }
@@ -645,7 +821,10 @@ let of_json json =
                             | `String text -> Ok ((key, text) :: bindings)
                             | _ ->
                                 Error
-                                  (Printf.sprintf "run: for_each item value %S must be a string" key))
+                                  (Printf.sprintf
+                                     "run: for_each item value %S must be a \
+                                      string"
+                                     key))
                           pairs (Ok [])
                       in
                       Ok (bindings :: items)
@@ -671,7 +850,9 @@ let of_json json =
                 entries (Ok [])
           | _ -> Error "run: for_each items_in_progress must be a list"
         in
-        Ok (Some { item_index; body_index; items; concurrency; items_in_progress })
+        Ok
+          (Some
+             { item_index; body_index; items; concurrency; items_in_progress })
   in
   let* steps =
     match Yojson.Safe.Util.member "steps" json with

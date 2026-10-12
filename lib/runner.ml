@@ -3,10 +3,10 @@ open Result_syntax
 (* The handoff contract is the runner's protocol, so the runner states it -
    skill files carry pure instructions and are passed byte-for-byte. *)
 let handoff_protocol =
-  "Workspace: the runner owns isolation. Do the work in the current directory; do not create \
-   worktrees or otherwise relocate it.\n\n\
-   Protocol: end your reply with a fenced handoff block - it is how the run continues, and a reply \
-   without one fails the step.\n\n\
+  "Workspace: the runner owns isolation. Do the work in the current \
+   directory; do not create worktrees or otherwise relocate it.\n\n\
+   Protocol: end your reply with a fenced handoff block - it is how the run \
+   continues, and a reply without one fails the step.\n\n\
    ```handoff\n\
    status: <pass | fail | escalate>\n\
    artifacts:\n\
@@ -15,9 +15,10 @@ let handoff_protocol =
   \  Written for the next agent: what happened, what to look at, what to\n\
   \  do differently.\n\
    ```\n\n\
-   status: pass only when this step's goal is verifiably met; fail when it is not (a retry reads \
-   your summary to do better); escalate when a human must decide. Reference artifacts by path, and \
-   omit the artifacts key when there are none; never paste their contents."
+   status: pass only when this step's goal is verifiably met; fail when it \
+   is not (a retry reads your summary to do better); escalate when a human \
+   must decide. Reference artifacts by path, and omit the artifacts key \
+   when there are none; never paste their contents."
 
 (* One line of orientation: which workflow, how far along, what follows.
    The full step list stays out - it bloats every prompt and tempts a step
@@ -29,7 +30,9 @@ let rec entry_lead_skill = function
       | first :: _ -> Workflow.step_label first
       | [] -> "retry")
   | Workflow.For_each for_each -> (
-      match for_each.Workflow.body with first :: _ -> entry_lead_skill first | [] -> "forEach")
+      match for_each.Workflow.body with
+      | first :: _ -> entry_lead_skill first
+      | [] -> "forEach")
 
 (* The item a forEach body step is currently bound to. The key (the item's
    first column) is its identity for humans; the index drives the cursor. *)
@@ -61,13 +64,22 @@ type run_event =
     }
   (* The running step's captured-output files, the moment its subprocess
      spawns - a live view can tail them while the step executes. *)
-  | Step_output of { stdout_path : string; stderr_path : string; item_index : int option }
+  | Step_output of {
+      stdout_path : string;
+      stderr_path : string;
+      item_index : int option;
+    }
   | Step_finished of Run.step_record
   (* Completed when the item's body passed, else the status it stopped with. *)
   | Item_finished of { entry_index : int; item_index : int; status : Run.status }
 
 (* A worker's pipe and how many steps it reported, so reports send only new ones. *)
-type worker_link = { worker_output : Unix.file_descr; mutable reported_step_count : int }
+type worker_link = {
+  worker_output : Unix.file_descr;
+  (* The driver answers a timeout mark here once its save ended. *)
+  timeout_mark_acknowledgements : Unix.file_descr;
+  mutable reported_step_count : int;
+}
 
 (* Only the driver saves, meters, and renders; a worker reports to it. *)
 type worker_message =
@@ -78,6 +90,7 @@ type worker_message =
       (* All of the item's, since a recovery updates them in place. *)
       interrupted_attempts : Run.attempt list;
     }
+  | Worker_timeout_mark of Run.attempt
   | Worker_metering of Metering.event
   | Worker_event of run_event
   | Worker_step of Run.step_record
@@ -97,7 +110,8 @@ let position_line ~workflow_name ~entries ~entry_index ~skill ~item =
   let item_part =
     match item with
     | Some context ->
-        Printf.sprintf ", item %d of %d (%s)" (context.item_index + 1) context.item_count
+        Printf.sprintf ", item %d of %d (%s)" (context.item_index + 1)
+          context.item_count
           (Items.key context.bindings)
     | None -> ""
   in
@@ -106,21 +120,23 @@ let position_line ~workflow_name ~entries ~entry_index ~skill ~item =
     | Some entry -> Printf.sprintf "next: %s." (entry_lead_skill entry)
     | None -> "this is the final step."
   in
-  Printf.sprintf "Workflow: %s - step %d of %d (%s)%s; %s" workflow_name (entry_index + 1)
-    (List.length entries) skill item_part continuation
+  Printf.sprintf "Workflow: %s - step %d of %d (%s)%s; %s" workflow_name
+    (entry_index + 1) (List.length entries) skill item_part continuation
 
 (* Sent through attach_headless after an interactive attach ends; the
    session already carries the full protocol from its original envelope. *)
 let elicit_handoff_prompt =
-  "The interactive session is over. Emit your handoff block for the current state of this step."
+  "The interactive session is over. Emit your handoff block for the current \
+   state of this step."
 
 (* Shown only when the repo opted in (the guide file exists); it invites
    the write side of the loop - injection is the read side. *)
 let field_guide_protocol =
-  "Field guide: if this step taught you something durable and non-obvious about this repository (a \
-   build quirk, a hidden dependency, a command that must run first), append it to "
-  ^ Field_guide.relative_path
-  ^ " as one short factual line. Do not restate what the code or docs already say."
+  "Field guide: if this step taught you something durable and non-obvious \
+   about this repository (a build quirk, a hidden dependency, a command \
+   that must run first), append it to " ^ Field_guide.relative_path
+  ^ " as one short factual line. Do not restate what the code or docs \
+     already say."
 
 (* The end of a long output carries the freshest state. *)
 let tail_text ~limit text =
@@ -133,23 +149,26 @@ let interruption_text_limit = 4000
 let session_id_random_state = ref (lazy (Random.State.make_self_init ()))
 
 (* Each forked item worker reseeds, so sibling workers never share ids. *)
-let reseed_session_ids () = session_id_random_state := lazy (Random.State.make_self_init ())
+let reseed_session_ids () =
+  session_id_random_state := lazy (Random.State.make_self_init ())
 
 (* Version 4 UUID shape: claude --session-id rejects anything else. *)
 let new_session_id () =
   let state = Lazy.force !session_id_random_state in
   let bytes = Bytes.init 16 (fun _ -> Char.chr (Random.State.int state 256)) in
   let set index transform =
-    Bytes.set bytes index (Char.chr (transform (Char.code (Bytes.get bytes index))))
+    Bytes.set bytes index
+      (Char.chr (transform (Char.code (Bytes.get bytes index))))
   in
-  set 6 (fun byte -> byte land 0x0f lor 0x40);
-  set 8 (fun byte -> byte land 0x3f lor 0x80);
+  set 6 (fun byte -> (byte land 0x0f) lor 0x40);
+  set 8 (fun byte -> (byte land 0x3f) lor 0x80);
   let hex =
     String.concat ""
-      (List.init 16 (fun index -> Printf.sprintf "%02x" (Char.code (Bytes.get bytes index))))
+      (List.init 16 (fun index ->
+           Printf.sprintf "%02x" (Char.code (Bytes.get bytes index))))
   in
-  Printf.sprintf "%s-%s-%s-%s-%s" (String.sub hex 0 8) (String.sub hex 8 4) (String.sub hex 12 4)
-    (String.sub hex 16 4) (String.sub hex 20 12)
+  Printf.sprintf "%s-%s-%s-%s-%s" (String.sub hex 0 8) (String.sub hex 8 4)
+    (String.sub hex 12 4) (String.sub hex 16 4) (String.sub hex 20 12)
 
 (* The capture file outlives a killed jig, so it holds the partial output. *)
 let partial_output_of (interrupted : Run.attempt) =
@@ -157,17 +176,23 @@ let partial_output_of (interrupted : Run.attempt) =
   | None -> None
   | Some path -> (
       match File.read path with
-      | Ok text when String.trim text <> "" -> Some (tail_text ~limit:interruption_text_limit text)
+      | Ok text when String.trim text <> "" ->
+          Some (tail_text ~limit:interruption_text_limit text)
       | Ok _ | Error _ -> None)
 
-let interruption_section ~(interrupted : Run.attempt) ~probe_now ~partial_output =
-  let labelled label = function Some text -> Printf.sprintf "%s:\n%s\n" label text | None -> "" in
+let interruption_section ~(interrupted : Run.attempt) ~probe_now
+    ~partial_output =
+  let labelled label = function
+    | Some text -> Printf.sprintf "%s:\n%s\n" label text
+    | None -> ""
+  in
   Printf.sprintf
     "Interrupted attempt:\n\
-     An earlier attempt of this step (%s) stopped before it finished. It may have done part of the \
-     work: changed files, made commits, pushed a branch, or opened a pull request. Inspect the \
-     workspace and any external state first, keep what is done, do not repeat side effects that \
-     already happened, then finish the step.\n\
+     An earlier attempt of this step (%s) stopped before it finished. It \
+     may have done part of the work: changed files, made commits, pushed a \
+     branch, or opened a pull request. Inspect the workspace and any \
+     external state first, keep what is done, do not repeat side effects \
+     that already happened, then finish the step.\n\
      %s%s%s\n"
     interrupted.Run.attempt_id
     (labelled "Probe before that attempt" interrupted.Run.probe_before)
@@ -177,23 +202,29 @@ let interruption_section ~(interrupted : Run.attempt) ~probe_now ~partial_output
 (* The reopened session already holds its output, prompt and protocol. *)
 let continue_session_prompt ~(interrupted : Run.attempt) ~probe_now ~guidance =
   let guidance_section =
-    match guidance with Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text | None -> ""
+    match guidance with
+    | Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text
+    | None -> ""
   in
-  Printf.sprintf "%s%sFinish the step, then end your reply with the handoff block."
+  Printf.sprintf
+    "%s%sFinish the step, then end your reply with the handoff block."
     (interruption_section ~interrupted ~probe_now ~partial_output:None)
     guidance_section
 
-let build_prompt ?interruption ~context ~field_guide ~task ~position ~inputs ~skill_body
-    ~previous_handoff ~guidance () =
+let build_prompt ?interruption ~context ~field_guide ~task ~position ~inputs
+    ~skill_body ~previous_handoff ~guidance () =
   let context_section =
     match context with
-    | Some text when String.trim text <> "" -> Printf.sprintf "Context:\n%s\n\n" text
+    | Some text when String.trim text <> "" ->
+        Printf.sprintf "Context:\n%s\n\n" text
     | _ -> ""
   in
   let field_guide_section =
     match field_guide with
     | Some text when String.trim text <> "" ->
-        Printf.sprintf "Field guide (repo knowledge accumulated by earlier runs):\n%s\n\n" text
+        Printf.sprintf
+          "Field guide (repo knowledge accumulated by earlier runs):\n%s\n\n"
+          text
     | _ -> ""
   in
   let protocol =
@@ -205,22 +236,30 @@ let build_prompt ?interruption ~context ~field_guide ~task ~position ~inputs ~sk
     match inputs with
     | [] -> ""
     | pairs ->
-        Printf.sprintf "Step inputs (bound by the workflow; treat each value as a literal):\n%s\n\n"
+        Printf.sprintf
+          "Step inputs (bound by the workflow; treat each value as a \
+           literal):\n\
+           %s\n\n"
           (String.concat "\n"
-             (List.map (fun (key, value) -> Printf.sprintf "%s: %s" key value) pairs))
+             (List.map
+                (fun (key, value) -> Printf.sprintf "%s: %s" key value)
+                pairs))
   in
   let guidance_section =
-    match guidance with Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text | None -> ""
+    match guidance with
+    | Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text
+    | None -> ""
   in
   let handoff_section =
     match previous_handoff with
-    | Some handoff -> Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
+    | Some handoff ->
+        Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
   let interruption_section = Option.value interruption ~default:"" in
-  Printf.sprintf "%s%sTask: %s\n\n%s\n\n%s%s%s%s%s\n\n%s" context_section field_guide_section task
-    position inputs_section guidance_section interruption_section handoff_section skill_body
-    protocol
+  Printf.sprintf "%s%sTask: %s\n\n%s\n\n%s%s%s%s%s\n\n%s" context_section
+    field_guide_section task position inputs_section guidance_section
+    interruption_section handoff_section skill_body protocol
 
 (** A hung notify hook must not block the end of a run. *)
 let notify_time_limit_seconds = 30.0
@@ -250,7 +289,13 @@ struct
     worker_link : worker_link option;
   }
 
-  type progress = { run : Run.t; last_handoff : Handoff.t option; guidance : string option }
+  type progress = {
+    run : Run.t;
+    last_handoff : Handoff.t option;
+    guidance : string option;
+    (* Set by a resume and consumed, like guidance, by the next step. *)
+    resumed : bool;
+  }
 
   (* How an entry (or the whole run) ended: either the run continues to the
      next entry, or it stops in a terminal-or-paused state. *)
@@ -261,7 +306,9 @@ struct
   (* Held from the first save to the last, so one process drives a run. *)
   let with_run_lock ~runs_dir ~run_id action =
     let* run_lock = Store_port.acquire_run_lock ~runs_dir ~id:run_id in
-    Fun.protect ~finally:(fun () -> Store_port.release_run_lock run_lock) action
+    Fun.protect
+      ~finally:(fun () -> Store_port.release_run_lock run_lock)
+      action
 
   let persist engine progress ~status ~finished =
     let run =
@@ -269,9 +316,11 @@ struct
         progress.run with
         Run.status;
         paused_on_attempt =
-          (if status = Run.Paused then Run.last_step_attempt_id progress.run.Run.steps
+          (if status = Run.Paused then
+             Run.last_step_attempt_id progress.run.Run.steps
            else progress.run.Run.paused_on_attempt);
-        finished_at = (if finished then Some (Run.iso8601 (Unix.gettimeofday ())) else None);
+        finished_at =
+          (if finished then Some (Run.record_timestamp_now ()) else None);
       }
     in
     let* path = Store_port.save ~runs_dir:(runs_dir engine) run in
@@ -281,7 +330,9 @@ struct
   let save_step_progress engine progress =
     match engine.worker_link with
     | None ->
-        let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
+        let* progress, _ =
+          persist engine progress ~status:Run.Running ~finished:false
+        in
         Ok progress
     | Some link ->
         let run = progress.run in
@@ -298,6 +349,32 @@ struct
         link.reported_step_count <- List.length run.Run.steps;
         Ok progress
 
+  let timeout_mark_saved = '1'
+
+  let rec read_acknowledgement descriptor =
+    let byte = Bytes.create 1 in
+    match Unix.read descriptor byte 0 1 with
+    | 1 -> Some (Bytes.get byte 0)
+    | _ -> None
+    | exception Unix.Unix_error (Unix.EINTR, _, _) ->
+        (* A stopping driver answers no mark, so a forwarded signal stops here. *)
+        Process_group.exit_if_stop_requested ();
+        read_acknowledgement descriptor
+    | exception Unix.Unix_error _ -> None
+
+  (* In a worker the driver saves the mark, so the worker waits for its answer. *)
+  let save_timeout_mark engine progress (marked : Run.attempt) =
+    match engine.worker_link with
+    | None ->
+        let* _ = save_step_progress engine progress in
+        Ok ()
+    | Some link -> (
+        send_to_driver link (Worker_timeout_mark marked);
+        match read_acknowledgement link.timeout_mark_acknowledgements with
+        | Some answer when answer = timeout_mark_saved -> Ok ()
+        | Some _ | None ->
+            Error "the forEach driver could not save it")
+
   let set_step_pointer engine ~run_id pointer =
     match engine.worker_link with
     | None -> Current.write ~runs_dir:(runs_dir engine) ~run_id [ pointer ]
@@ -309,7 +386,8 @@ struct
     | Some link -> send_to_driver link (Worker_pointer None)
 
   let outcome_of_exec exec_result =
-    if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
+    if exec_result.Executor.timed_out then (Run.Timeout, None, None)
+    else if exec_result.Executor.exit_code <> 0 then (Run.Fail, None, None)
     else
       match Handoff.parse exec_result.Executor.stdout with
       | Ok handoff -> (
@@ -325,15 +403,36 @@ struct
   let degraded_text_limit = 4000
 
   let degraded_handoff stdout =
-    let text = tail_text ~limit:degraded_text_limit (Handoff.agent_text stdout) in
+    let text =
+      tail_text ~limit:degraded_text_limit (Handoff.agent_text stdout)
+    in
     {
       Handoff.status = Handoff.Fail;
       artifacts = [];
-      summary = "The previous attempt ended without a handoff block. Its final message:\n" ^ text;
+      summary =
+        "The previous attempt ended without a handoff block. Its final \
+         message:\n" ^ text;
+    }
+
+  (* Tells the next attempt that jig stopped this one, with its output tail. *)
+  let timeout_handoff ~(attempt : Run.attempt) ~description output =
+    let when_stopped =
+      match attempt.Run.time_limit_seconds with
+      | Some seconds -> "after " ^ Step_timeout.format_duration_seconds seconds
+      | None -> "at its deadline"
+    in
+    {
+      Handoff.status = Handoff.Fail;
+      artifacts = [];
+      summary =
+        Printf.sprintf "%s timed out %s and jig stopped it. Its final output:\n%s"
+          description when_stopped
+          (tail_text ~limit:degraded_text_limit output);
     }
 
   (* Keyed by attempt id, so recording it again on a resume is a no-op. *)
-  let attempt_metering_event ~run_id ~cost ~usage ~interrupted (attempt : Run.attempt) =
+  let attempt_metering_event ~run_id ~cost ~usage ~interrupted ~timed_out
+      (attempt : Run.attempt) =
     {
       Metering.run_id;
       skill = attempt.Run.skill;
@@ -344,25 +443,34 @@ struct
       step_key = Some attempt.Run.step_key;
       attempt_id = Some attempt.Run.attempt_id;
       interrupted;
+      timed_out;
       recorded_at = Run.iso8601 (Unix.gettimeofday ());
     }
 
   let finished_metering_event ~run_id (step_record : Run.step_record) attempt =
     attempt_metering_event ~run_id ~cost:step_record.Run.cost
       ~usage:(snd (Metering.parse_cost step_record.Run.stdout))
-      ~interrupted:false attempt
+      ~interrupted:false
+      ~timed_out:(step_record.Run.outcome = Run.Timeout)
+      attempt
 
   (* The spend of an interrupted attempt is unknown, never zero. *)
   let interrupted_metering_event ~run_id attempt =
-    attempt_metering_event ~run_id ~cost:Metering.Unknown_cost ~usage:None ~interrupted:true attempt
+    attempt_metering_event ~run_id ~cost:Metering.Unknown_cost ~usage:None
+      ~interrupted:true ~timed_out:false attempt
 
   let metered_attempt_ids engine ~run_id =
     match !(engine.metered_attempt_ids) with
     | Some attempt_ids -> Ok attempt_ids
     | None ->
-        let* recorded = Metering_port.recorded_attempt_ids ~runs_dir:(runs_dir engine) ~run_id in
+        let* recorded =
+          Metering_port.recorded_attempt_ids ~runs_dir:(runs_dir engine)
+            ~run_id
+        in
         let attempt_ids = Hashtbl.create 64 in
-        List.iter (fun attempt_id -> Hashtbl.replace attempt_ids attempt_id ()) recorded;
+        List.iter
+          (fun attempt_id -> Hashtbl.replace attempt_ids attempt_id ())
+          recorded;
         engine.metered_attempt_ids := Some attempt_ids;
         Ok attempt_ids
 
@@ -374,7 +482,9 @@ struct
         Ok ()
     | None, None -> Metering_port.record ~runs_dir:(runs_dir engine) ~event
     | None, Some attempt_id ->
-        let* attempt_ids = metered_attempt_ids engine ~run_id:event.Metering.run_id in
+        let* attempt_ids =
+          metered_attempt_ids engine ~run_id:event.Metering.run_id
+        in
         if Hashtbl.mem attempt_ids attempt_id then Ok ()
         else
           let* () = Metering_port.record ~runs_dir:(runs_dir engine) ~event in
@@ -389,7 +499,10 @@ struct
         (fun previous (step_record : Run.step_record) ->
           let* () = previous in
           match step_record.Run.attempt with
-          | Some attempt -> record (finished_metering_event ~run_id:run.Run.id step_record attempt)
+          | Some attempt ->
+              record
+                (finished_metering_event ~run_id:run.Run.id step_record
+                   attempt)
           | None -> Ok ())
         (Ok ()) run.Run.steps
     in
@@ -406,7 +519,8 @@ struct
         {
           progress.run with
           Run.attempts_in_flight =
-            Run.Step_key_map.add attempt.Run.step_key attempt progress.run.Run.attempts_in_flight;
+            Run.Step_key_map.add attempt.Run.step_key attempt
+              progress.run.Run.attempts_in_flight;
         };
     }
 
@@ -417,14 +531,16 @@ struct
         {
           progress.run with
           Run.attempts_in_flight =
-            Run.Step_key_map.remove attempt.Run.step_key progress.run.Run.attempts_in_flight;
+            Run.Step_key_map.remove attempt.Run.step_key
+              progress.run.Run.attempts_in_flight;
         };
     }
 
   let handoff_after_step progress (step_record : Run.step_record) =
     match (step_record.Run.handoff, step_record.Run.outcome) with
     | Some _, _ -> step_record.Run.handoff
-    | None, Run.Invalid_handoff -> Some (degraded_handoff step_record.Run.stdout)
+    | None, Run.Invalid_handoff ->
+        Some (degraded_handoff step_record.Run.stdout)
     | None, _ -> progress.last_handoff
 
   let with_interrupted_attempt progress (updated : Run.attempt) =
@@ -436,20 +552,28 @@ struct
           Run.interrupted_attempts =
             List.map
               (fun (attempt : Run.attempt) ->
-                if attempt.Run.attempt_id = updated.Run.attempt_id then updated else attempt)
+                if attempt.Run.attempt_id = updated.Run.attempt_id then updated
+                else attempt)
               progress.run.Run.interrupted_attempts;
         };
     }
 
+  (* What every process of an attempt sees: harness, command, probe. *)
+  let attempt_environment ~run_id ~step_key ~attempt_id =
+    [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ]
+    @ Otlp.traceparent_environment ~getenv:Sys.getenv_opt ~run_id
+        ~span_id:(Otlp.attempt_span_id ~attempt_id)
+
   (* Best effort: a failing probe records its failure, never fails the step. *)
-  let run_probe engine =
+  let run_probe ~environment engine =
     match engine.config.Config.probe with
     | [] -> None
     | argv -> (
-        match Subprocess.run ~cwd:engine.workspace ~argv () with
+        match Subprocess.run ~cwd:engine.workspace ~environment ~argv () with
         | Ok { Subprocess.exit_code = 0; stdout; _ } -> Some stdout
         | Ok { Subprocess.exit_code; stdout; stderr } ->
-            Some (Printf.sprintf "probe exited %d\n%s%s" exit_code stdout stderr)
+            Some
+              (Printf.sprintf "probe exited %d\n%s%s" exit_code stdout stderr)
         | Error message -> Some message)
 
   type recovery =
@@ -471,8 +595,10 @@ struct
         match cut_off.Run.on_interrupt with
         | Skill.Rerun -> Fresh_attempt
         | Skill.Recover | Skill.Escalate -> (
-            match (engine.config.Config.continue_session, cut_off.Run.session_id) with
-            | _ :: _, Some session_id when ran_on_default_harness engine cut_off ->
+            match (engine.config.Config.continue_session, cut_off.Run.session_id)
+            with
+            | _ :: _, Some session_id when ran_on_default_harness engine cut_off
+              ->
                 Continue_session { cut_off; session_id }
             | _ -> Recovery_prompt cut_off))
 
@@ -485,7 +611,8 @@ struct
     let interpolate value =
       match item with
       | None -> value
-      | Some context -> Workflow.interpolate ~var:context.var ~bindings:context.bindings value
+      | Some context ->
+          Workflow.interpolate ~var:context.var ~bindings:context.bindings value
     in
     (* The skill is loaded before the start event so the event can carry
        the effective tier (the skill's frontmatter is one of its sources). *)
@@ -493,7 +620,8 @@ struct
       match step.Workflow.action with
       | Workflow.Skill_step name ->
           let* skill =
-            Skill.load ~jig_dir:engine.jig_dir ~skill_paths:engine.config.Config.skill_paths ~name
+            Skill.load ~jig_dir:engine.jig_dir
+              ~skill_paths:engine.config.Config.skill_paths ~name
           in
           Ok (Some skill)
       | Workflow.Command_step _ -> Ok None
@@ -507,32 +635,63 @@ struct
       | None, None -> None
     in
     engine.on_event
-      (Step_started { skill = label; position = progress.run.Run.position; item_key; tier });
-    let started_at = Run.iso8601 (Unix.gettimeofday ()) in
+      (Step_started
+         { skill = label; position = progress.run.Run.position; item_key; tier });
+    let started_at = Run.record_timestamp_now () in
     let step_key =
-      Run.step_key_of_position ~run_id:progress.run.Run.id ~position:progress.run.Run.position
+      Run.step_key_of_position ~run_id:progress.run.Run.id
+        ~position:progress.run.Run.position
     in
     let attempt_id = Run.next_attempt_id progress.run ~step_key in
-    let environment = [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ] in
-    let probe_before = run_probe engine in
+    let environment =
+      attempt_environment ~run_id:progress.run.Run.id ~step_key ~attempt_id
+    in
+    let probe_before = run_probe ~environment engine in
     let interrupted = Run.unresolved_interrupted_attempt progress.run ~step_key in
     (* The workspace now is the state the cut-off attempt left behind. *)
     let progress =
       match interrupted with
       | Some cut_off when Option.is_none cut_off.Run.probe_after ->
-          with_interrupted_attempt progress { cut_off with Run.probe_after = probe_before }
+          with_interrupted_attempt progress
+            { cut_off with Run.probe_after = probe_before }
       | Some _ | None -> progress
     in
     let recovery = recovery_plan engine interrupted in
+    let timeout_config = engine.config.Config.timeout in
+    (* A continued session finishes the cut-off attempt, so it keeps that deadline. *)
+    let time_limit_seconds, deadline_at =
+      match recovery with
+      | Continue_session { cut_off = { Run.deadline_at = Some _; _ } as cut_off; _ }
+        ->
+          (cut_off.Run.time_limit_seconds, cut_off.Run.deadline_at)
+      | Continue_session _ | Recovery_prompt _ | Fresh_attempt ->
+          let limit =
+            match step.Workflow.action with
+            | Workflow.Skill_step _ ->
+                Step_timeout.skill_step_limit_seconds timeout_config ~tier
+            | Workflow.Command_step _ ->
+                timeout_config.Step_timeout.command_step_limit_seconds
+          in
+          ( limit,
+            Option.map
+              (fun seconds ->
+                Run.iso8601_milliseconds
+                  (Unix.gettimeofday () +. float_of_int seconds))
+              limit )
+    in
     let on_interrupt =
-      match loaded_skill with Some skill -> skill.Skill.on_interrupt | None -> Skill.Rerun
+      match loaded_skill with
+      | Some skill -> skill.Skill.on_interrupt
+      | None -> Skill.Rerun
     in
     let* command, session_id, start_process =
       match (step.Workflow.action, loaded_skill, recovery) with
-      | Workflow.Skill_step _, Some _, Continue_session { cut_off; session_id } ->
+      | Workflow.Skill_step _, Some _, Continue_session { cut_off; session_id }
+        ->
           let command =
             engine.config.Config.wrapper
-            @ Attach.substitute_session_id ~session_id engine.config.Config.continue_session
+            @ Attach.substitute_session_id ~session_id
+                engine.config.Config.continue_session
           in
           let prompt =
             continue_session_prompt ~interrupted:cut_off ~probe_now:probe_before
@@ -541,32 +700,37 @@ struct
           Ok
             ( command,
               Some session_id,
-              fun ~on_spawn ->
-                Executor_port.execute ~on_spawn ~environment ~command ~cwd:engine.workspace ~prompt
-                  () )
+              fun ~on_spawn ~time_limit ->
+                Executor_port.execute ~on_spawn ~environment ?time_limit
+                  ~command ~cwd:engine.workspace ~prompt () )
       | Workflow.Skill_step name, Some skill, _ ->
           let* resolved_command =
             Model_provider_port.resolve ~config:engine.config ~skill:name ~tier
           in
           let session_id =
             if
-              List.exists (Attach.mentions_placeholder ~placeholder:"{session_id}") resolved_command
+              List.exists
+                (Attach.mentions_placeholder ~placeholder:"{session_id}")
+                resolved_command
             then Some (new_session_id ())
             else None
           in
           let command =
             match session_id with
-            | Some session_id -> Attach.substitute_session_id ~session_id resolved_command
+            | Some session_id ->
+                Attach.substitute_session_id ~session_id resolved_command
             | None -> resolved_command
           in
           let inputs =
-            List.map (fun (key, value) -> (key, interpolate value)) step.Workflow.inputs
+            List.map (fun (key, value) -> (key, interpolate value))
+              step.Workflow.inputs
           in
           let interruption =
             match recovery with
             | Recovery_prompt cut_off ->
                 Some
-                  (interruption_section ~interrupted:cut_off ~probe_now:probe_before
+                  (interruption_section ~interrupted:cut_off
+                     ~probe_now:probe_before
                      ~partial_output:(partial_output_of cut_off))
             | Fresh_attempt | Continue_session _ -> None
           in
@@ -575,19 +739,23 @@ struct
               ~field_guide:(Field_guide.load ~workspace:engine.workspace)
               ~task:engine.task
               ~position:
-                (position_line ~workflow_name:progress.run.Run.workflow ~entries:engine.entries
-                   ~entry_index:progress.run.Run.position.Run.entry_index ~skill:label ~item)
-              ~inputs ~skill_body:skill.Skill.body ~previous_handoff:progress.last_handoff
+                (position_line ~workflow_name:progress.run.Run.workflow
+                   ~entries:engine.entries
+                   ~entry_index:progress.run.Run.position.Run.entry_index
+                   ~skill:label ~item)
+              ~inputs ~skill_body:skill.Skill.body
+              ~previous_handoff:progress.last_handoff
               ~guidance:progress.guidance ()
           in
           Ok
             ( command,
               session_id,
-              fun ~on_spawn ->
-                Executor_port.execute ~on_spawn ~environment ~command ~cwd:engine.workspace ~prompt
-                  () )
+              fun ~on_spawn ~time_limit ->
+                Executor_port.execute ~on_spawn ~environment ?time_limit
+                  ~command ~cwd:engine.workspace ~prompt () )
       | Workflow.Skill_step name, None, _ ->
-          Error (Printf.sprintf "run: skill %s failed to load - unreachable" name)
+          Error
+            (Printf.sprintf "run: skill %s failed to load - unreachable" name)
       | Workflow.Command_step command_template, _, _ ->
           (* A command step is deterministic mechanical work: run the shell
              command, let its exit status be the outcome (0 = pass), record
@@ -596,17 +764,19 @@ struct
           Ok
             ( argv,
               None,
-              fun ~on_spawn ->
+              fun ~on_spawn ~time_limit ->
                 Result.map
                   (fun result ->
                     {
                       Executor.exit_code = result.Subprocess.exit_code;
                       stdout = result.Subprocess.stdout;
                       stderr = result.Subprocess.stderr;
+                      timed_out = result.Subprocess.timed_out;
                     })
                   (Result.map_error
                      (fun message -> "command step: " ^ message)
-                     (Subprocess.run ~cwd:engine.workspace ~on_spawn ~environment ~argv ())) )
+                     (Subprocess.run ~cwd:engine.workspace ~on_spawn
+                        ~environment ?time_limit ~argv ())) )
     in
     let attempt =
       {
@@ -624,15 +794,21 @@ struct
         probe_before;
         probe_after = None;
         stdout_path = None;
+        time_limit_seconds;
+        deadline_at;
+        timeout_requested_at = None;
       }
     in
-    let* progress = save_step_progress engine (with_attempt_in_flight progress attempt) in
+    let* progress =
+      save_step_progress engine (with_attempt_in_flight progress attempt)
+    in
     let spawned_attempt = ref attempt in
     let on_spawn ~child_pid ~stdout_path ~stderr_path =
       (* Best effort: the outcome save that follows reports a failing store. *)
       let save_spawned_attempt spawned =
         spawned_attempt := spawned;
-        ignore (save_step_progress engine (with_attempt_in_flight progress spawned))
+        ignore
+          (save_step_progress engine (with_attempt_in_flight progress spawned))
       in
       let spawned =
         {
@@ -644,13 +820,54 @@ struct
       in
       save_spawned_attempt spawned;
       set_step_pointer engine ~run_id:progress.run.Run.id
-        { Current.skill = label; item_key; item_index; tier; stdout_path; stderr_path; started_at };
+        { Current.skill = label; item_key; item_index; tier; stdout_path;
+          stderr_path; started_at };
       engine.on_event (Step_output { stdout_path; stderr_path; item_index });
       (* Last: the ps read must not delay the pid record or the live pointer. *)
       save_spawned_attempt
-        { spawned with Run.child_start_time = Process_identity.start_time child_pid }
+        {
+          spawned with
+          Run.child_start_time = Process_identity.start_time child_pid;
+        }
     in
-    let process_result = start_process ~on_spawn in
+    let timeout_mark_error = ref None in
+    (* The timeout mark is saved before any signal reaches the child. *)
+    let on_deadline () =
+      let marked =
+        {
+          !spawned_attempt with
+          Run.timeout_requested_at =
+            Some (Run.iso8601_milliseconds (Unix.gettimeofday ()));
+        }
+      in
+      spawned_attempt := marked;
+      match
+        save_timeout_mark engine (with_attempt_in_flight progress marked) marked
+      with
+      | Ok () -> ()
+      | Error message -> timeout_mark_error := Some message
+    in
+    let time_limit =
+      Option.map
+        (fun deadline ->
+          {
+            Subprocess.deadline;
+            grace_seconds =
+              float_of_int timeout_config.Step_timeout.grace_seconds;
+            on_deadline;
+          })
+        (Option.bind deadline_at Run.epoch_of_iso8601)
+    in
+    let process_result =
+      match (start_process ~on_spawn ~time_limit, !timeout_mark_error) with
+      | Ok _, Some message ->
+          Error
+            (Printf.sprintf
+               "run: attempt %s timed out, but its timeout mark could not be \
+                saved (%s); jig stopped the attempt"
+               attempt_id message)
+      | result, _ -> result
+    in
     clear_step_pointer engine ~run_id:progress.run.Run.id;
     let progress = without_attempt_in_flight progress attempt in
     let* exec_result =
@@ -676,20 +893,45 @@ struct
           let* _ = save_step_progress engine progress in
           let* () =
             record_attempt_metering engine
-              (interrupted_metering_event ~run_id:progress.run.Run.id !spawned_attempt)
+              (interrupted_metering_event ~run_id:progress.run.Run.id
+                 !spawned_attempt)
           in
           Error message
     in
     (* The capture file is gone once the process is reaped. *)
     let finished_attempt =
-      { !spawned_attempt with Run.probe_after = run_probe engine; stdout_path = None }
+      {
+        !spawned_attempt with
+        Run.probe_after = run_probe ~environment engine;
+        stdout_path = None;
+      }
     in
     let stdout = exec_result.Executor.stdout in
     let stderr = exec_result.Executor.stderr in
     let exit_code = exec_result.Executor.exit_code in
     let outcome, handoff, handoff_error, cost, session_id =
       match step.Workflow.action with
-      | Workflow.Skill_step _ -> (
+      | Workflow.Skill_step _ when exec_result.Executor.timed_out ->
+          ( Run.Timeout,
+            Some
+              (timeout_handoff ~attempt:finished_attempt
+                 ~description:"The previous attempt" (stdout ^ stderr)),
+            None,
+            Metering.Unknown_cost,
+            finished_attempt.Run.session_id )
+      | Workflow.Command_step command_template when exec_result.Executor.timed_out
+        ->
+          ( Run.Timeout,
+            Some
+              (timeout_handoff ~attempt:finished_attempt
+                 ~description:
+                   (Printf.sprintf "The command %s (exit %d)"
+                      (interpolate command_template) exit_code)
+                 (stdout ^ stderr)),
+            None,
+            Metering.Cost_usd 0.0,
+            None )
+      | Workflow.Skill_step _ ->
           let outcome, handoff, handoff_error = outcome_of_exec exec_result in
           ( outcome,
             handoff,
@@ -697,14 +939,16 @@ struct
             fst (Metering.parse_cost stdout),
             match Metering.parse_session_id stdout with
             | Some _ as reported -> reported
-            | None -> finished_attempt.Run.session_id ))
+            | None -> finished_attempt.Run.session_id )
       | Workflow.Command_step command_template ->
           let outcome = if exit_code = 0 then Run.Pass else Run.Fail in
           (* On failure, thread the command's output onward so a retry (or
              a following skill) can act on what went wrong. *)
           let handoff =
             if outcome = Run.Fail then
-              let tail = tail_text ~limit:degraded_text_limit (stdout ^ stderr) in
+              let tail =
+                tail_text ~limit:degraded_text_limit (stdout ^ stderr)
+              in
               Some
                 {
                   Handoff.status = Handoff.Fail;
@@ -732,21 +976,28 @@ struct
         item_index;
         item_key;
         attempt = Some finished_attempt;
+        resumed = progress.resumed;
         started_at;
-        finished_at = Run.iso8601 (Unix.gettimeofday ());
+        finished_at = Run.record_timestamp_now ();
       }
     in
     let progress =
       {
-        run = { progress.run with Run.steps = progress.run.Run.steps @ [ step_record ] };
+        run =
+          {
+            progress.run with
+            Run.steps = progress.run.Run.steps @ [ step_record ];
+          };
         last_handoff = handoff_after_step progress step_record;
         guidance = None;
+        resumed = false;
       }
     in
     let* progress = save_step_progress engine progress in
     let* () =
       record_attempt_metering engine
-        (finished_metering_event ~run_id:progress.run.Run.id step_record finished_attempt)
+        (finished_metering_event ~run_id:progress.run.Run.id step_record
+           finished_attempt)
     in
     engine.on_step step_record;
     engine.on_event (Step_finished step_record);
@@ -755,11 +1006,17 @@ struct
   (* A crash after a step's result save leaves its outcome unrouted. *)
   let execute_step engine progress ~item step =
     let step_key =
-      Run.step_key_of_position ~run_id:progress.run.Run.id ~position:progress.run.Run.position
+      Run.step_key_of_position ~run_id:progress.run.Run.id
+        ~position:progress.run.Run.position
     in
     match Run.unrouted_finished_step progress.run ~step_key with
     | Some step_record ->
-        Ok (step_record, { progress with last_handoff = handoff_after_step progress step_record })
+        Ok
+          ( step_record,
+            {
+              progress with
+              last_handoff = handoff_after_step progress step_record;
+            } )
     | None -> run_step_process engine progress ~item step
 
   let stop_for_failure ~on_fail progress =
@@ -769,12 +1026,15 @@ struct
     | None -> Stop (Run.Failed, progress)
 
   let execute_plain_entry engine progress ~item step =
-    let* step_record, progress = execute_step engine progress ~item step in
+    let* step_record, progress =
+      execute_step engine progress ~item step
+    in
     match step_record.Run.outcome with
     | Run.Pass -> Ok (Proceed progress)
     | Run.Escalate -> Ok (Stop (Run.Paused, progress))
     | Run.Invalid_handoff -> Ok (Stop (Run.Failed, progress))
-    | Run.Fail -> Ok (stop_for_failure ~on_fail:step.Workflow.on_fail progress)
+    | Run.Fail | Run.Timeout ->
+        Ok (stop_for_failure ~on_fail:step.Workflow.on_fail progress)
 
   (* One retry iteration: run the group in order. Pass on an until-step
      completes the group early; any fail (or invalid handoff) fails the
@@ -785,7 +1045,8 @@ struct
     | Iteration_failed of progress
     | Interrupted of Run.status * progress
 
-  let set_position progress position = { progress with run = { progress.run with Run.position } }
+  let set_position progress position =
+    { progress with run = { progress.run with Run.position } }
 
   let set_step_index progress step_index =
     set_position progress { progress.run.Run.position with Run.step_index }
@@ -803,7 +1064,8 @@ struct
               if step.Workflow.until_pass then Ok (Group_done progress)
               else loop progress (step_index + 1)
           | Run.Escalate -> Ok (Interrupted (Run.Paused, progress))
-          | Run.Fail | Run.Invalid_handoff -> Ok (Iteration_failed progress))
+          | Run.Fail | Run.Invalid_handoff | Run.Timeout ->
+              Ok (Iteration_failed progress))
     in
     let start_index = progress.run.Run.position.Run.step_index in
     if start_index >= List.length retry.Workflow.retry_steps then
@@ -814,7 +1076,8 @@ struct
     (* A record update, so entry_index and any forEach cursor survive - a
        pause inside a retry inside a forEach must keep them all. *)
     let start_next_iteration progress iterations_used =
-      set_position progress { progress.run.Run.position with Run.iterations_used; step_index = 0 }
+      set_position progress
+        { progress.run.Run.position with Run.iterations_used; step_index = 0 }
     in
     let rec attempt progress iterations_used =
       if iterations_used >= retry.Workflow.max_iterations then
@@ -827,15 +1090,19 @@ struct
         | Group_done progress -> Ok (Proceed progress)
         | Interrupted (status, progress) -> Ok (Stop (status, progress))
         | Iteration_failed progress ->
-            attempt (start_next_iteration progress (iterations_used + 1)) (iterations_used + 1)
+            attempt
+              (start_next_iteration progress (iterations_used + 1))
+              (iterations_used + 1)
     in
     attempt progress progress.run.Run.position.Run.iterations_used
 
   let set_entry_index progress entry_index =
-    set_position progress { progress.run.Run.position with Run.entry_index }
+    set_position progress
+      { progress.run.Run.position with Run.entry_index }
 
   let restart_retry_position progress =
-    set_position progress { progress.run.Run.position with Run.iterations_used = 0; step_index = 0 }
+    set_position progress
+      { progress.run.Run.position with Run.iterations_used = 0; step_index = 0 }
 
   (* Each item is an independent unit of the fan-out: it must not inherit
      the previous item's (or the pre-forEach step's) handoff. Threading
@@ -843,8 +1110,8 @@ struct
   let clear_handoff progress = { progress with last_handoff = None }
 
   (* One item's body, from [body_index] to its end or its first stop. *)
-  let execute_item engine progress (for_each : Workflow.for_each) ~(state : Run.for_each_state)
-      ~item_index ~body_index =
+  let execute_item engine progress (for_each : Workflow.for_each)
+      ~(state : Run.for_each_state) ~item_index ~body_index =
     let items = state.Run.items in
     let body = for_each.Workflow.body in
     let body_count = List.length body in
@@ -871,11 +1138,14 @@ struct
         let* verdict =
           match List.nth body body_index with
           | Workflow.Step step -> execute_plain_entry engine progress ~item step
-          | Workflow.Retry retry -> execute_retry_entry engine progress ~item retry
-          | Workflow.For_each _ -> Error "run: forEach bodies cannot contain forEach"
+          | Workflow.Retry retry ->
+              execute_retry_entry engine progress ~item retry
+          | Workflow.For_each _ ->
+              Error "run: forEach bodies cannot contain forEach"
         in
         match verdict with
-        | Proceed progress -> loop (restart_retry_position progress) (body_index + 1)
+        | Proceed progress ->
+            loop (restart_retry_position progress) (body_index + 1)
         | Stop (status, progress) -> Ok (Stop (status, progress))
     in
     loop progress body_index
@@ -883,24 +1153,36 @@ struct
   (* Recreated only when the item never ran a step, so no work is lost. *)
   let ensure_item_worktree engine progress (item : Run.item_in_progress) =
     let item_number = item.Run.started_item_index + 1 in
-    let never_ran = progress.run.Run.steps = [] && progress.run.Run.interrupted_attempts = [] in
+    let never_ran =
+      progress.run.Run.steps = [] && progress.run.Run.interrupted_attempts = []
+    in
     match item.Run.item_workspace with
     | Some path when Sys.file_exists path -> Ok path
     | Some path when never_ran ->
         let* () =
-          Workspace.create_item_worktree ~root:engine.root ~run_workspace:engine.workspace ~path
+          Workspace.create_item_worktree ~root:engine.root
+            ~run_workspace:engine.workspace ~path
         in
         Ok path
     | Some path ->
         Error
-          (Printf.sprintf "run: forEach item %d used worktree %s, which no longer exists"
+          (Printf.sprintf
+             "run: forEach item %d used worktree %s, which no longer exists"
              item_number path)
-    | None -> Error (Printf.sprintf "run: forEach item %d has no worktree" item_number)
+    | None ->
+        Error (Printf.sprintf "run: forEach item %d has no worktree" item_number)
 
   (* Runs in a forked process and never returns. *)
   let run_item_worker engine progress (for_each : Workflow.for_each) ~state
-      ~(item : Run.item_in_progress) ~worker_output =
-    let link = { worker_output; reported_step_count = List.length progress.run.Run.steps } in
+      ~(item : Run.item_in_progress) ~item_workspace ~worker_output
+      ~timeout_mark_acknowledgements =
+    let link =
+      {
+        worker_output;
+        timeout_mark_acknowledgements;
+        reported_step_count = List.length progress.run.Run.steps;
+      }
+    in
     reseed_session_ids ();
     let worker_engine workspace =
       {
@@ -913,9 +1195,9 @@ struct
     in
     (try
        let result =
-         let* workspace = ensure_item_worktree engine progress item in
-         execute_item (worker_engine workspace) progress for_each ~state
-           ~item_index:item.Run.started_item_index ~body_index:item.Run.item_body_index
+         execute_item (worker_engine item_workspace) progress for_each ~state
+           ~item_index:item.Run.started_item_index
+           ~body_index:item.Run.item_body_index
        in
        send_to_driver link
          (match result with
@@ -926,7 +1208,8 @@ struct
                  status;
                  position = stopped.run.Run.position;
                  paused_on_attempt =
-                   (if status = Run.Paused then Run.last_step_attempt_id stopped.run.Run.steps
+                   (if status = Run.Paused then
+                      Run.last_step_attempt_id stopped.run.Run.steps
                     else None);
                }
          | Error message -> Worker_item_error message)
@@ -934,7 +1217,8 @@ struct
        try
          send_to_driver link
            (Worker_item_error
-              ("run: forEach item worker raised " ^ Printexc.to_string exception_raised))
+              ("run: forEach item worker raised "
+              ^ Printexc.to_string exception_raised))
        with _ -> ()));
     (* _exit: the driver's at_exit handlers and buffers are not the worker's. *)
     Unix._exit 0
@@ -942,6 +1226,7 @@ struct
   type item_worker = {
     worker_pid : int;
     worker_input : Unix.file_descr;
+    acknowledgement_output : Unix.file_descr;
     worker_reader : Worker_channel.reader;
     worker_item_index : int;
     mutable worker_reported_end : bool;
@@ -949,7 +1234,9 @@ struct
 
   (* A failed or aborted item decides the run over a paused one. *)
   let combine_stop_status current status =
-    match current with None | Some Run.Paused -> Some status | Some _ -> current
+    match current with
+    | None | Some Run.Paused -> Some status
+    | Some _ -> current
 
   (* The item's cursor as a worker's item position reports it. *)
   let with_item_cursor (position : Run.position) (item : Run.item_in_progress) =
@@ -970,22 +1257,35 @@ struct
     let run_id = progress.run.Run.id in
     let item_count = List.length initial_state.Run.items in
     let guidance = progress.guidance in
-    let master = ref { progress with guidance = None; last_handoff = None } in
+    let run_resumed = progress.resumed in
+    let master =
+      ref
+        { progress with guidance = None; last_handoff = None; resumed = false }
+    in
     let state = ref initial_state in
     let first_error = ref None in
     let stop_status = ref None in
     let workers = ref [] in
     let pending_resumes = ref initial_state.Run.items_in_progress in
     let pointers = Hashtbl.create 8 in
-    let note_error message = if Option.is_none !first_error then first_error := Some message in
-    let sync_state_into_master () =
-      master := set_position !master { !master.run.Run.position with Run.for_each = Some !state }
+    let note_error message =
+      if Option.is_none !first_error then first_error := Some message
     in
-    let save () =
+    let sync_state_into_master () =
+      master :=
+        set_position !master
+          { !master.run.Run.position with Run.for_each = Some !state }
+    in
+    let try_save () =
       sync_state_into_master ();
       match persist engine !master ~status:Run.Running ~finished:false with
-      | Ok (saved, _) -> master := saved
-      | Error message -> note_error message
+      | Ok (saved, _) ->
+          master := saved;
+          Ok ()
+      | Error message -> Error message
+    in
+    let save () =
+      match try_save () with Ok () -> () | Error message -> note_error message
     in
     let update_item item_index change =
       state :=
@@ -994,7 +1294,8 @@ struct
           Run.items_in_progress =
             List.map
               (fun (item : Run.item_in_progress) ->
-                if item.Run.started_item_index = item_index then change item else item)
+                if item.Run.started_item_index = item_index then change item
+                else item)
               !state.Run.items_in_progress;
         }
     in
@@ -1002,25 +1303,38 @@ struct
       let runs_directory = runs_dir engine in
       match
         List.sort compare
-          (Hashtbl.fold (fun index pointer all -> (index, pointer) :: all) pointers [])
+          (Hashtbl.fold
+             (fun index pointer all -> (index, pointer) :: all)
+             pointers [])
       with
       | [] -> Current.remove ~runs_dir:runs_directory ~run_id
-      | indexed -> Current.write ~runs_dir:runs_directory ~run_id (List.map snd indexed)
+      | indexed ->
+          Current.write ~runs_dir:runs_directory ~run_id
+            (List.map snd indexed)
     in
-    let step_key_prefix item_index = Run.item_step_key_prefix ~run_id ~entry_index ~item_index in
+    let step_key_prefix item_index =
+      Run.item_step_key_prefix ~run_id ~entry_index ~item_index
+    in
     let start_worker (item : Run.item_in_progress) ~resumed =
       let item_index = item.Run.started_item_index in
       let worker_state = { !state with Run.items_in_progress = [] } in
       let lane =
         {
-          (Run.item_lane !master.run ~step_key_prefix:(step_key_prefix item_index)) with
+          (Run.item_lane !master.run
+             ~step_key_prefix:(step_key_prefix item_index))
+          with
           Run.position =
             {
               Run.entry_index;
               iterations_used = item.Run.item_iterations_used;
               step_index = item.Run.item_step_index;
               for_each =
-                Some { worker_state with Run.item_index; body_index = item.Run.item_body_index };
+                Some
+                  {
+                    worker_state with
+                    Run.item_index;
+                    body_index = item.Run.item_body_index;
+                  };
             };
           paused_on_attempt = item.Run.item_paused_on_attempt;
         }
@@ -1030,42 +1344,85 @@ struct
           run = lane;
           last_handoff = (if resumed then Run.last_handoff lane else None);
           guidance = (if resumed then guidance else None);
+          resumed = resumed && run_resumed;
         }
       in
-      match Unix.pipe ~cloexec:true () with
-      | exception Unix.Unix_error (error, _, _) ->
-          note_error ("run: cannot open a forEach worker pipe: " ^ Unix.error_message error)
-      | worker_input, worker_output -> (
-          match Process_group.fork_worker_process ~pipe_from_worker:worker_input with
+      (* git worktree add races a sibling's half-written worktree, so the driver creates them in turn. *)
+      match ensure_item_worktree engine worker_progress item with
+      | Error message -> note_error message
+      | Ok item_workspace -> (
+          match
+            let worker_input, worker_output = Unix.pipe ~cloexec:true () in
+            match Unix.pipe ~cloexec:true () with
+            | acknowledgement_input, acknowledgement_output ->
+                ( worker_input,
+                  worker_output,
+                  acknowledgement_input,
+                  acknowledgement_output )
+            | exception raised ->
+                Unix.close worker_input;
+                Unix.close worker_output;
+                raise raised
+          with
           | exception Unix.Unix_error (error, _, _) ->
-              Unix.close worker_input;
-              Unix.close worker_output;
-              note_error ("run: cannot fork a forEach worker: " ^ Unix.error_message error)
-          | 0 ->
-              Unix.close worker_input;
-              (* Another worker's end of file must not wait on this one. *)
-              List.iter
-                (fun worker -> try Unix.close worker.worker_input with Unix.Unix_error _ -> ())
-                !workers;
-              run_item_worker engine worker_progress for_each ~state:worker_state ~item
-                ~worker_output
-          | worker_pid ->
-              Unix.close worker_output;
-              workers :=
-                !workers
-                @ [
-                    {
-                      worker_pid;
-                      worker_input;
-                      worker_reader = Worker_channel.create_reader worker_input;
-                      worker_item_index = item_index;
-                      worker_reported_end = false;
-                    };
-                  ])
+              note_error
+                ("run: cannot open a forEach worker pipe: "
+                ^ Unix.error_message error)
+          | worker_input, worker_output, acknowledgement_input, acknowledgement_output
+            -> (
+              let close_all () =
+                List.iter Unix.close
+                  [
+                    worker_input;
+                    worker_output;
+                    acknowledgement_input;
+                    acknowledgement_output;
+                  ]
+              in
+              match
+                Process_group.fork_worker_process ~pipe_from_worker:worker_input
+              with
+              | exception Unix.Unix_error (error, _, _) ->
+                  close_all ();
+                  note_error
+                    ("run: cannot fork a forEach worker: "
+                    ^ Unix.error_message error)
+              | 0 ->
+                  Unix.close worker_input;
+                  Unix.close acknowledgement_output;
+                  (* Another worker's end of file must not wait on this one. *)
+                  List.iter
+                    (fun worker ->
+                      (try Unix.close worker.worker_input
+                       with Unix.Unix_error _ -> ());
+                      try Unix.close worker.acknowledgement_output
+                      with Unix.Unix_error _ -> ())
+                    !workers;
+                  run_item_worker engine worker_progress for_each
+                    ~state:worker_state ~item ~item_workspace ~worker_output
+                    ~timeout_mark_acknowledgements:acknowledgement_input
+              | worker_pid ->
+                  Unix.close worker_output;
+                  Unix.close acknowledgement_input;
+                  workers :=
+                    !workers
+                    @ [
+                        {
+                          worker_pid;
+                          worker_input;
+                          acknowledgement_output;
+                          worker_reader = Worker_channel.create_reader worker_input;
+                          worker_item_index = item_index;
+                          worker_reported_end = false;
+                        };
+                      ]))
     in
     let start_next_item () =
       let item_index = !state.Run.item_index in
-      let path = Workspace.item_worktree_path ~root:engine.root ~run_id ~entry_index ~item_index in
+      let path =
+        Workspace.item_worktree_path ~root:engine.root ~run_id ~entry_index
+          ~item_index
+      in
       let item =
         {
           Run.started_item_index = item_index;
@@ -1083,7 +1440,7 @@ struct
           Run.item_index = item_index + 1;
           items_in_progress = !state.Run.items_in_progress @ [ item ];
         };
-      (* Saved before the worker creates the worktree, so none is orphaned. *)
+      (* Saved before the worktree is created, so none is orphaned. *)
       save ();
       start_worker item ~resumed:false
     in
@@ -1095,7 +1452,8 @@ struct
     in
     let rec fill_free_slots () =
       if
-        Option.is_none !first_error && Option.is_none !stop_status
+        Option.is_none !first_error
+        && Option.is_none !stop_status
         && List.length !workers < !state.Run.concurrency
       then
         match !pending_resumes with
@@ -1111,7 +1469,9 @@ struct
     let handle_message worker (message : worker_message) =
       let item_index = worker.worker_item_index in
       match message with
-      | Worker_progress { position; attempts_in_flight; new_steps; interrupted_attempts } ->
+      | Worker_progress
+          { position; attempts_in_flight; new_steps; interrupted_attempts }
+        ->
           let prefix = step_key_prefix item_index in
           let run = !master.run in
           let other_attempts =
@@ -1121,7 +1481,8 @@ struct
           in
           let other_interrupted_attempts =
             List.filter
-              (fun (attempt : Run.attempt) -> not (String.starts_with ~prefix attempt.Run.step_key))
+              (fun (attempt : Run.attempt) ->
+                not (String.starts_with ~prefix attempt.Run.step_key))
               run.Run.interrupted_attempts
           in
           master :=
@@ -1136,11 +1497,44 @@ struct
                         Run.Step_key_map.add attempt.Run.step_key attempt map)
                       other_attempts attempts_in_flight;
                   steps = run.Run.steps @ new_steps;
-                  interrupted_attempts = other_interrupted_attempts @ interrupted_attempts;
+                  interrupted_attempts =
+                    other_interrupted_attempts @ interrupted_attempts;
                 };
             };
           update_item item_index (with_item_cursor position);
           save ()
+      | Worker_timeout_mark (marked : Run.attempt) ->
+          let unmarked = !master in
+          let run = !master.run in
+          master :=
+            {
+              !master with
+              run =
+                {
+                  run with
+                  Run.attempts_in_flight =
+                    Run.Step_key_map.add marked.Run.step_key marked
+                      run.Run.attempts_in_flight;
+                };
+            };
+          let answer =
+            match try_save () with
+            | Ok () -> timeout_mark_saved
+            | Error _ ->
+                (* The worker reports the error; later saves must not repeat it. *)
+                master := unmarked;
+                '0'
+          in
+          (* A worker that already ended gets no answer, and must not SIGPIPE the driver. *)
+          let previous_handler = Sys.signal Sys.sigpipe Sys.Signal_ignore in
+          Fun.protect
+            ~finally:(fun () -> Sys.set_signal Sys.sigpipe previous_handler)
+            (fun () ->
+              try
+                ignore
+                  (Unix.write_substring worker.acknowledgement_output
+                     (String.make 1 answer) 0 1)
+              with Unix.Unix_error _ -> ())
       | Worker_metering event -> (
           match record_attempt_metering engine event with
           | Ok () -> ()
@@ -1156,7 +1550,8 @@ struct
           worker.worker_reported_end <- true;
           let passed, others =
             List.partition
-              (fun (item : Run.item_in_progress) -> item.Run.started_item_index = item_index)
+              (fun (item : Run.item_in_progress) ->
+                item.Run.started_item_index = item_index)
               !state.Run.items_in_progress
           in
           state := { !state with Run.items_in_progress = others };
@@ -1166,14 +1561,18 @@ struct
               match item.Run.item_workspace with
               | Some path -> (
                   match
-                    let* () = Workspace.keep_item_commits ~run_workspace:engine.workspace ~path in
+                    let* () =
+                      Workspace.keep_item_commits
+                        ~run_workspace:engine.workspace ~path
+                    in
                     Workspace.remove ~root:engine.root ~path
                   with
                   | Ok () -> ()
                   | Error message -> note_error message)
               | None -> ())
             passed;
-          engine.on_event (Item_finished { entry_index; item_index; status = Run.Completed })
+          engine.on_event
+            (Item_finished { entry_index; item_index; status = Run.Completed })
       | Worker_item_stopped { status; position; paused_on_attempt } ->
           worker.worker_reported_end <- true;
           update_item item_index (fun item ->
@@ -1197,15 +1596,20 @@ struct
     in
     let reap worker =
       Unix.close worker.worker_input;
+      Unix.close worker.acknowledgement_output;
       wait_for_exit worker.worker_pid;
       Process_group.forget_worker_process worker.worker_pid;
-      workers := List.filter (fun other -> other.worker_pid <> worker.worker_pid) !workers;
+      workers :=
+        List.filter
+          (fun other -> other.worker_pid <> worker.worker_pid)
+          !workers;
       if Hashtbl.mem pointers worker.worker_item_index then (
         Hashtbl.remove pointers worker.worker_item_index;
         write_pointers ());
       if not worker.worker_reported_end then
         note_error
-          (Printf.sprintf "run: forEach item %d: its worker process ended without a result"
+          (Printf.sprintf
+             "run: forEach item %d: its worker process ended without a result"
              (worker.worker_item_index + 1))
     in
     let rec drain () =
@@ -1217,7 +1621,8 @@ struct
             match
               Unix.select
                 (List.map (fun worker -> worker.worker_input) running)
-                [] [] Process_group.child_poll_interval_seconds
+                [] []
+                Process_group.child_poll_interval_seconds
             with
             | ready, _, _ -> ready
             | exception Unix.Unix_error (Unix.EINTR, _, _) -> []
@@ -1256,18 +1661,29 @@ struct
       match progress.run.Run.position.Run.for_each with
       | Some state -> Ok state
       | None ->
-          let path = Filename.concat engine.workflow_dir for_each.Workflow.items_file in
+          let path =
+            Filename.concat engine.workflow_dir for_each.Workflow.items_file
+          in
           let* items = Items.load ~path in
           let* () =
-            Items.check_columns ~path ~required:(Workflow.for_each_columns for_each) items
+            Items.check_columns ~path
+              ~required:(Workflow.for_each_columns for_each)
+              items
           in
           let concurrency = engine.config.Config.concurrency in
           let* () =
-            if concurrency > 1 && Option.is_none progress.run.Run.workspace then
-              Error (Validate.concurrency_isolation_message concurrency)
+            if concurrency > 1 && Option.is_none progress.run.Run.workspace
+            then Error (Validate.concurrency_isolation_message concurrency)
             else Ok ()
           in
-          Ok { Run.item_index = 0; body_index = 0; items; concurrency; items_in_progress = [] }
+          Ok
+            {
+              Run.item_index = 0;
+              body_index = 0;
+              items;
+              concurrency;
+              items_in_progress = [];
+            }
     in
     let items = state.Run.items in
     engine.on_event
@@ -1277,16 +1693,21 @@ struct
            item_keys = List.map Items.key items;
            concurrency = state.Run.concurrency;
          });
-    if state.Run.concurrency > 1 then execute_parallel_for_each engine progress for_each state
+    if state.Run.concurrency > 1 then
+      execute_parallel_for_each engine progress for_each state
     else
       let item_count = List.length items in
       let progress = if fresh_entry then clear_handoff progress else progress in
       let rec loop progress item_index body_index =
         if item_index >= item_count then Ok (Proceed progress)
         else
-          let* verdict = execute_item engine progress for_each ~state ~item_index ~body_index in
+          let* verdict =
+            execute_item engine progress for_each ~state ~item_index
+              ~body_index
+          in
           match verdict with
-          | Proceed progress -> loop (clear_handoff progress) (item_index + 1) 0
+          | Proceed progress ->
+              loop (clear_handoff progress) (item_index + 1) 0
           | Stop (status, progress) -> Ok (Stop (status, progress))
       in
       loop progress state.Run.item_index state.Run.body_index
@@ -1300,9 +1721,12 @@ struct
         let progress = set_entry_index progress entry_index in
         let* verdict =
           match entry with
-          | Workflow.Step step -> execute_plain_entry engine progress ~item:None step
-          | Workflow.Retry retry -> execute_retry_entry engine progress ~item:None retry
-          | Workflow.For_each for_each -> execute_for_each_entry engine progress for_each
+          | Workflow.Step step ->
+              execute_plain_entry engine progress ~item:None step
+          | Workflow.Retry retry ->
+              execute_retry_entry engine progress ~item:None retry
+          | Workflow.For_each for_each ->
+              execute_for_each_entry engine progress for_each
         in
         match verdict with
         | Proceed progress ->
@@ -1310,7 +1734,12 @@ struct
                cursor, so finished runs carry no snapshot. *)
             let progress =
               set_position progress
-                { Run.entry_index; iterations_used = 0; step_index = 0; for_each = None }
+                {
+                  Run.entry_index;
+                  iterations_used = 0;
+                  step_index = 0;
+                  for_each = None;
+                }
             in
             loop progress (entry_index + 1)
         | Stop (status, progress) -> Ok (status, progress)
@@ -1333,7 +1762,12 @@ struct
             template
         in
         ignore
-          (Subprocess.run ~cwd:engine.root ~time_limit_seconds:notify_time_limit_seconds ~argv ())
+          (Subprocess.run ~cwd:engine.root
+             ~time_limit:
+               (Subprocess.time_limit_from_now
+                  ~seconds:notify_time_limit_seconds
+                  ~grace_seconds:Process_group.termination_grace_seconds)
+             ~argv ())
 
   (* Terminal runs clean their worktree up; paused runs keep it so a resume
      finds the work in progress exactly where the agent left it. *)
@@ -1344,7 +1778,8 @@ struct
     let* progress, path = persist engine progress ~status ~finished in
     let* () =
       match (finished, progress.run.Run.workspace) with
-      | true, Some workspace_path -> Workspace.remove ~root:engine.root ~path:workspace_path
+      | true, Some workspace_path ->
+          Workspace.remove ~root:engine.root ~path:workspace_path
       | _ -> Ok ()
     in
     notify engine progress.run;
@@ -1352,11 +1787,14 @@ struct
 
   let load_project ~root ~workflow_name =
     let jig_dir = Filename.concat root ".jig" in
-    let* workflow_path, workflow_dir = Project.resolve_workflow ~jig_dir ~name:workflow_name in
+    let* workflow_path, workflow_dir =
+      Project.resolve_workflow ~jig_dir ~name:workflow_name
+    in
     let* workflow = Workflow.load ~path:workflow_path in
     let* config = Config.load ~jig_dir in
     let* () =
-      Validate.workflow ~workflow_dir ~jig_dir ~skill_paths:config.Config.skill_paths workflow
+      Validate.workflow ~workflow_dir ~jig_dir
+        ~skill_paths:config.Config.skill_paths workflow
     in
     Ok (jig_dir, workflow_dir, workflow, config)
 
@@ -1365,26 +1803,38 @@ struct
   let drive engine progress =
     (* Persist before the first step so status/list see the in-flight run;
        a resume likewise flips its stored status back to Running here. *)
-    let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
+    let* progress, _ =
+      persist engine progress ~status:Run.Running ~finished:false
+    in
     let* () = record_missing_metering engine progress.run in
     match execute_entries engine progress with
     | Ok (status, progress) -> finish engine progress status
     | Error message ->
         (* The last save holds every step this drive executed. *)
         let last_saved_run =
-          match Store_port.load ~runs_dir:(runs_dir engine) ~id:progress.run.Run.id with
+          match
+            Store_port.load ~runs_dir:(runs_dir engine) ~id:progress.run.Run.id
+          with
           | Ok run -> run
           | Error _ -> progress.run
         in
-        let progress = { progress with run = { last_saved_run with Run.error = Some message } } in
-        (match finish engine progress Run.Failed with Ok _ | Error _ -> ());
+        let progress =
+          {
+            progress with
+            run = { last_saved_run with Run.error = Some message };
+          }
+        in
+        (match finish engine progress Run.Failed with
+        | Ok _ | Error _ -> ());
         Error message
 
-  let execute_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ()) ?run_id ~root ~workflow_name
-      ~task ~isolated () =
+  let execute_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
+      ?run_id ~root ~workflow_name ~task
+      ~isolated () =
     let* jig_dir, workflow_dir, workflow, config = load_project ~root ~workflow_name in
     let* () =
-      Validate.concurrency_isolation ~concurrency:config.Config.concurrency ~isolated workflow
+      Validate.concurrency_isolation ~concurrency:config.Config.concurrency
+        ~isolated workflow
     in
     let started = Unix.gettimeofday () in
     (* A detaching caller pre-issues the id so it can print it and name
@@ -1392,7 +1842,9 @@ struct
     let run_id =
       match run_id with
       | Some id -> id
-      | None -> Run.make_id ~workflow:workflow.Workflow.name ~time:started ~pid:(Unix.getpid ())
+      | None ->
+          Run.make_id ~workflow:workflow.Workflow.name ~time:started
+            ~pid:(Unix.getpid ())
     in
     with_run_lock ~runs_dir:(Project.runs_dir ~root) ~run_id @@ fun () ->
     let* workspace =
@@ -1425,20 +1877,30 @@ struct
         task;
         status = Run.Running;
         error = None;
-        position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+        position =
+          {
+            Run.entry_index = 0;
+            iterations_used = 0;
+            step_index = 0;
+            for_each = None;
+          };
         workspace;
         steps = [];
         attempts_in_flight = Run.Step_key_map.empty;
         interrupted_attempts = [];
         paused_on_attempt = None;
-        started_at = Run.iso8601 started;
+        started_at = Run.iso8601_milliseconds started;
         finished_at = None;
       }
     in
-    drive engine { run; last_handoff = None; guidance = None }
+    drive engine { run; last_handoff = None; guidance = None; resumed = false }
 
   let retry_gate_skill (retry : Workflow.retry) =
-    let gate = List.find_opt (fun step -> step.Workflow.until_pass) retry.Workflow.retry_steps in
+    let gate =
+      List.find_opt
+        (fun step -> step.Workflow.until_pass)
+        retry.Workflow.retry_steps
+    in
     match (gate, retry.Workflow.retry_steps) with
     | Some step, _ -> Workflow.step_label step
     | None, first :: _ -> Workflow.step_label first
@@ -1455,19 +1917,24 @@ struct
         Ok
           (match position.Run.for_each with
           | Some state -> (
-              match List.nth_opt for_each.Workflow.body state.Run.body_index with
+              match
+                List.nth_opt for_each.Workflow.body state.Run.body_index
+              with
               | Some (Workflow.Step step) -> Workflow.step_label step
               | Some (Workflow.Retry retry) -> retry_gate_skill retry
-              | Some (Workflow.For_each _) | None -> entry_lead_skill (Workflow.For_each for_each))
+              | Some (Workflow.For_each _) | None ->
+                  entry_lead_skill (Workflow.For_each for_each))
           | None -> entry_lead_skill (Workflow.For_each for_each))
-    | None -> Error "run: position is past the workflow's entries; nothing to skip"
+    | None ->
+        Error "run: position is past the workflow's entries; nothing to skip"
 
   (* The item the position is currently bound to, for step provenance. *)
   let position_item (position : Run.position) =
     match position.Run.for_each with
     | Some state -> (
         match List.nth_opt state.Run.items state.Run.item_index with
-        | Some bindings -> (Some state.Run.item_index, Some (Items.key bindings))
+        | Some bindings ->
+            (Some state.Run.item_index, Some (Items.key bindings))
         | None -> (Some state.Run.item_index, None))
     | None -> (None, None)
 
@@ -1484,7 +1951,9 @@ struct
         for_each = None;
       }
     in
-    match (List.nth_opt entries position.Run.entry_index, position.Run.for_each) with
+    match
+      (List.nth_opt entries position.Run.entry_index, position.Run.for_each)
+    with
     | Some (Workflow.For_each for_each), Some state ->
         let body_count = List.length for_each.Workflow.body in
         let item_count = List.length state.Run.items in
@@ -1493,14 +1962,21 @@ struct
             position with
             Run.iterations_used = 0;
             step_index = 0;
-            for_each = Some { state with Run.body_index = state.Run.body_index + 1 };
+            for_each =
+              Some { state with Run.body_index = state.Run.body_index + 1 };
           }
         else if state.Run.item_index + 1 < item_count then
           {
             position with
             Run.iterations_used = 0;
             step_index = 0;
-            for_each = Some { state with Run.item_index = state.Run.item_index + 1; body_index = 0 };
+            for_each =
+              Some
+                {
+                  state with
+                  Run.item_index = state.Run.item_index + 1;
+                  body_index = 0;
+                };
           }
         else next_entry
     | _ -> next_entry
@@ -1511,7 +1987,7 @@ struct
   let human_skip ~entries ~guidance run =
     let* skill = skip_target_skill ~entries ~position:run.Run.position in
     let item_index, item_key = position_item run.Run.position in
-    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let now = Run.record_timestamp_now () in
     let summary =
       match guidance with
       | Some text -> "A human completed this step manually.\n" ^ text
@@ -1526,12 +2002,14 @@ struct
         tier = None;
         stdout = "";
         stderr = "";
-        handoff = Some { Handoff.status = Handoff.Pass; artifacts = []; summary };
+        handoff =
+          Some { Handoff.status = Handoff.Pass; artifacts = []; summary };
         handoff_error = None;
         session_id = None;
         item_index;
         item_key;
         attempt = None;
+        resumed = true;
         started_at = now;
         finished_at = now;
       }
@@ -1546,43 +2024,219 @@ struct
 
   (* Several items can be paused at once; one human hand-back cannot pick. *)
   let parallel_items_refuse_one_item_message =
-    "run: --skip and attach complete one paused step, but this run is paused inside a forEach that \
-     runs items in parallel; resume it with --guidance instead"
+    "run: --skip and attach complete one paused step, but this run is \
+     paused inside a forEach that runs items in parallel; resume it with \
+     --guidance instead"
 
   let pause_for_interruption engine progress (attempts : Run.attempt list) =
     (* A parallel forEach item's attempt ran in the item's own worktree. *)
     let probe_after (attempt : Run.attempt) =
+      let environment =
+        attempt_environment ~run_id:progress.run.Run.id
+          ~step_key:attempt.Run.step_key ~attempt_id:attempt.Run.attempt_id
+      in
       match Run.item_in_progress_of_attempt progress.run attempt with
-      | Some { Run.item_workspace = Some workspace; _ } -> run_probe { engine with workspace }
-      | _ -> run_probe engine
+      | Some { Run.item_workspace = Some workspace; _ } ->
+          run_probe ~environment { engine with workspace }
+      | _ -> run_probe ~environment engine
     in
     let progress =
       List.fold_left
         (fun progress (attempt : Run.attempt) ->
-          with_interrupted_attempt progress { attempt with Run.probe_after = probe_after attempt })
+          with_interrupted_attempt progress
+            { attempt with Run.probe_after = probe_after attempt })
         progress attempts
     in
     let progress =
       {
         progress with
-        run = { progress.run with Run.position = Run.pause_running_items progress.run.Run.position };
+        run =
+          {
+            progress.run with
+            Run.position = Run.pause_running_items progress.run.Run.position;
+          };
       }
     in
     let message =
       Printf.sprintf
-        "interrupted: %s stopped before it finished and its skill sets on_interrupt: escalate - \
-         check the workspace, then resume, skip, or attach"
+        "interrupted: %s stopped before it finished and its skill sets \
+         on_interrupt: escalate - check the workspace, then resume, skip, or \
+         attach"
         (String.concat ", "
            (List.map
               (fun (attempt : Run.attempt) ->
                 Printf.sprintf "%s (%s)" attempt.Run.skill attempt.Run.attempt_id)
               attempts))
     in
-    let progress = { progress with run = { progress.run with Run.error = Some message } } in
+    let progress =
+      { progress with run = { progress.run with Run.error = Some message } }
+    in
     let* () = record_missing_metering engine progress.run in
     finish engine progress Run.Paused
 
-  let resume_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ()) ?(skip = false) ~root ~run_id
+  (* The deadline is durable, so a crash never extends it. *)
+  let attempt_has_timed_out ~now (attempt : Run.attempt) =
+    Option.is_some attempt.Run.timeout_requested_at
+    ||
+    match Option.bind attempt.Run.deadline_at Run.epoch_of_iso8601 with
+    | Some deadline -> now >= deadline
+    | None -> false
+
+  (* The workflow step an attempt ran, from the coordinates in its step key. *)
+  let workflow_step_of_attempt engine ~run_id (attempt : Run.attempt) =
+    let step_in_entry entry step_index =
+      match entry with
+      | Workflow.Step step -> Some step
+      | Workflow.Retry retry -> List.nth_opt retry.Workflow.retry_steps step_index
+      | Workflow.For_each _ -> None
+    in
+    match Run.coordinates_of_step_key ~run_id attempt.Run.step_key with
+    | None -> None
+    | Some coordinates -> (
+        match
+          ( List.nth_opt engine.entries coordinates.Run.coordinate_entry_index,
+            coordinates.Run.coordinate_body_index )
+        with
+        | Some (Workflow.For_each for_each), Some body_index ->
+            Option.bind (List.nth_opt for_each.Workflow.body body_index)
+              (fun entry -> step_in_entry entry coordinates.Run.coordinate_step_index)
+        | Some entry, None ->
+            step_in_entry entry coordinates.Run.coordinate_step_index
+        | _ -> None)
+
+  (* Exit code -1: jig never saw the process exit. *)
+  let timed_out_step_record engine (run : Run.t) (attempt : Run.attempt)
+      ~finished_at =
+    let stdout =
+      match attempt.Run.stdout_path with
+      | Some path -> Result.value (File.read path) ~default:""
+      | None -> ""
+    in
+    let item_index =
+      Option.bind
+        (Run.coordinates_of_step_key ~run_id:run.Run.id attempt.Run.step_key)
+        (fun coordinates -> coordinates.Run.coordinate_item_index)
+    in
+    (* A command step runs no model, so its timeout costs nothing. *)
+    let cost =
+      match workflow_step_of_attempt engine ~run_id:run.Run.id attempt with
+      | Some { Workflow.action = Workflow.Command_step _; _ } -> Metering.Cost_usd 0.0
+      | Some _ | None -> Metering.Unknown_cost
+    in
+    let item_key =
+      match (item_index, run.Run.position.Run.for_each) with
+      | Some index, Some state ->
+          Option.map Items.key (List.nth_opt state.Run.items index)
+      | _ -> None
+    in
+    {
+      Run.skill = attempt.Run.skill;
+      outcome = Run.Timeout;
+      exit_code = -1;
+      cost;
+      tier = attempt.Run.tier;
+      stdout;
+      stderr = "";
+      handoff =
+        Some
+          (timeout_handoff ~attempt ~description:"The previous attempt" stdout);
+      handoff_error = None;
+      session_id = attempt.Run.session_id;
+      item_index;
+      item_key;
+      attempt = Some { attempt with Run.stdout_path = None };
+      resumed = false;
+      started_at = attempt.Run.started_at;
+      finished_at;
+    }
+
+  (** Finishes timed-out attempts in flight as timeout steps: mark, stop, then save. *)
+  let finish_timed_out_attempts engine (run : Run.t) =
+    let host = Unix.gethostname () in
+    let now = Unix.gettimeofday () in
+    let timed_out_attempts =
+      List.filter
+        (fun (attempt : Run.attempt) ->
+          (attempt.Run.child_host = None || attempt.Run.child_host = Some host)
+          && attempt_has_timed_out ~now attempt)
+        (List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight))
+    in
+    if timed_out_attempts = [] then Ok run
+    else
+      let now_text = Run.iso8601_milliseconds now in
+      let marked_attempts =
+        List.map
+          (fun (attempt : Run.attempt) ->
+            match attempt.Run.timeout_requested_at with
+            | Some _ -> attempt
+            | None -> { attempt with Run.timeout_requested_at = Some now_text })
+          timed_out_attempts
+      in
+      let with_marks =
+        {
+          run with
+          Run.attempts_in_flight =
+            List.fold_left
+              (fun attempts (attempt : Run.attempt) ->
+                Run.Step_key_map.add attempt.Run.step_key attempt attempts)
+              run.Run.attempts_in_flight marked_attempts;
+        }
+      in
+      let mark_saved = Store_port.save ~runs_dir:(runs_dir engine) with_marks in
+      let grace_seconds =
+        float_of_int engine.config.Config.timeout.Step_timeout.grace_seconds
+      in
+      List.iter
+        (fun (attempt : Run.attempt) ->
+          match attempt.Run.child_pid with
+          | Some pid
+            when Process_identity.is_running ~pid
+                   ~recorded_start_time:attempt.Run.child_start_time ->
+              Process_group.terminate_recorded_process_group ~grace_seconds pid
+          | Some _ | None -> ())
+        marked_attempts;
+      let* _ =
+        Result.map_error
+          (fun message ->
+            Printf.sprintf
+              "run: could not save the timeout mark of a timed-out attempt \
+               (%s); jig stopped the attempt"
+              message)
+          mark_saved
+      in
+      let records =
+        List.map
+          (timed_out_step_record engine with_marks ~finished_at:now_text)
+          marked_attempts
+      in
+      let settled =
+        {
+          with_marks with
+          Run.steps = with_marks.Run.steps @ records;
+          attempts_in_flight =
+            List.fold_left
+              (fun attempts (attempt : Run.attempt) ->
+                Run.Step_key_map.remove attempt.Run.step_key attempts)
+              with_marks.Run.attempts_in_flight marked_attempts;
+        }
+      in
+      let* _ = Store_port.save ~runs_dir:(runs_dir engine) settled in
+      let* () =
+        List.fold_left
+          (fun previous (record : Run.step_record) ->
+            let* () = previous in
+            match record.Run.attempt with
+            | Some attempt ->
+                record_attempt_metering engine
+                  (finished_metering_event ~run_id:settled.Run.id record attempt)
+            | None -> Ok ())
+          (Ok ()) records
+      in
+      List.iter engine.on_step records;
+      Ok settled
+
+  let resume_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
+      ?(skip = false) ~root ~run_id
       ~guidance () =
     let runs_directory = Project.runs_dir ~root in
     with_run_lock ~runs_dir:runs_directory ~run_id @@ fun () ->
@@ -1592,10 +2246,12 @@ struct
       | Run.Paused | Run.Running -> Ok ()
       | status ->
           Error
-            (Printf.sprintf "run %s is %s; only paused (or interrupted running) runs can be resumed"
-               run_id (Run.string_of_status status))
+            (Printf.sprintf
+               "run %s is %s; only paused (or interrupted running) runs can \
+                be resumed"
+               run_id
+               (Run.string_of_status status))
     in
-    let* () = Process_identity.refuse_while_attempts_run existing in
     let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
@@ -1603,7 +2259,9 @@ struct
       match existing.Run.workspace with
       | Some path when not (Sys.file_exists path) ->
           Error
-            (Printf.sprintf "run %s used isolated workspace %s, which no longer exists" run_id path)
+            (Printf.sprintf
+               "run %s used isolated workspace %s, which no longer exists"
+               run_id path)
       | _ -> Ok ()
     in
     let engine =
@@ -1622,6 +2280,8 @@ struct
         worker_link = None;
       }
     in
+    let* existing = finish_timed_out_attempts engine existing in
+    let* () = Process_identity.refuse_while_attempts_run existing in
     let* () =
       if skip && Run.runs_items_in_parallel existing.Run.position then
         Error parallel_items_refuse_one_item_message
@@ -1630,30 +2290,46 @@ struct
     let last_handoff = Run.last_handoff existing in
     let run =
       Run.mark_attempts_interrupted
-        { existing with Run.status = Run.Running; finished_at = None; error = None }
+        {
+          existing with
+          Run.status = Run.Running;
+          finished_at = None;
+          error = None;
+        }
     in
     let attempts_to_escalate =
       List.filter
-        (fun (_, (attempt : Run.attempt)) -> attempt.Run.on_interrupt = Skill.Escalate)
+        (fun (_, (attempt : Run.attempt)) ->
+          attempt.Run.on_interrupt = Skill.Escalate)
         (Run.Step_key_map.bindings existing.Run.attempts_in_flight)
     in
     (* Guidance or a skip is already the human's decision. *)
-    if attempts_to_escalate <> [] && (not skip) && Option.is_none guidance then
+    if attempts_to_escalate <> [] && (not skip) && Option.is_none guidance
+    then
       pause_for_interruption engine
-        { run; last_handoff; guidance = None }
+        { run; last_handoff; guidance = None; resumed = false }
         (List.map snd attempts_to_escalate)
-    else if skip then (
-      let* record, run = human_skip ~entries:workflow.Workflow.entries ~guidance run in
+    else if skip then
+      let* record, run =
+        human_skip ~entries:workflow.Workflow.entries ~guidance run
+      in
       on_step record;
-      drive engine { run; last_handoff = record.Run.handoff; guidance = None })
-    else drive engine { run; last_handoff; guidance }
+      drive engine
+        {
+          run;
+          last_handoff = record.Run.handoff;
+          guidance = None;
+          resumed = false;
+        }
+    else drive engine { run; last_handoff; guidance; resumed = true }
 
   (* After an interactive attach, the same session is resumed headlessly and
      asked for its handoff; that result completes the paused entry as if the
      step had just executed. An unparseable reply changes nothing - the run
      stays paused on disk and the caller reports the error. The chat runs
      inside [collect_handoff], under the run lock. *)
-  let continue_attached ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ()) ~root ~run_id
+  let continue_attached ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
+      ~root ~run_id
       ~(collect_handoff : unit -> (Executor.exec_result, string) result) () =
     let runs_directory = Project.runs_dir ~root in
     with_run_lock ~runs_dir:runs_directory ~run_id @@ fun () ->
@@ -1663,7 +2339,9 @@ struct
       | Run.Paused | Run.Running -> Ok ()
       | status ->
           Error
-            (Printf.sprintf "run %s is %s; only paused runs can continue from an attach" run_id
+            (Printf.sprintf
+               "run %s is %s; only paused runs can continue from an attach"
+               run_id
                (Run.string_of_status status))
     in
     let* () = Process_identity.refuse_while_attempts_run existing in
@@ -1674,7 +2352,9 @@ struct
       match existing.Run.workspace with
       | Some path when not (Sys.file_exists path) ->
           Error
-            (Printf.sprintf "run %s used isolated workspace %s, which no longer exists" run_id path)
+            (Printf.sprintf
+               "run %s used isolated workspace %s, which no longer exists"
+               run_id path)
       | _ -> Ok ()
     in
     let* () =
@@ -1686,17 +2366,23 @@ struct
     let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     let* () =
       match outcome with
+      | Run.Timeout ->
+          Error
+            "attach: the hand-back timed out before the session replied; the \
+             run is unchanged - re-attach, or resume with --guidance or --skip"
       | Run.Invalid_handoff ->
           Error
             (Printf.sprintf
-               "attach: the session's reply carried no parseable handoff (%s); the run is \
-                unchanged - re-attach, or resume with --guidance or --skip"
+               "attach: the session's reply carried no parseable handoff \
+                (%s); the run is unchanged - re-attach, or resume with \
+                --guidance or --skip"
                (Option.value handoff_error ~default:"missing block"))
       | _ -> Ok ()
     in
     let entry_index = existing.Run.position.Run.entry_index in
     let* skill =
-      skip_target_skill ~entries:workflow.Workflow.entries ~position:existing.Run.position
+      skip_target_skill ~entries:workflow.Workflow.entries
+        ~position:existing.Run.position
     in
     let engine =
       {
@@ -1728,10 +2414,11 @@ struct
             step_key = None;
             attempt_id = None;
             interrupted = false;
+            timed_out = false;
             recorded_at = Run.iso8601 (Unix.gettimeofday ());
           }
     in
-    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let now = Run.record_timestamp_now () in
     let item_index, item_key = position_item existing.Run.position in
     let record =
       {
@@ -1748,6 +2435,7 @@ struct
         item_index;
         item_key;
         attempt = None;
+        resumed = true;
         started_at = now;
         finished_at = now;
       }
@@ -1774,17 +2462,22 @@ struct
           {
             run with
             Run.position =
-              advance_after_human_pass ~entries:workflow.Workflow.entries existing.Run.position;
+              advance_after_human_pass ~entries:workflow.Workflow.entries
+                existing.Run.position;
           }
         in
-        drive engine { run; last_handoff = handoff; guidance = None }
+        drive engine
+          { run; last_handoff = handoff; guidance = None; resumed = false }
     | Run.Escalate ->
-        finish_with_metering { run; last_handoff = handoff; guidance = None } Run.Paused
+        finish_with_metering
+          { run; last_handoff = handoff; guidance = None; resumed = false }
+          Run.Paused
     | Run.Fail ->
         (* Inside a forEach the failing unit is the current body entry. *)
         let failing_entry =
           match
-            (List.nth_opt workflow.Workflow.entries entry_index, existing.Run.position.Run.for_each)
+            ( List.nth_opt workflow.Workflow.entries entry_index,
+              existing.Run.position.Run.for_each )
           with
           | Some (Workflow.For_each for_each), Some state ->
               List.nth_opt for_each.Workflow.body state.Run.body_index
@@ -1801,8 +2494,13 @@ struct
              still needs the human, so the run stays theirs. *)
           | _ -> Run.Paused
         in
-        finish_with_metering { run; last_handoff = handoff; guidance = None } status
-    | Run.Invalid_handoff -> Error "attach: unreachable - rejected above"
+        finish_with_metering
+          { run; last_handoff = handoff; guidance = None; resumed = false }
+          status
+    | Run.Invalid_handoff | Run.Timeout ->
+        Error "attach: unreachable - rejected above"
 end
 
-module Default = Make (Executor.Local) (Model_provider.Default) (Metering.Jsonl) (Store.Filesystem)
+module Default =
+  Make (Executor.Local) (Model_provider.Default) (Metering.Jsonl)
+    (Store.Filesystem)

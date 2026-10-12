@@ -36,6 +36,19 @@ harness:
 #     - --permission-mode
 #     - acceptEdits
 
+# Optional: the wall-clock limit of each step attempt. Past it, jig sends
+# SIGTERM to the step's process group, waits the grace period, then sends
+# SIGKILL, and records the outcome timeout (routed like fail). Values need
+# a unit (s, m, h) or off. A skill step takes its tier's limit, else
+# default; a command step takes command. The first three values are the
+# defaults; tiers has none.
+# timeout:
+#   default: 60m
+#   command: 30m
+#   grace: 10s
+#   tiers:
+#     mechanical: 15m
+
 # Optional: wrap every harness invocation in an OS-level sandbox. The wrapper
 # must forward SIGTERM to the harness, or take it down when the wrapper dies.
 # wrapper:

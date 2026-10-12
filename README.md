@@ -84,6 +84,12 @@ total cost: $3.6700
 by tier: default $3.0400 (4 steps); mechanical $0.6300 (3 steps)
 ```
 
+## Timeouts
+
+Every step attempt has a wall-clock limit from `timeout:` in `config.yaml` (60m for skill steps, 30m for command steps, per tier if you like).
+At the limit, jig stops the step's process group and records the outcome `timeout`, which routes like `fail`.
+See [step timeouts](docs/writing-a-workflow.md#step-timeouts).
+
 ## The field guide
 
 `.jig/FIELDGUIDE.md` is repo knowledge agents accumulate across runs -
@@ -104,6 +110,62 @@ run report; each step's full output lives in the run record.
 
 ![jig run rendering a workflow mid-run](docs/run-live.png)
 
+## Traces
+
+`jig status <run-id> --otlp` prints the run as one OpenTelemetry trace in OTLP/JSON.
+The run is the root span and each step attempt is a child span, with its step key, attempt id, tier, outcome, cost, token usage, and forEach item as attributes.
+Handoffs, escalations, timeouts, interruptions, and resumes are span events; a timed-out or interrupted attempt has an error status.
+The trace id derives from the run id and each span id from the attempt id, so a paused and resumed run stays one trace, and exporting the same run twice gives the same ids.
+A span never changes once it appears in an export.
+A human skip or an attach hand-back has no attempt id, so its span id derives from its position in the run record.
+The root span appears once the run is terminal (completed, failed, or aborted); before that, the export holds the finished attempts only.
+
+jig sends nothing itself.
+Pipe the output to any OTLP/HTTP endpoint, for example a local [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) (install it per its README: Homebrew, release binaries, or Docker):
+
+```sh
+otel-desktop-viewer            # UI on http://localhost:8000, OTLP/HTTP on localhost:4318
+
+jig status <run-id> --otlp \
+  | curl -sf -X POST -H 'Content-Type: application/json' \
+      --data-binary @- http://localhost:4318/v1/traces
+```
+
+Open the viewer, find the `invoke_workflow <workflow>` trace, and expand it to see the steps.
+The viewer keeps traces in memory by default; start it with `--db <file>` to keep them across restarts.
+
+Receivers such as otel-desktop-viewer reject a whole batch that holds a span id they already have, so send each span once.
+Plain `--otlp` always prints the full trace: send it once, after the run is terminal.
+To send a run in parts, add `--new-spans-only`: it prints only the spans that no earlier `--new-spans-only` call printed for that run, and records their ids in `runs/<run-id>.otlp-sent`.
+With nothing new, it prints an empty trace, which receivers accept.
+jig records the ids once it prints them, so a failed send does not repeat; export again with plain `--otlp` to a fresh receiver to recover.
+
+To export at every pause and every finish, put the incremental pipe in the `notify` hook in `.jig/config.yaml` (it runs from the project root, so `jig` must be on `PATH`):
+
+```yaml
+notify:
+  - sh
+  - -c
+  - >-
+    jig status {run_id} --otlp --new-spans-only
+    | curl -sf -X POST -H 'Content-Type: application/json'
+    --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}/v1/traces"
+```
+
+Every process of an attempt gets `TRACEPARENT` set to the attempt's span, next to `JIG_STEP_KEY` and `JIG_ATTEMPT_ID`: the harness (also a `continue:` session and a parallel forEach item), a command step, and the `probe:` command.
+A harness that exports its own traces nests them under the attempt.
+The `jig attach` chat and its hand-back get the `TRACEPARENT` of the span the hand-back record gets.
+Claude Code reads `TRACEPARENT` in `-p` mode once its tracing is on, for example:
+
+```sh
+export CLAUDE_CODE_ENABLE_TELEMETRY=1 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Configuration is the standard `OTEL_*` environment variables only.
+`OTEL_SERVICE_NAME` (default `jig`) and `OTEL_RESOURCE_ATTRIBUTES` set the resource of the export, and `OTEL_SDK_DISABLED=true` stops jig from setting `TRACEPARENT`.
+
 ## The verbs
 
 ```
@@ -115,7 +177,8 @@ jig run --resume <run-id> [--guidance "…"]  # continue a paused run
   [--skip]                                  #   a human finished the paused step; record it and move on
 jig attach <run-id>                         # open the paused step's session; exiting the chat hands back
 jig watch <run-id>                          # attach the live view to a running (or finished) run
-jig status <run-id> [--json]                # inspect a run
+jig status <run-id> [--json | --otlp]       # inspect a run, or print it as an OpenTelemetry trace
+  [--new-spans-only]                        #   with --otlp: only spans not printed before
 jig list workflows|runs [--json]            # discover what is runnable, and what ran
 jig validate <workflow>                     # lint before running
 ```
@@ -171,6 +234,15 @@ mkdir -p <repo>/.claude/skills && cp -R skills/jig <repo>/.claude/skills/   # on
 
 The skill turns a ticket into a supervised run: condense the ticket into a task, validate, launch with `--detach`, poll `jig status --json`, triage pauses (answer derivable questions itself, surface the rest verbatim), and report the outcome with cost and artifacts.
 It never executes a workflow's YAML by hand - the run record, metering, and resume semantics exist only through the binary.
+
+## Evals
+
+[`evals/`](evals/README.md) measures whether a workflow solves real tasks: it runs `jig run bugfix` and a plain Claude Code baseline on small seeded-bug repositories under [Harbor](https://github.com/harbor-framework/harbor), in Docker, and reports solve rate, unattended solve rate, cost per trial and per tier, retry iterations, escalations, and invalid handoffs.
+It lives outside the binary and spends model tokens, so it runs only on demand:
+
+```sh
+uv run --project evals jig-evals --model anthropic/claude-sonnet-4-6
+```
 
 ## Docs
 

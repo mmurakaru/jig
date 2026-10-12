@@ -2,11 +2,14 @@
 
 let rec write_all descriptor bytes offset =
   if offset < Bytes.length bytes then
-    let written = Unix.write descriptor bytes offset (Bytes.length bytes - offset) in
+    let written =
+      Unix.write descriptor bytes offset (Bytes.length bytes - offset)
+    in
     write_all descriptor bytes (offset + written)
 
 (* Blocks until the whole message is in the pipe. *)
-let send_worker_message descriptor value = write_all descriptor (Marshal.to_bytes value []) 0
+let send_worker_message descriptor value =
+  write_all descriptor (Marshal.to_bytes value []) 0
 
 type reader = { descriptor : Unix.file_descr; pending : Buffer.t }
 

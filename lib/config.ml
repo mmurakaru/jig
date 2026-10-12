@@ -15,6 +15,7 @@ type t = {
   tiers : (string * string list) list;
   (* How many forEach items run at once; above 1 needs an isolated run. *)
   concurrency : int;
+  timeout : Step_timeout.config;
 }
 
 let expand_home path =
@@ -30,7 +31,11 @@ let string_list_field fields ~key =
   match List.assoc_opt key fields with
   | None -> Ok None
   | Some (`A entries) ->
-      let strings = List.filter_map (function `String value -> Some value | _ -> None) entries in
+      let strings =
+        List.filter_map
+          (function `String value -> Some value | _ -> None)
+          entries
+      in
       if List.length strings <> List.length entries then
         Error (Printf.sprintf "config: %s must be a list of strings" key)
       else Ok (Some strings)
@@ -49,12 +54,20 @@ let tiers_field fields =
           match value with
           | `A entries ->
               let strings =
-                List.filter_map (function `String value -> Some value | _ -> None) entries
+                List.filter_map
+                  (function `String value -> Some value | _ -> None)
+                  entries
               in
-              if List.length strings <> List.length entries || strings = [] then
-                Error (Printf.sprintf "config: tier %s must be a non-empty list of strings" name)
+              if List.length strings <> List.length entries || strings = []
+              then
+                Error
+                  (Printf.sprintf
+                     "config: tier %s must be a non-empty list of strings" name)
               else Ok ((name, strings) :: tiers)
-          | _ -> Error (Printf.sprintf "config: tier %s must be a non-empty list of strings" name))
+          | _ ->
+              Error
+                (Printf.sprintf
+                   "config: tier %s must be a non-empty list of strings" name))
         pairs (Ok [])
   | Some _ -> Error "config: tiers must be a mapping of names to commands"
 
@@ -62,7 +75,8 @@ let tiers_field fields =
 let concurrency_field fields =
   match List.assoc_opt "concurrency" fields with
   | None -> Ok 1
-  | Some (`Float value) when Float.is_integer value && value >= 1.0 && value <= 256.0 ->
+  | Some (`Float value)
+    when Float.is_integer value && value >= 1.0 && value <= 256.0 ->
       Ok (int_of_float value)
   | Some _ -> Error "config: concurrency must be a whole number from 1 to 256"
 
@@ -79,6 +93,11 @@ let of_yaml yaml =
       let* continue_session = string_list_field fields ~key:"continue" in
       let* probe = string_list_field fields ~key:"probe" in
       let* concurrency = concurrency_field fields in
+      let* timeout =
+        match List.assoc_opt "timeout" fields with
+        | None -> Ok Step_timeout.default_config
+        | Some value -> Step_timeout.of_yaml value
+      in
       match harness with
       | None -> Error "config: missing required key: harness"
       | Some [] -> Error "config: harness must not be empty"
@@ -87,7 +106,8 @@ let of_yaml yaml =
             {
               harness;
               wrapper = Option.value wrapper ~default:[];
-              skill_paths = List.map expand_home (Option.value skill_paths ~default:[]);
+              skill_paths =
+                List.map expand_home (Option.value skill_paths ~default:[]);
               attach = Option.value attach ~default:[];
               attach_headless = Option.value attach_headless ~default:[];
               notify = Option.value notify ~default:[];
@@ -95,17 +115,21 @@ let of_yaml yaml =
               probe = Option.value probe ~default:[];
               tiers;
               concurrency;
+              timeout;
             })
   | _ -> Error "config: expected a mapping at the top level"
 
 let of_string content =
   match Yaml.of_string content with
   | Ok yaml -> of_yaml yaml
-  | Error (`Msg message) -> Error (Printf.sprintf "config: invalid yaml: %s" message)
+  | Error (`Msg message) ->
+      Error (Printf.sprintf "config: invalid yaml: %s" message)
 
 let load ~jig_dir =
   let path = Filename.concat jig_dir "config.yaml" in
-  let* content = Result.map_error (fun message -> "config: " ^ message) (File.read path) in
+  let* content =
+    Result.map_error (fun message -> "config: " ^ message) (File.read path)
+  in
   of_string content
 
 (* Validation needs skill resolution but not a harness; a missing config is
@@ -114,8 +138,7 @@ let load_skill_paths ~jig_dir =
   if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then Ok []
   else Result.map (fun config -> config.skill_paths) (load ~jig_dir)
 
-(* Same shape for tiers: validation warns about unmapped tiers when a
-   config exists, and stays quiet when there is none to check against. *)
-let load_tiers ~jig_dir =
+(* None without a valid config, so validation warnings stay quiet then. *)
+let load_if_valid ~jig_dir =
   if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then None
-  else match load ~jig_dir with Ok config -> Some config.tiers | Error _ -> None
+  else Result.to_option (load ~jig_dir)

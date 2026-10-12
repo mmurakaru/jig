@@ -3,7 +3,6 @@
    fallback. Floors keep the box layout sane on tiny terminals. *)
 
 external ioctl_columns : unit -> int = "jig_terminal_columns"
-
 external ioctl_rows : unit -> int = "jig_terminal_rows"
 
 let from_env name fallback =

@@ -22,9 +22,15 @@ let path ~runs_dir ~run_id = Filename.concat runs_dir (run_id ^ ".current")
 let to_json pointer =
   `Assoc
     ([ ("skill", `String pointer.skill) ]
-    @ (match pointer.item_key with Some key -> [ ("item_key", `String key) ] | None -> [])
-    @ (match pointer.item_index with Some index -> [ ("item_index", `Int index) ] | None -> [])
-    @ (match pointer.tier with Some tier -> [ ("tier", `String tier) ] | None -> [])
+    @ (match pointer.item_key with
+      | Some key -> [ ("item_key", `String key) ]
+      | None -> [])
+    @ (match pointer.item_index with
+      | Some index -> [ ("item_index", `Int index) ]
+      | None -> [])
+    @ (match pointer.tier with
+      | Some tier -> [ ("tier", `String tier) ]
+      | None -> [])
     @ [
         ("stdout_path", `String pointer.stdout_path);
         ("stderr_path", `String pointer.stderr_path);
@@ -33,7 +39,9 @@ let to_json pointer =
 
 let of_json json =
   let string_member key =
-    match Yojson.Safe.Util.member key json with `String value -> Some value | _ -> None
+    match Yojson.Safe.Util.member key json with
+    | `String value -> Some value
+    | _ -> None
   in
   match
     ( string_member "skill",
@@ -73,9 +81,13 @@ let read ~runs_dir ~run_id =
   let file = path ~runs_dir ~run_id in
   if not (Sys.file_exists file) then []
   else
-    match Yojson.Safe.from_string (In_channel.with_open_text file In_channel.input_all) with
+    match
+      Yojson.Safe.from_string
+        (In_channel.with_open_text file In_channel.input_all)
+    with
     | `List entries -> List.filter_map of_json entries
     | _ -> []
     | exception _ -> []
 
-let remove ~runs_dir ~run_id = try Sys.remove (path ~runs_dir ~run_id) with Sys_error _ -> ()
+let remove ~runs_dir ~run_id =
+  try Sys.remove (path ~runs_dir ~run_id) with Sys_error _ -> ()

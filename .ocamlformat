@@ -1,0 +1,11 @@
+# Pinned so local and CI formatting agree.
+version = 0.29.0
+profile = default
+# Same line length as oxfmt's printWidth.
+margin = 100
+# A blank line between top-level items, like the statement-padding lint rule.
+module-item-spacing = sparse
+# Keep one blank line the author put between steps of a sequence.
+sequence-blank-line = preserve-one
+# Keep the author's grouping choice, like oxfmt's objectWrap "preserve".
+exp-grouping = preserve

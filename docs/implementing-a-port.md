@@ -65,8 +65,9 @@ process (`runs/<id>.json.tmp.<pid>`), fsyncs it, renames it over
 `list_runs` returns the runs it could read (newest first) and, apart, the
 records it could not. One unreadable record never fails the listing.
 
-The runner takes `acquire_run_lock` before the first save of a run, start
-or resume, and calls `release_run_lock` after the last. `acquire_run_lock`
+The runner takes `acquire_run_lock` before the first save of a run (start,
+resume, or attach, where the lock covers the chat too) and calls
+`release_run_lock` after the last. `acquire_run_lock`
 returns `Error` while another live process holds the lock; that message is
 what `jig run --resume` prints. The default lock is `runs/<id>.lock`, a JSON
 file with the holder's pid, host, and start time. It is placed with a hard

@@ -75,7 +75,8 @@ harness:
 
 # Optional: on resume, reopen a step's interrupted session to finish it,
 # instead of a new attempt. Used for skills with on_interrupt: recover (the
-# default) whose attempt has a jig-assigned session id; {session_id} is
+# default) or escalate (after a human resumes) whose attempt ran on the
+# default harness with a jig-assigned session id; {session_id} is
 # substituted and the recovery prompt is appended as the final argument.
 # Without it, a new attempt starts and its prompt describes the
 # interruption.

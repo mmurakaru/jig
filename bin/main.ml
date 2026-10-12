@@ -273,13 +273,15 @@ let latest_run_id ~runs_dir =
       Error "no runs yet - nothing under runs/"
   | Ok { Jig_core.Store.runs = newest :: _; _ } -> Ok newest.Jig_core.Run.id
 
-let show_status run_id latest json_output otlp_output =
+let show_status run_id latest json_output otlp_output new_spans_only =
   let root = Sys.getcwd () in
   let runs_dir = Jig_core.Project.runs_dir ~root in
   let resolved =
     match (run_id, latest) with
     | _ when json_output && otlp_output ->
         Error "pass --json or --otlp, not both"
+    | _ when new_spans_only && not otlp_output ->
+        Error "--new-spans-only needs --otlp"
     | Some _, true -> Error "pass a run id or --latest, not both"
     | Some id, false -> Ok id
     | None, true -> latest_run_id ~runs_dir
@@ -294,6 +296,21 @@ let show_status run_id latest json_output otlp_output =
       exit 1
   | Ok run when json_output ->
       print_endline (Yojson.Safe.pretty_to_string (Jig_core.Run.to_json run))
+  | Ok run when otlp_output && new_spans_only -> (
+      let resource_attributes =
+        Jig_core.Otlp.resource_attributes_of_environment ~getenv:Sys.getenv_opt
+      in
+      match
+        Jig_core.Otlp_sent_spans.print_new_spans ~runs_dir ~resource_attributes
+          ~print:(fun text ->
+            print_endline text;
+            flush stdout)
+          run
+      with
+      | Ok () -> ()
+      | Error message ->
+          Printf.eprintf "jig: %s\n" message;
+          exit 1)
   | Ok run when otlp_output ->
       let resource_attributes =
         Jig_core.Otlp.resource_attributes_of_environment ~getenv:Sys.getenv_opt
@@ -647,11 +664,20 @@ let otlp_flag =
   in
   Arg.(value & flag & info [ "otlp" ] ~doc)
 
+let new_spans_only_flag =
+  let doc =
+    "With --otlp, print only spans that no earlier --new-spans-only call \
+     printed for this run (recorded in runs/<run-id>.otlp-sent), so a \
+     receiver never sees a span id twice."
+  in
+  Arg.(value & flag & info [ "new-spans-only" ] ~doc)
+
 let status_cmd =
   let doc = "Inspect a run's progress, outcomes, and last handoff." in
   Cmd.v (Cmd.info "status" ~doc)
     Term.(
-      const show_status $ run_id_arg $ latest_flag $ json_flag $ otlp_flag)
+      const show_status $ run_id_arg $ latest_flag $ json_flag $ otlp_flag
+      $ new_spans_only_flag)
 
 let watch_run run_id latest =
   let root = Sys.getcwd () in

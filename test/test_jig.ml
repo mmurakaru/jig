@@ -7506,6 +7506,102 @@ let test_sub_second_step_exports_a_non_zero_duration () =
             (Printf.sprintf "expected one step span, got %d"
                (List.length spans)))
 
+let test_otlp_emitted_spans_never_change () =
+  let export status =
+    Otlp.spans_of_run (otlp_fixture_run ~status)
+    |> List.map (fun span -> (Otlp.span_id_of_span span, span))
+  in
+  let completed = export Run.Completed in
+  List.iter
+    (fun (span_id, paused_span) ->
+      Alcotest.(check (option string))
+        ("span " ^ span_id ^ " is the same once the run completes")
+        (Some (Yojson.Safe.to_string paused_span))
+        (Option.map Yojson.Safe.to_string (List.assoc_opt span_id completed)))
+    (export Run.Paused)
+
+let test_otlp_sent_ledger_ignores_a_torn_last_line () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  mkdir_p runs_dir;
+  write_file
+    (Otlp_sent_spans.path ~runs_dir ~run_id:"r")
+    "0123456789abcdef\nfedcba98";
+  Alcotest.(check (result (list string) string))
+    "the torn line does not count" (Ok [ "0123456789abcdef" ])
+    (Otlp_sent_spans.read_sent_span_ids ~runs_dir ~run_id:"r");
+  Alcotest.(check (result unit string))
+    "append" (Ok ())
+    (Otlp_sent_spans.append_sent_span_ids ~runs_dir ~run_id:"r"
+       [ "1111111111111111" ]);
+  Alcotest.(check (result (list string) string))
+    "an append after a torn line stays readable"
+    (Ok [ "0123456789abcdef"; "1111111111111111" ])
+    (Otlp_sent_spans.read_sent_span_ids ~runs_dir ~run_id:"r")
+
+let print_new_spans_of root ~run_id =
+  let runs_dir = Project.runs_dir ~root in
+  let printed = ref [] in
+  let run =
+    match Store.Filesystem.load ~runs_dir ~id:run_id with
+    | Ok run -> run
+    | Error message -> Alcotest.fail message
+  in
+  (match
+     Otlp_sent_spans.print_new_spans ~runs_dir ~resource_attributes:[]
+       ~print:(fun text -> printed := text :: !printed)
+       run
+   with
+  | Ok () -> ()
+  | Error message -> Alcotest.fail message);
+  match !printed with
+  | [ text ] -> (run, Yojson.Safe.from_string text)
+  | _ -> Alcotest.fail "expected one printed document"
+
+let test_incremental_export_across_a_kill_never_repeats_a_span () =
+  let root = make_temp_root () in
+  let resumed_marker = Filename.quote (Filename.concat root "resumed") in
+  (* $PPID of the command's shell is the jig process driving the step. *)
+  setup_command_project root
+    ~yaml:
+      (Printf.sprintf
+         "name: cmd\n\
+          steps:\n\
+         \  - command: \"true\"\n\
+         \  - command: \"test -e %s || { touch %s; kill -9 $PPID; exit 1; }\"\n\
+         \  - command: \"true\"\n"
+         resumed_marker resumed_marker);
+  let run_id = "incremental-run" in
+  ignore
+    (in_child_process (fun () ->
+         ignore
+           (Runner.Default.execute_run ~run_id ~root ~workflow_name:"cmd"
+              ~task:"t" ~isolated:false ())));
+  wait_for_in_flight_children root ~run_id;
+  let _, first = print_new_spans_of root ~run_id in
+  (match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed after the resume" "completed"
+        (Run.string_of_status run.Run.status)
+  | Error message -> Alcotest.fail message);
+  let completed, second = print_new_spans_of root ~run_id in
+  let _, third = print_new_spans_of root ~run_id in
+  let span_ids document = List.map Otlp.span_id_of_span (otlp_spans document) in
+  let full = List.map Otlp.span_id_of_span (Otlp.spans_of_run completed) in
+  let sent = span_ids first @ span_ids second in
+  Alcotest.(check int) "the first export holds the finished step" 1
+    (List.length (span_ids first));
+  Alcotest.(check (list string))
+    "no span id repeats" (List.sort_uniq compare sent) (List.sort compare sent);
+  Alcotest.(check (list string))
+    "together they are the full export" (List.sort compare full)
+    (List.sort compare sent);
+  Alcotest.(check bool) "the full export has the interrupted attempt" true
+    (List.length full = 5);
+  Alcotest.(check string) "nothing new gives an empty, valid payload"
+    {|{"resourceSpans":[]}|}
+    (Yojson.Safe.to_string third)
+
 let test_otel_sdk_disabled_skips_traceparent () =
   let root = make_temp_root () in
   setup_project root
@@ -8195,5 +8291,11 @@ let () =
             test_otel_sdk_disabled_skips_traceparent;
           Alcotest.test_case "sub-second step has a non-zero duration" `Quick
             test_sub_second_step_exports_a_non_zero_duration;
+          Alcotest.test_case "emitted spans never change" `Quick
+            test_otlp_emitted_spans_never_change;
+          Alcotest.test_case "sent ledger ignores a torn last line" `Quick
+            test_otlp_sent_ledger_ignores_a_torn_last_line;
+          Alcotest.test_case "incremental export across a kill" `Quick
+            test_incremental_export_across_a_kill_never_repeats_a_span;
         ] );
     ]

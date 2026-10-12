@@ -447,7 +447,7 @@ let interrupted_attempt_spans (run : Run.t) =
     run.Run.interrupted_attempts
 
 (* The root waits for a terminal run: receivers keep a span's first copy. *)
-let traces_of_run ~resource_attributes (run : Run.t) =
+let spans_of_run (run : Run.t) =
   let run_id = run.Run.id in
   let step_spans =
     List.mapi
@@ -455,35 +455,47 @@ let traces_of_run ~resource_attributes (run : Run.t) =
       run.Run.steps
     @ interrupted_attempt_spans run
   in
-  let spans =
-    if run_is_terminal run then root_span run :: step_spans else step_spans
-  in
-  `Assoc
-    [
-      ( "resourceSpans",
-        `List
-          [
-            `Assoc
+  if run_is_terminal run then root_span run :: step_spans else step_spans
+
+let span_id_of_span span =
+  match Yojson.Safe.Util.member "spanId" span with
+  | `String span_id -> span_id
+  | _ -> ""
+
+(** One OTLP/JSON TracesData document; no spans gives an empty, valid one. *)
+let traces_document ~resource_attributes spans =
+  match spans with
+  | [] -> `Assoc [ ("resourceSpans", `List []) ]
+  | spans ->
+      `Assoc
+        [
+          ( "resourceSpans",
+            `List
               [
-                ( "resource",
-                  `Assoc
-                    [
-                      ( "attributes",
-                        `List
-                          (List.map
-                             (fun (key, value) ->
-                               attribute key (string_value value))
-                             resource_attributes) );
-                    ] );
-                ( "scopeSpans",
-                  `List
-                    [
+                `Assoc
+                  [
+                    ( "resource",
                       `Assoc
                         [
-                          ("scope", `Assoc [ ("name", `String "jig") ]);
-                          ("spans", `List spans);
-                        ];
-                    ] );
-              ];
-          ] );
-    ]
+                          ( "attributes",
+                            `List
+                              (List.map
+                                 (fun (key, value) ->
+                                   attribute key (string_value value))
+                                 resource_attributes) );
+                        ] );
+                    ( "scopeSpans",
+                      `List
+                        [
+                          `Assoc
+                            [
+                              ("scope", `Assoc [ ("name", `String "jig") ]);
+                              ("spans", `List spans);
+                            ];
+                        ] );
+                  ];
+              ] );
+        ]
+
+let traces_of_run ~resource_attributes run =
+  traces_document ~resource_attributes (spans_of_run run)

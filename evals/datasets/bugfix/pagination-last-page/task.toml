@@ -1,0 +1,19 @@
+schema_version = "1.4"
+
+[task]
+name = "jig/pagination-last-page"
+description = "A partial last page is not counted, so its items cannot be reached."
+keywords = ["bugfix", "python", "single-file"]
+
+[metadata]
+difficulty = "easy"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 1800.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 600.0

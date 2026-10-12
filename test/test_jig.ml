@@ -3927,7 +3927,11 @@ let test_subprocess_environment_reaches_only_the_child () =
       ~environment:
         [ ("JIG_TEST_OVERRIDDEN", "child"); ("JIG_TEST_ADDED", "added") ]
       ~argv:
-        [ "sh"; "-c"; "printf '%s %s' \"$JIG_TEST_OVERRIDDEN\" \"$JIG_TEST_ADDED\"" ]
+        [
+          "sh";
+          "-c";
+          "printf '%s %s' \"$JIG_TEST_OVERRIDDEN\" \"$JIG_TEST_ADDED\"";
+        ]
       ()
   with
   | Error message -> Alcotest.fail message

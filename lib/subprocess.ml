@@ -17,8 +17,6 @@ let posix_signal_number signal =
   else if signal = Sys.sigterm then 15
   else abs signal
 
-(* The parent's environment with each [overrides] name replaced or added,
-   as execve expects it: "NAME=value" strings. *)
 let environment_with_overrides overrides =
   let overridden entry =
     List.exists
@@ -41,8 +39,7 @@ let read_and_remove path =
    on one stream while we drain the other would deadlock. Fork/exec by hand
    because Unix.create_process cannot change the child's working directory.
    [on_spawn] fires in the parent once the child is running, with the capture
-   paths - a live view can tail them while this call blocks in waitpid.
-   [environment] adds or replaces variables for the child only. *)
+   paths - a live view can tail them while this call blocks in waitpid. *)
 let run ?cwd ?on_spawn ?(environment = []) ~argv () =
   match argv with
   | [] -> Error "subprocess: empty command"

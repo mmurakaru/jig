@@ -1,36 +1,27 @@
-(* OpenTelemetry view of a run: the OTLP/JSON trace that `jig status --otlp`
-   prints and the W3C TRACEPARENT each harness subprocess receives. Every id
-   derives from the run id, so a live step and any later export agree. *)
+(* Every id derives from the run id, so a live step and any export agree. *)
 
 (* MD5 from the stdlib Digest: deterministic, 16 bytes, no new dependency. *)
 let hex_digest text = Digest.to_hex (Digest.string text)
 
-(* OTLP trace id of a run: 32 lowercase hex characters. *)
 let trace_id_of_run ~run_id = hex_digest run_id
 
-(* Span id of the run's root span: 16 lowercase hex characters. *)
 let root_span_id_of_run ~run_id =
   String.sub (hex_digest (run_id ^ "#run")) 0 16
 
-(* Span id of the step at [step_index], its 0-based position in the record's
-   steps - known before the step runs because steps are append-only. *)
+(* Steps are append-only, so the index is known before the step runs. *)
 let step_span_id_of_run ~run_id ~step_index =
   String.sub (hex_digest (run_id ^ "#step:" ^ string_of_int step_index)) 0 16
 
-(* W3C trace context header value for a step span, sampled flag set. *)
 let traceparent_for_step ~run_id ~step_index =
   Printf.sprintf "00-%s-%s-01"
     (trace_id_of_run ~run_id)
     (step_span_id_of_run ~run_id ~step_index)
 
-(* OTEL_SDK_DISABLED=true (case-insensitive) disables telemetry. *)
 let telemetry_disabled ~getenv =
   match getenv "OTEL_SDK_DISABLED" with
   | Some value -> String.lowercase_ascii (String.trim value) = "true"
   | None -> false
 
-(* Extra environment for a step's subprocess: TRACEPARENT for the step span,
-   or nothing when telemetry is disabled. *)
 let traceparent_environment ~getenv ~run_id ~step_index =
   if telemetry_disabled ~getenv then []
   else [ ("TRACEPARENT", traceparent_for_step ~run_id ~step_index) ]
@@ -56,9 +47,7 @@ let percent_decode text =
   decode 0;
   Buffer.contents buffer
 
-(* Resource attributes from OTEL_RESOURCE_ATTRIBUTES (comma-separated,
-   percent-encoded key=value pairs) and OTEL_SERVICE_NAME, which wins for
-   service.name; service.name defaults to "jig". *)
+(* OTEL_SERVICE_NAME wins over service.name in OTEL_RESOURCE_ATTRIBUTES. *)
 let resource_attributes_of_environment ~getenv =
   let listed =
     match getenv "OTEL_RESOURCE_ATTRIBUTES" with
@@ -68,10 +57,11 @@ let resource_attributes_of_environment ~getenv =
           (fun pair ->
             match String.index_opt pair '=' with
             | None -> None
-            | Some split ->
-                let key = String.trim (String.sub pair 0 split) in
+            | Some equals_index ->
+                let key = String.trim (String.sub pair 0 equals_index) in
                 let value =
-                  String.sub pair (split + 1) (String.length pair - split - 1)
+                  String.sub pair (equals_index + 1)
+                    (String.length pair - equals_index - 1)
                 in
                 if key = "" then None
                 else Some (key, percent_decode (String.trim value)))
@@ -99,8 +89,7 @@ let string_array_value texts =
         `Assoc [ ("values", `List (List.map string_value texts)) ] );
     ]
 
-(* Nanoseconds since the epoch as a decimal string; the record keeps
-   whole seconds. *)
+(* The record keeps whole seconds. *)
 let unix_nano_of_iso8601 timestamp =
   match Run.epoch_of_iso8601 timestamp with
   | Some seconds -> Printf.sprintf "%d000000000" (int_of_float seconds)
@@ -131,8 +120,7 @@ let truncate_utf8 ~max_bytes text =
 
 let handoff_summary_limit = 1024
 
-(* gen_ai.usage.* from a harness usage object in the Claude Code shape; the
-   GenAI conventions count cached tokens inside input_tokens. *)
+(* The GenAI conventions count cached tokens inside input_tokens. *)
 let usage_attributes usage =
   let count key =
     match Yojson.Safe.Util.member key usage with
@@ -341,10 +329,7 @@ let run_is_terminal (run : Run.t) =
   | Run.Completed | Run.Failed | Run.Aborted -> true
   | Run.Running | Run.Paused -> false
 
-(* The run as one OTLP/JSON TracesData document. Each recorded step is a
-   child of the root span; the root span itself is emitted only once the run
-   is terminal, because receivers keep the first copy of a span and a paused
-   root would never show the final status. *)
+(* The root waits for a terminal run: receivers keep a span's first copy. *)
 let traces_of_run ~resource_attributes (run : Run.t) =
   let run_id = run.Run.id in
   let step_spans =

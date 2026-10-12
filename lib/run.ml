@@ -157,7 +157,9 @@ let step_to_json step =
     | Some key -> [ ("item_key", `String key) ]
     | None -> []
   in
-  let resumed_field = if step.resumed then [ ("resumed", `Bool true) ] else [] in
+  let resumed_field =
+    if step.resumed then [ ("resumed", `Bool true) ] else []
+  in
   `Assoc
     ([
        ("skill", `String step.skill);

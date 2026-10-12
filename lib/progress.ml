@@ -106,12 +106,14 @@ let detail_of_record (record : Run.step_record) =
         Some (Printf.sprintf "$%.2f" value)
     | _ -> None
   in
-  match (duration, cost, record.Run.tier) with
-  | None, None, None -> None
-  | duration_part, cost_part, tier_part ->
-      Some
-        (String.concat "  "
-           (List.filter_map Fun.id [ duration_part; cost_part; tier_part ]))
+  let timed_out =
+    if record.Run.outcome = Run.Timeout then Some "timed out" else None
+  in
+  match
+    List.filter_map Fun.id [ timed_out; duration; cost; record.Run.tier ]
+  with
+  | [] -> None
+  | parts -> Some (String.concat "  " parts)
 
 let apply t (event : Runner.run_event) =
   match event with
@@ -170,7 +172,7 @@ let apply t (event : Runner.run_event) =
       let outcome_status =
         match record.Run.outcome with
         | Run.Pass -> Done
-        | Run.Fail | Run.Invalid_handoff -> Failed
+        | Run.Fail | Run.Invalid_handoff | Run.Timeout -> Failed
         | Run.Escalate -> Paused
       in
       let detail = detail_of_record record in

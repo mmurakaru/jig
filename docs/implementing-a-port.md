@@ -17,6 +17,7 @@ module My_runner =
 val execute :
   ?on_spawn:(child_pid:int -> stdout_path:string -> stderr_path:string -> unit) ->
   ?environment:(string * string) list ->
+  ?time_limit:Subprocess.time_limit ->
   command:string list -> cwd:string -> prompt:string -> unit ->
   (Executor.exec_result, string) result
 ```
@@ -30,6 +31,13 @@ Call `on_spawn` once the harness process runs: the runner saves its pid in
 the attempt record, and the live view tails the capture files. Pass every
 `environment` pair to the harness process; it carries `JIG_STEP_KEY` and
 `JIG_ATTEMPT_ID`.
+
+`time_limit` carries the attempt's absolute `deadline`, a `grace_seconds`,
+and an `on_deadline` callback. At the deadline, call `on_deadline` first (the
+runner saves the timeout mark there), then stop the process: SIGTERM to its
+process group, the grace period, then SIGKILL. Return the output captured
+so far with `timed_out = true`; the runner records the outcome `timeout`
+from that flag, whatever `exit_code` says.
 
 **ModelProvider** - resolves a step to a concrete harness command.
 
@@ -57,7 +65,8 @@ most once per drive (never for a new run), keeps the ids in memory, and does
 not record an attempt id twice. The runner records an event after it saves
 the step, and a resume offers the event of every attempt in the run again,
 so an attempt whose event a crash lost is metered once. An attempt that a
-crash interrupted is metered with cost `unknown` and `interrupted: true`.
+crash interrupted is metered with cost `unknown` and `interrupted: true`;
+an attempt that timed out, with `timed_out: true` and cost `unknown` (a skill step) or 0 (a command step).
 
 **Store** - persists and loads run records, and owns the lock that lets
 one process at a time drive a run.

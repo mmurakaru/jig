@@ -58,6 +58,14 @@ let tier_warnings ~jig_dir ~skill_paths ~tiers (workflow : Workflow.t) =
                  tier))
         (List.sort_uniq compare (step_tiers @ skill_tiers))
 
+(* timeout.tiers names that tiers: does not map are likely typos. *)
+let timeout_tier_warnings (config : Config.t option) =
+  match config with
+  | None -> []
+  | Some config ->
+      Step_timeout.unmapped_tier_warnings config.Config.timeout
+        ~mapped_tiers:config.Config.tiers
+
 let workflow ~workflow_dir ~jig_dir ~skill_paths (workflow : Workflow.t) =
   let skill_problems =
     List.filter_map

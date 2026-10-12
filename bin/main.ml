@@ -244,12 +244,17 @@ let validate_workflow workflow =
         Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
             Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
               (fun skill_paths ->
+                let config = Jig_core.Config.load_if_valid ~jig_dir in
                 Result.map
                   (fun () ->
                     ( parsed.Jig_core.Workflow.name,
                       Jig_core.Validate.tier_warnings ~jig_dir ~skill_paths
-                        ~tiers:(Jig_core.Config.load_tiers ~jig_dir)
-                        parsed ))
+                        ~tiers:
+                          (Option.map
+                             (fun config -> config.Jig_core.Config.tiers)
+                             config)
+                        parsed
+                      @ Jig_core.Validate.timeout_tier_warnings config ))
                   (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
                      ~skill_paths parsed))))
   in
@@ -419,9 +424,20 @@ let attach_run run_id latest step_number =
               (* Only after the chat, which owns the terminal and its Ctrl-C. *)
               Jig_core.Process_group.install_signal_forwarding ();
               print_endline "collecting the step's handoff...";
-              Jig_core.Executor.Local.execute ~command:headless_command
-                ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
-                ()
+              let timeout = config.Jig_core.Config.timeout in
+              let time_limit =
+                Option.map
+                  (fun seconds ->
+                    Jig_core.Subprocess.time_limit_from_now
+                      ~seconds:(float_of_int seconds)
+                      ~grace_seconds:
+                        (float_of_int
+                           timeout.Jig_core.Step_timeout.grace_seconds))
+                  timeout.Jig_core.Step_timeout.skill_step_limit_seconds
+              in
+              Jig_core.Executor.Local.execute ?time_limit
+                ~command:headless_command ~cwd:workspace
+                ~prompt:Jig_core.Runner.elicit_handoff_prompt ()
             in
             match
               Jig_core.Runner.Default.continue_attached

@@ -15,6 +15,7 @@ type t = {
   tiers : (string * string list) list;
   (* How many forEach items run at once; above 1 needs an isolated run. *)
   concurrency : int;
+  timeout : Step_timeout.config;
 }
 
 let expand_home path =
@@ -92,6 +93,11 @@ let of_yaml yaml =
       let* continue_session = string_list_field fields ~key:"continue" in
       let* probe = string_list_field fields ~key:"probe" in
       let* concurrency = concurrency_field fields in
+      let* timeout =
+        match List.assoc_opt "timeout" fields with
+        | None -> Ok Step_timeout.default_config
+        | Some value -> Step_timeout.of_yaml value
+      in
       match harness with
       | None -> Error "config: missing required key: harness"
       | Some [] -> Error "config: harness must not be empty"
@@ -109,6 +115,7 @@ let of_yaml yaml =
               probe = Option.value probe ~default:[];
               tiers;
               concurrency;
+              timeout;
             })
   | _ -> Error "config: expected a mapping at the top level"
 
@@ -131,11 +138,7 @@ let load_skill_paths ~jig_dir =
   if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then Ok []
   else Result.map (fun config -> config.skill_paths) (load ~jig_dir)
 
-(* Same shape for tiers: validation warns about unmapped tiers when a
-   config exists, and stays quiet when there is none to check against. *)
-let load_tiers ~jig_dir =
+(* None without a valid config, so validation warnings stay quiet then. *)
+let load_if_valid ~jig_dir =
   if not (Sys.file_exists (Filename.concat jig_dir "config.yaml")) then None
-  else
-    match load ~jig_dir with
-    | Ok config -> Some config.tiers
-    | Error _ -> None
+  else Result.to_option (load ~jig_dir)

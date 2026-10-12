@@ -34,20 +34,24 @@ let requested_stop_signal : int option ref = ref None
 let exit_after_stop = ref exit
 
 (* Before the child's setsid the group does not exist yet, so fall back to the pid. *)
+(* macOS answers EPERM for a group whose members are all zombies; none can take a signal. *)
 let signal_process_group process_group_id signal =
-  try Unix.kill (-process_group_id) signal
-  with Unix.Unix_error (Unix.ESRCH, _, _) -> (
-    try Unix.kill process_group_id signal
-    with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
+  try Unix.kill (-process_group_id) signal with
+  | Unix.Unix_error (Unix.EPERM, _, _) -> ()
+  | Unix.Unix_error (Unix.ESRCH, _, _) -> (
+      try Unix.kill process_group_id signal
+      with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ())
 
 (* Only after the leader is reaped: its pid may belong to another process by then. *)
 let signal_process_group_only process_group_id signal =
   try Unix.kill (-process_group_id) signal
-  with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+  with Unix.Unix_error ((Unix.ESRCH | Unix.EPERM), _, _) -> ()
 
+(* Zombie members (EPERM on macOS) still hold the group id until they are reaped. *)
 let process_group_has_members process_group_id =
   match Unix.kill (-process_group_id) 0 with
   | () -> true
+  | exception Unix.Unix_error (Unix.EPERM, _, _) -> true
   | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
 
 let rec poll_child_exit child_pid =

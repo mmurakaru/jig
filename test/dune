@@ -1,3 +1,4 @@
 (test
  (name test_jig)
- (libraries jig_core alcotest unix))
+ (libraries jig_core alcotest unix)
+ (deps ../bin/main.exe))

@@ -847,6 +847,35 @@ let test_agents_md_and_inline_context_conflict () =
       Alcotest.(check bool) "names the double source" true
         (contains ~affix:"AGENTS.md" message)
 
+(* Real-process helpers for the process group and signal tests. *)
+
+let read_pid_file path =
+  int_of_string
+    (String.trim (In_channel.with_open_text path In_channel.input_all))
+
+let process_is_alive pid =
+  match Unix.kill pid 0 with
+  | () -> true
+  | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
+
+let rec process_exits_within ~seconds pid =
+  if not (process_is_alive pid) then true
+  else if seconds <= 0.0 then false
+  else (
+    Unix.sleepf 0.05;
+    process_exits_within ~seconds:(seconds -. 0.05) pid)
+
+let rec wait_for_pid_file ~seconds path =
+  let has_pid () =
+    Sys.file_exists path
+    && String.trim (In_channel.with_open_text path In_channel.input_all) <> ""
+  in
+  if has_pid () then read_pid_file path
+  else if seconds <= 0.0 then Alcotest.failf "no pid appeared in %s" path
+  else (
+    Unix.sleepf 0.05;
+    wait_for_pid_file ~seconds:(seconds -. 0.05) path)
+
 let write_notify_config root ~notify_command =
   write_file
     (Filename.concat root ".jig/config.yaml")
@@ -896,6 +925,29 @@ let test_notify_failure_is_harmless () =
       Alcotest.(check string) "run outcome unaffected by failing notify"
         "completed"
         (Run.string_of_status run.Run.status)
+
+let test_hung_notify_does_not_block_finishing () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_notify_config root
+    ~notify_command:"sleep 300 & echo $! > notify-sleep.pid; wait";
+  Scripted_executor.reset ~outputs:[];
+  let started_at = Unix.gettimeofday () in
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "run completed" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check bool) "finished within the notify limit plus grace" true
+        (Unix.gettimeofday () -. started_at
+        < Runner.notify_time_limit_seconds
+          +. Subprocess.termination_grace_seconds);
+      Alcotest.(check bool) "the hook's background sleep was stopped" true
+        (process_exits_within ~seconds:3.0
+           (read_pid_file (Filename.concat root "notify-sleep.pid")))
 
 let test_execute_run_honors_given_run_id () =
   let root = make_temp_root () in
@@ -4147,6 +4199,139 @@ let test_field_guide_append_reaches_next_step () =
       Alcotest.(check bool) "step two did" true
         (contains ~affix:"learned by step one" (step_stdout run 1))
 
+(* Subprocess process groups and signal forwarding *)
+
+let grandchild_command root =
+  Printf.sprintf "sleep 300 & echo $! > %s; wait"
+    (Filename.quote (Filename.concat root "grandchild.pid"))
+
+let test_time_limit_stops_child_and_grandchild () =
+  let root = make_temp_root () in
+  let started_at = Unix.gettimeofday () in
+  match
+    Subprocess.run ~time_limit_seconds:0.5
+      ~argv:[ "sh"; "-c"; "echo started; " ^ grandchild_command root ]
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok outcome ->
+      Alcotest.(check bool) "returned soon after the limit" true
+        (Unix.gettimeofday () -. started_at < 3.0);
+      Alcotest.(check int) "child ended by SIGTERM" 143
+        outcome.Subprocess.exit_code;
+      Alcotest.(check bool) "output before the stop is kept" true
+        (contains ~affix:"started" outcome.Subprocess.stdout);
+      Alcotest.(check bool) "grandchild in the group was stopped" true
+        (process_exits_within ~seconds:3.0
+           (read_pid_file (Filename.concat root "grandchild.pid")))
+
+let test_time_limit_escalates_to_sigkill () =
+  let started_at = Unix.gettimeofday () in
+  match
+    Subprocess.run ~time_limit_seconds:0.2
+      ~argv:[ "sh"; "-c"; "trap '' TERM; while :; do sleep 0.1; done" ]
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok outcome ->
+      let elapsed = Unix.gettimeofday () -. started_at in
+      Alcotest.(check int) "child ended by SIGKILL" 137
+        outcome.Subprocess.exit_code;
+      Alcotest.(check bool) "SIGKILL waited for the grace period" true
+        (elapsed >= Subprocess.termination_grace_seconds);
+      Alcotest.(check bool) "and not much longer" true
+        (elapsed < 0.2 +. Subprocess.termination_grace_seconds +. 2.0)
+
+let test_child_within_time_limit_keeps_exit_code () =
+  let started_at = Unix.gettimeofday () in
+  match
+    Subprocess.run ~time_limit_seconds:30.0 ~argv:[ "sh"; "-c"; "exit 3" ] ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok outcome ->
+      Alcotest.(check int) "real exit code" 3 outcome.Subprocess.exit_code;
+      Alcotest.(check bool) "no wait for the limit" true
+        (Unix.gettimeofday () -. started_at < 2.0)
+
+let test_child_leads_its_own_process_group () =
+  match
+    Subprocess.run ~argv:[ "sh"; "-c"; "ps -o pgid= -p $$; echo $$" ] ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok outcome -> (
+      match
+        String.split_on_char '\n' (String.trim outcome.Subprocess.stdout)
+        |> List.map String.trim
+      with
+      | [ process_group_id; pid ] ->
+          Alcotest.(check string) "group id is the child's pid" pid
+            process_group_id
+      | _ -> Alcotest.failf "unexpected output: %s" outcome.Subprocess.stdout)
+
+let jig_binary = Filename.concat (Sys.getcwd ()) "../bin/main.exe"
+
+(* The step's sh records jig's pid ($PPID), then waits on a background
+   sleep - the grandchild a signal to jig must reach. *)
+let setup_hanging_command_project root =
+  setup_command_project root
+    ~yaml:
+      "name: cmd\n\
+       steps:\n\
+      \  - command: 'echo $PPID > jig.pid; sleep 300 & echo $! > \
+       grandchild.pid; wait'\n"
+
+let spawn_jig root arguments =
+  let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+  let pid =
+    Unix.create_process "sh"
+      (Array.of_list
+         ([ "sh"; "-c"; "cd \"$0\" && exec \"$@\""; root; jig_binary ]
+         @ arguments))
+      devnull devnull devnull
+  in
+  Unix.close devnull;
+  pid
+
+let check_signal_stops_foreground_step ~signal ~expected_exit_code =
+  let root = make_temp_root () in
+  setup_hanging_command_project root;
+  let jig_pid = spawn_jig root [ "run"; "cmd"; "--task"; "t" ] in
+  let grandchild_pid =
+    wait_for_pid_file ~seconds:10.0 (Filename.concat root "grandchild.pid")
+  in
+  Unix.kill jig_pid signal;
+  let _, status = Unix.waitpid [] jig_pid in
+  Alcotest.(check bool)
+    (Printf.sprintf "jig exits with %d" expected_exit_code)
+    true
+    (status = Unix.WEXITED expected_exit_code);
+  Alcotest.(check bool) "the step's grandchild was stopped" true
+    (process_exits_within ~seconds:3.0 grandchild_pid)
+
+let test_sigint_to_foreground_run_stops_grandchild () =
+  check_signal_stops_foreground_step ~signal:Sys.sigint ~expected_exit_code:130
+
+let test_sigterm_to_foreground_run_stops_grandchild () =
+  check_signal_stops_foreground_step ~signal:Sys.sigterm
+    ~expected_exit_code:143
+
+let test_sigterm_to_detached_run_stops_grandchild () =
+  let root = make_temp_root () in
+  setup_hanging_command_project root;
+  let launcher_pid =
+    spawn_jig root [ "run"; "cmd"; "--task"; "t"; "--detach" ]
+  in
+  ignore (Unix.waitpid [] launcher_pid);
+  let grandchild_pid =
+    wait_for_pid_file ~seconds:10.0 (Filename.concat root "grandchild.pid")
+  in
+  let detached_jig_pid = read_pid_file (Filename.concat root "jig.pid") in
+  Unix.kill detached_jig_pid Sys.sigterm;
+  Alcotest.(check bool) "detached jig exited" true
+    (process_exits_within ~seconds:10.0 detached_jig_pid);
+  Alcotest.(check bool) "the step's grandchild was stopped" true
+    (process_exits_within ~seconds:3.0 grandchild_pid)
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -4431,6 +4616,8 @@ let () =
             test_notify_fires_when_run_stops;
           Alcotest.test_case "notify failure is harmless" `Quick
             test_notify_failure_is_harmless;
+          Alcotest.test_case "a hung notify does not block finishing" `Slow
+            test_hung_notify_does_not_block_finishing;
           Alcotest.test_case "prompt carries the handoff protocol" `Quick
             test_prompt_carries_handoff_protocol;
           Alcotest.test_case "prompt states the workflow position" `Quick
@@ -4608,5 +4795,22 @@ let () =
             test_resume_refuses_completed_runs;
           Alcotest.test_case "state persists incrementally" `Quick
             test_record_persisted_incrementally;
+        ] );
+      ( "process groups",
+        [
+          Alcotest.test_case "a step child leads its own process group" `Quick
+            test_child_leads_its_own_process_group;
+          Alcotest.test_case "a time limit stops the child and grandchild"
+            `Quick test_time_limit_stops_child_and_grandchild;
+          Alcotest.test_case "a time limit escalates to SIGKILL" `Slow
+            test_time_limit_escalates_to_sigkill;
+          Alcotest.test_case "a child within its time limit keeps its exit code"
+            `Quick test_child_within_time_limit_keeps_exit_code;
+          Alcotest.test_case "SIGINT to a foreground run stops the grandchild"
+            `Quick test_sigint_to_foreground_run_stops_grandchild;
+          Alcotest.test_case "SIGTERM to a foreground run stops the grandchild"
+            `Quick test_sigterm_to_foreground_run_stops_grandchild;
+          Alcotest.test_case "SIGTERM to a detached run stops the grandchild"
+            `Quick test_sigterm_to_detached_run_stops_grandchild;
         ] );
     ]

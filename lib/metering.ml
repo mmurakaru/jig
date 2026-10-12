@@ -42,14 +42,10 @@ let parse_session_id stdout =
   match Yojson.Safe.from_string stdout with
   | exception _ -> None
   | `Assoc _ as json -> (
-      match Yojson.Safe.Util.member "session_id" json with
-      | `String value -> Some value
-      | _ -> None)
+      match Yojson.Safe.Util.member "session_id" json with `String value -> Some value | _ -> None)
   | _ -> None
 
-let cost_to_json = function
-  | Cost_usd value -> `Float value
-  | Unknown_cost -> `String "unknown"
+let cost_to_json = function Cost_usd value -> `Float value | Unknown_cost -> `String "unknown"
 
 let cost_of_json = function
   | `Float value -> Ok (Cost_usd value)
@@ -65,15 +61,9 @@ let event_to_json event =
        ("harness", `List (List.map (fun part -> `String part) event.command));
        ("cost_usd", cost_to_json event.cost);
      ]
-    @ (match event.tier with
-      | Some tier -> [ ("tier", `String tier) ]
-      | None -> [])
-    @ (match event.usage with
-      | Some usage -> [ ("usage", usage) ]
-      | None -> [])
-    @ (match event.step_key with
-      | Some step_key -> [ ("step_key", `String step_key) ]
-      | None -> [])
+    @ (match event.tier with Some tier -> [ ("tier", `String tier) ] | None -> [])
+    @ (match event.usage with Some usage -> [ ("usage", usage) ] | None -> [])
+    @ (match event.step_key with Some step_key -> [ ("step_key", `String step_key) ] | None -> [])
     @ (match event.attempt_id with
       | Some attempt_id -> [ ("attempt_id", `String attempt_id) ]
       | None -> [])
@@ -86,15 +76,13 @@ module type S = sig
   val record : runs_dir:string -> event:event -> (unit, string) result
 
   (* Read once per drive, so an append never rescans the ledger. *)
-  val recorded_attempt_ids :
-    runs_dir:string -> run_id:string -> (string list, string) result
+  val recorded_attempt_ids : runs_dir:string -> run_id:string -> (string list, string) result
 end
 
 (* Default: append-only JSONL next to the run records. *)
 module Jsonl : S = struct
   let ensure_directory path =
-    try Unix.mkdir path 0o755
-    with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+    try Unix.mkdir path 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
 
   let ledger_path ~runs_dir = Filename.concat runs_dir "metering.jsonl"
 
@@ -104,11 +92,9 @@ module Jsonl : S = struct
     | exception Yojson.Json_error _ -> None
     | json -> (
         match
-          ( Yojson.Safe.Util.member "run_id" json,
-            Yojson.Safe.Util.member "attempt_id" json )
+          (Yojson.Safe.Util.member "run_id" json, Yojson.Safe.Util.member "attempt_id" json)
         with
-        | `String line_run_id, `String attempt_id when line_run_id = run_id ->
-            Some attempt_id
+        | `String line_run_id, `String attempt_id when line_run_id = run_id -> Some attempt_id
         | _ -> None
         | exception Yojson.Safe.Util.Type_error _ -> None)
 
@@ -140,12 +126,8 @@ module Jsonl : S = struct
          In_channel.input_char channel <> Some '\n'))
 
   let append ~path line =
-    let separator =
-      if Sys.file_exists path && ends_mid_line path then "\n" else ""
-    in
-    let channel =
-      open_out_gen [ Open_append; Open_creat; Open_text ] 0o644 path
-    in
+    let separator = if Sys.file_exists path && ends_mid_line path then "\n" else "" in
+    let channel = open_out_gen [ Open_append; Open_creat; Open_text ] 0o644 path in
     Fun.protect
       ~finally:(fun () -> close_out channel)
       (fun () -> output_string channel (separator ^ line ^ "\n"))
@@ -153,8 +135,7 @@ module Jsonl : S = struct
   let record ~runs_dir ~event =
     try
       ensure_directory runs_dir;
-      append ~path:(ledger_path ~runs_dir)
-        (Yojson.Safe.to_string (event_to_json event));
+      append ~path:(ledger_path ~runs_dir) (Yojson.Safe.to_string (event_to_json event));
       Ok ()
     with
     | Sys_error message -> Error (Printf.sprintf "metering: %s" message)
@@ -164,5 +145,6 @@ end
 
 module Noop : S = struct
   let record ~runs_dir:_ ~event:_ = Ok ()
+
   let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
 end

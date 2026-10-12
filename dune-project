@@ -18,4 +18,5 @@
   (yaml (>= 3.0))
   (yojson (>= 2.0))
   (cmdliner (>= 1.3))
-  (alcotest (and :with-test (>= 1.7)))))
+  (alcotest (and :with-test (>= 1.7)))
+  (ocamlformat (and :with-dev-setup (= 0.29.0)))))

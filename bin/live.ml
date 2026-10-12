@@ -30,6 +30,7 @@ let format_elapsed seconds =
   else Printf.sprintf "%dm%02ds" (whole / 60) (whole mod 60)
 
 let tick_interval = 0.1 (* ~10 fps while working *)
+
 let tail_capacity = 32
 
 (* Overwrite the previous frame in place. Every Boxes line is padded to the
@@ -73,9 +74,7 @@ let working t = t.running_steps <> []
 let focused_step t =
   List.fold_left
     (fun focus step ->
-      match focus with
-      | Some best when best.item_index >= step.item_index -> focus
-      | _ -> Some step)
+      match focus with Some best when best.item_index >= step.item_index -> focus | _ -> Some step)
     None t.running_steps
 
 (* Assumes the mutex is held. *)
@@ -84,15 +83,11 @@ let redraw_locked t ~state =
   let tail = Option.bind focus (fun step -> step.tail) in
   Option.iter Tail.poll tail;
   let elapsed =
-    Option.map
-      (fun step -> format_elapsed (Unix.gettimeofday () -. step.started))
-      focus
+    Option.map (fun step -> format_elapsed (Unix.gettimeofday () -. step.started)) focus
   in
   let lines =
-    Boxes.view ~columns:(Term_size.columns ()) ~height:(Term_size.rows ())
-      ~workflow:t.workflow ~state
-      ~spinner:(Progress.spinner_frame t.tick)
-      ~elapsed
+    Boxes.view ~columns:(Term_size.columns ()) ~height:(Term_size.rows ()) ~workflow:t.workflow
+      ~state ~spinner:(Progress.spinner_frame t.tick) ~elapsed
       ~log_title:(Option.map (fun step -> step.label) focus)
       ~log_lines:(match tail with Some tail -> Tail.lines tail | None -> [])
       (Progress.rows t.model)
@@ -138,26 +133,17 @@ let on_event t event =
   (match event with
   | Jig_core.Runner.Step_started { skill; item_key; tier; position } ->
       let item_index =
-        Option.map
-          (fun state -> state.Jig_core.Run.item_index)
-          position.Jig_core.Run.for_each
+        Option.map (fun state -> state.Jig_core.Run.item_index) position.Jig_core.Run.for_each
       in
       (* skill · item · tier: where the step runs and what it costs to. *)
-      let label =
-        String.concat " · "
-          (skill :: Option.to_list item_key @ Option.to_list tier)
-      in
+      let label = String.concat " · " ((skill :: Option.to_list item_key) @ Option.to_list tier) in
       t.running_steps <-
-        { item_index; label; started = Unix.gettimeofday (); tail = None }
-        :: without item_index
+        { item_index; label; started = Unix.gettimeofday (); tail = None } :: without item_index
   | Jig_core.Runner.Step_output { stdout_path; stderr_path; item_index } ->
       List.iter
         (fun step ->
           if step.item_index = item_index then
-            step.tail <-
-              Some
-                (Tail.create ~capacity:tail_capacity
-                   [ stdout_path; stderr_path ]))
+            step.tail <- Some (Tail.create ~capacity:tail_capacity [ stdout_path; stderr_path ]))
         t.running_steps
   | Jig_core.Runner.Step_finished record ->
       t.running_steps <- without record.Jig_core.Run.item_index

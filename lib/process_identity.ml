@@ -35,25 +35,20 @@ let refuse_while_attempts_run (run : Run.t) =
     | Some pid, Some child_host when child_host <> host ->
         Some
           (Printf.sprintf
-             "attempt %s ran as pid %d on host %s, so this host cannot tell \
-              whether it still runs; resume the run on %s"
+             "attempt %s ran as pid %d on host %s, so this host cannot tell whether it still runs; \
+              resume the run on %s"
              attempt.Run.attempt_id pid child_host child_host)
     | Some pid, _ ->
-        if
-          is_running ~pid ~recorded_start_time:attempt.Run.child_start_time
-        then
+        if is_running ~pid ~recorded_start_time:attempt.Run.child_start_time then
           Some
             (Printf.sprintf
-               "attempt %s is still running as pid %d; stop it or wait for \
-                it to exit, then try again"
+               "attempt %s is still running as pid %d; stop it or wait for it to exit, then try \
+                again"
                attempt.Run.attempt_id pid)
         else None
   in
   match
-    List.filter_map problem
-      (List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight))
+    List.filter_map problem (List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight))
   with
   | [] -> Ok ()
-  | problems ->
-      Error
-        (Printf.sprintf "run %s: %s" run.Run.id (String.concat "; " problems))
+  | problems -> Error (Printf.sprintf "run %s: %s" run.Run.id (String.concat "; " problems))

@@ -12,11 +12,7 @@ type status = Pending | Working | Done | Failed | Paused
 
 (* [detail] is the right-aligned annotation a renderer may show next to a
    finished step: its duration, and its cost when the step spent money. *)
-type body_step = {
-  bskill : string;
-  mutable bstatus : status;
-  mutable bdetail : string option;
-}
+type body_step = { bskill : string; mutable bstatus : status; mutable bdetail : string option }
 
 type item = {
   key : string;
@@ -26,11 +22,7 @@ type item = {
 }
 
 type node =
-  | Step_node of {
-      skill : string;
-      mutable status : status;
-      mutable detail : string option;
-    }
+  | Step_node of { skill : string; mutable status : status; mutable detail : string option }
   | Loop_node of {
       body_skills : string list;
       mutable items : item list;
@@ -44,8 +36,7 @@ type t = { nodes : node array }
 let init (entries : Workflow.entry list) =
   let node_of_entry = function
     | Workflow.Step step ->
-        Step_node
-          { skill = Workflow.step_label step; status = Pending; detail = None }
+        Step_node { skill = Workflow.step_label step; status = Pending; detail = None }
     | Workflow.Retry retry ->
         let skill =
           match retry.Workflow.retry_steps with
@@ -76,9 +67,7 @@ let mark_before_done nodes entry_index =
     | Step_node s -> if not (is_terminal s.status) then s.status <- Done
     | Loop_node l ->
         if not (is_terminal l.lstatus) then l.lstatus <- Done;
-        List.iter
-          (fun it -> if not (is_terminal it.istatus) then it.istatus <- Done)
-          l.items
+        List.iter (fun it -> if not (is_terminal it.istatus) then it.istatus <- Done) l.items
   done
 
 let format_duration seconds =
@@ -93,8 +82,7 @@ let format_duration seconds =
 let detail_of_record (record : Run.step_record) =
   let duration =
     match
-      ( Run.epoch_of_iso8601 record.Run.started_at,
-        Run.epoch_of_iso8601 record.Run.finished_at )
+      (Run.epoch_of_iso8601 record.Run.started_at, Run.epoch_of_iso8601 record.Run.finished_at)
     with
     | Some started, Some finished when finished >= started ->
         Some (format_duration (finished -. started))
@@ -102,16 +90,11 @@ let detail_of_record (record : Run.step_record) =
   in
   let cost =
     match record.Run.cost with
-    | Metering.Cost_usd value when value > 0.0 ->
-        Some (Printf.sprintf "$%.2f" value)
+    | Metering.Cost_usd value when value > 0.0 -> Some (Printf.sprintf "$%.2f" value)
     | _ -> None
   in
-  let timed_out =
-    if record.Run.outcome = Run.Timeout then Some "timed out" else None
-  in
-  match
-    List.filter_map Fun.id [ timed_out; duration; cost; record.Run.tier ]
-  with
+  let timed_out = if record.Run.outcome = Run.Timeout then Some "timed out" else None in
+  match List.filter_map Fun.id [ timed_out; duration; cost; record.Run.tier ] with
   | [] -> None
   | parts -> Some (String.concat "  " parts)
 
@@ -164,8 +147,7 @@ let apply t (event : Runner.run_event) =
                         if b.bskill = skill then (
                           b.bstatus <- Working;
                           reached := true)
-                        else if not !reached && not (is_terminal b.bstatus) then
-                          b.bstatus <- Done)
+                        else if (not !reached) && not (is_terminal b.bstatus) then b.bstatus <- Done)
                       it.body))
                 l.items))
   | Runner.Step_finished record ->
@@ -187,9 +169,7 @@ let apply t (event : Runner.run_event) =
           | Loop_node l ->
               List.iteri
                 (fun idx it ->
-                  if
-                    it.istatus = Working
-                    && ((not l.parallel) || record.Run.item_index = Some idx)
+                  if it.istatus = Working && ((not l.parallel) || record.Run.item_index = Some idx)
                   then
                     List.iter
                       (fun b ->
@@ -202,14 +182,12 @@ let apply t (event : Runner.run_event) =
                           if List.length it.body = 1 then it.idetail <- detail))
                       it.body)
                 l.items;
-              if
-                is_terminal outcome_status && l.lstatus = Working
-                && not l.parallel
-              then l.lstatus <- outcome_status)
+              if is_terminal outcome_status && l.lstatus = Working && not l.parallel then
+                l.lstatus <- outcome_status)
         t.nodes
   | Runner.Item_finished { entry_index; item_index; status } -> (
       match t.nodes.(entry_index) with
-      | Loop_node l -> (
+      | Loop_node l ->
           let item_status =
             match status with
             | Run.Completed -> Done
@@ -221,15 +199,12 @@ let apply t (event : Runner.run_event) =
           | Some it ->
               it.istatus <- item_status;
               if item_status = Done then
-                List.iter
-                  (fun b -> if not (is_terminal b.bstatus) then b.bstatus <- Done)
-                  it.body
+                List.iter (fun b -> if not (is_terminal b.bstatus) then b.bstatus <- Done) it.body
           | None -> ());
           (* The loop shows a stop once no other item is still working. *)
           let any status = List.exists (fun it -> it.istatus = status) l.items in
           if not (any Working) then
-            if any Failed then l.lstatus <- Failed
-            else if any Paused then l.lstatus <- Paused)
+            if any Failed then l.lstatus <- Failed else if any Paused then l.lstatus <- Paused
       | Step_node _ -> ())
 
 (* Rebuild the model of an existing run from its persisted record - the
@@ -245,8 +220,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
   let entry_count = Array.length entry_array in
   let labels_of_entry = function
     | Workflow.Step step -> [ Workflow.step_label step ]
-    | Workflow.Retry retry ->
-        List.map Workflow.step_label retry.Workflow.retry_steps
+    | Workflow.Retry retry -> List.map Workflow.step_label retry.Workflow.retry_steps
     | Workflow.For_each for_each ->
         List.map
           (fun step -> Workflow.step_label step)
@@ -278,9 +252,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
      otherwise the keys the records mention, in first-seen order. *)
   let parallel_state entry_index =
     match run.Run.position.Run.for_each with
-    | Some state
-      when run.Run.position.Run.entry_index = entry_index
-           && state.Run.concurrency > 1 ->
+    | Some state when run.Run.position.Run.entry_index = entry_index && state.Run.concurrency > 1 ->
         Some state
     | _ -> None
   in
@@ -293,9 +265,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
           (List.fold_left
              (fun keys (assigned_index, (record : Run.step_record)) ->
                match record.Run.item_key with
-               | Some key
-                 when assigned_index = entry_index
-                      && not (List.mem key keys) ->
+               | Some key when assigned_index = entry_index && not (List.mem key keys) ->
                    key :: keys
                | _ -> keys)
              [] assigned)
@@ -303,10 +273,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
   (* Pass 3: replay. Items must be resolved before a loop's first step. *)
   let announced = Hashtbl.create 4 in
   let announce entry_index =
-    if
-      is_loop entry_array.(entry_index)
-      && not (Hashtbl.mem announced entry_index)
-    then (
+    if is_loop entry_array.(entry_index) && not (Hashtbl.mem announced entry_index) then (
       Hashtbl.add announced entry_index ();
       apply t
         (Runner.Items_resolved
@@ -325,26 +292,14 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
       let for_each =
         Option.map
           (fun item_index ->
-            {
-              Run.item_index;
-              body_index = 0;
-              items = [];
-              concurrency = 1;
-              items_in_progress = [];
-            })
+            { Run.item_index; body_index = 0; items = []; concurrency = 1; items_in_progress = [] })
           record.Run.item_index
       in
       apply t
         (Runner.Step_started
            {
              skill = record.Run.skill;
-             position =
-               {
-                 Run.entry_index;
-                 iterations_used = 0;
-                 step_index = 0;
-                 for_each;
-               };
+             position = { Run.entry_index; iterations_used = 0; step_index = 0; for_each };
              item_key = record.Run.item_key;
              tier = record.Run.tier;
            });
@@ -363,8 +318,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
    | Some state ->
        let in_progress index =
          List.find_opt
-           (fun (item : Run.item_in_progress) ->
-             item.Run.started_item_index = index)
+           (fun (item : Run.item_in_progress) -> item.Run.started_item_index = index)
            state.Run.items_in_progress
        in
        for item_index = 0 to state.Run.item_index - 1 do
@@ -375,8 +329,7 @@ let restore ~(entries : Workflow.entry list) (run : Run.t) =
            | Some item -> Some item.Run.item_status
          in
          Option.iter
-           (fun status ->
-             apply t (Runner.Item_finished { entry_index; item_index; status }))
+           (fun status -> apply t (Runner.Item_finished { entry_index; item_index; status }))
            status
        done);
   t
@@ -392,13 +345,12 @@ let finalize t =
           List.iter
             (fun it ->
               if it.istatus = Working then it.istatus <- Done;
-              List.iter
-                (fun b -> if b.bstatus = Working then b.bstatus <- Done)
-                it.body)
+              List.iter (fun b -> if b.bstatus = Working then b.bstatus <- Done) it.body)
             l.items)
     t.nodes
 
 let spinner_frames = [| "⠋"; "⠙"; "⠹"; "⠸"; "⠼"; "⠴"; "⠦"; "⠧"; "⠇"; "⠏" |]
+
 let spinner_frame tick = spinner_frames.(tick mod Array.length spinner_frames)
 
 let glyph ~working = function
@@ -412,39 +364,27 @@ let glyph ~working = function
    the label, and an optional right-aligned annotation (duration/cost). The
    caller turns these into terminal output; [render] below is the
    plain-string form used by tests. *)
-type row = {
-  indent : int;
-  status : status;
-  label : string;
-  detail : string option;
-}
+type row = { indent : int; status : status; label : string; detail : string option }
 
 let rows t =
   let out = ref [] in
-  let add ?detail indent status label =
-    out := { indent; status; label; detail } :: !out
-  in
+  let add ?detail indent status label = out := { indent; status; label; detail } :: !out in
   Array.iter
     (fun node ->
       match node with
       | Step_node s -> add ?detail:s.detail 0 s.status s.skill
       | Loop_node l ->
           let total = List.length l.items in
-          let done_count =
-            List.length (List.filter (fun it -> it.istatus = Done) l.items)
-          in
+          let done_count = List.length (List.filter (fun it -> it.istatus = Done) l.items) in
           let head =
-            if total = 0 then "forEach"
-            else Printf.sprintf "forEach (%d/%d)" done_count total
+            if total = 0 then "forEach" else Printf.sprintf "forEach (%d/%d)" done_count total
           in
           add 0 l.lstatus head;
           List.iter
             (fun it ->
               add ?detail:it.idetail 2 it.istatus it.key;
               if it.istatus = Working then
-                List.iter
-                  (fun b -> add ?detail:b.bdetail 4 b.bstatus b.bskill)
-                  it.body)
+                List.iter (fun b -> add ?detail:b.bdetail 4 b.bstatus b.bskill) it.body)
             l.items)
     t.nodes;
   List.rev !out

@@ -1,6 +1,5 @@
 open Result_syntax
 
-(** The wall-clock limit per step attempt from config.yaml timeout:; None is off. *)
 type config = {
   skill_step_limit_seconds : int option;
   command_step_limit_seconds : int option;
@@ -8,6 +7,7 @@ type config = {
   grace_seconds : int;
   tier_limit_seconds : (string * int option) list;
 }
+(** The wall-clock limit per step attempt from config.yaml timeout:; None is off. *)
 
 let default_config =
   {
@@ -19,9 +19,7 @@ let default_config =
 
 let duration_error ~key =
   Printf.sprintf
-    "config: timeout.%s must be a duration with a unit (s, m or h), such as \
-     30m, or off"
-    key
+    "config: timeout.%s must be a duration with a unit (s, m or h), such as 30m, or off" key
 
 (** Parses a timeout duration such as 90s, 45m or 2h; a bare number is an error. *)
 let parse_duration_seconds ~key text =
@@ -33,20 +31,14 @@ let parse_duration_seconds ~key text =
   let multiplier =
     if length = 0 then None
     else
-      match text.[length - 1] with
-      | 's' -> Some 1
-      | 'm' -> Some 60
-      | 'h' -> Some 3600
-      | _ -> None
+      match text.[length - 1] with 's' -> Some 1 | 'm' -> Some 60 | 'h' -> Some 3600 | _ -> None
   in
   match (all_digits, multiplier) with
   | true, Some multiplier -> (
       match int_of_string_opt digits with
       | Some value when value > 0 -> Ok (value * multiplier)
       | _ ->
-          Error
-            (Printf.sprintf "config: timeout.%s must be above zero; use off for no limit"
-               key))
+          Error (Printf.sprintf "config: timeout.%s must be above zero; use off for no limit" key))
   | _ -> Error (duration_error ~key)
 
 (* YAML 1.1 reads a bare off as false. *)
@@ -63,16 +55,13 @@ let of_yaml = function
       let* () =
         match
           List.find_opt
-            (fun (key, _) ->
-              not (List.mem key [ "default"; "command"; "grace"; "tiers" ]))
+            (fun (key, _) -> not (List.mem key [ "default"; "command"; "grace"; "tiers" ]))
             fields
         with
         | Some (key, _) ->
             Error
               (Printf.sprintf
-                 "config: unknown key timeout.%s (expected default, command, \
-                  grace or tiers)"
-                 key)
+                 "config: unknown key timeout.%s (expected default, command, grace or tiers)" key)
         | None -> Ok ()
       in
       let optional_limit ~key ~default =
@@ -81,21 +70,17 @@ let of_yaml = function
         | Some value -> limit_field ~key value
       in
       let* skill_step_limit_seconds =
-        optional_limit ~key:"default"
-          ~default:default_config.skill_step_limit_seconds
+        optional_limit ~key:"default" ~default:default_config.skill_step_limit_seconds
       in
       let* command_step_limit_seconds =
-        optional_limit ~key:"command"
-          ~default:default_config.command_step_limit_seconds
+        optional_limit ~key:"command" ~default:default_config.command_step_limit_seconds
       in
       let* grace_seconds =
         match List.assoc_opt "grace" fields with
         | None -> Ok default_config.grace_seconds
         | Some (`String text) -> parse_duration_seconds ~key:"grace" text
         | Some _ ->
-            Error
-              "config: timeout.grace must be a duration with a unit (s, m or \
-               h), such as 10s"
+            Error "config: timeout.grace must be a duration with a unit (s, m or h), such as 10s"
       in
       let* tier_limit_seconds =
         match List.assoc_opt "tiers" fields with
@@ -107,16 +92,9 @@ let of_yaml = function
                 let* limit = limit_field ~key:("tiers." ^ name) value in
                 Ok ((name, limit) :: limits))
               pairs (Ok [])
-        | Some _ ->
-            Error "config: timeout.tiers must be a mapping of tier names to durations"
+        | Some _ -> Error "config: timeout.tiers must be a mapping of tier names to durations"
       in
-      Ok
-        {
-          skill_step_limit_seconds;
-          command_step_limit_seconds;
-          grace_seconds;
-          tier_limit_seconds;
-        }
+      Ok { skill_step_limit_seconds; command_step_limit_seconds; grace_seconds; tier_limit_seconds }
   | _ -> Error "config: timeout must be a mapping (default, command, grace, tiers)"
 
 (** The limit of a skill step: its tier's limit, else the default one. *)
@@ -140,7 +118,7 @@ let unmapped_tier_warnings config ~mapped_tiers =
       else
         Some
           (Printf.sprintf
-             "timeout.tiers names tier %S, which config tiers does not map; \
-              its limit applies only to steps that declare that tier"
+             "timeout.tiers names tier %S, which config tiers does not map; its limit applies only \
+              to steps that declare that tier"
              name))
     config.tier_limit_seconds

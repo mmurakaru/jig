@@ -14,15 +14,13 @@ let split_on_tabs line = String.split_on_char '\t' line
 
 let trim_carriage_return line =
   let length = String.length line in
-  if length > 0 && line.[length - 1] = '\r' then String.sub line 0 (length - 1)
-  else line
+  if length > 0 && line.[length - 1] = '\r' then String.sub line 0 (length - 1) else line
 
 let check_keys ~path items =
   let* () =
     match
       List.find_opt
-        (fun bindings ->
-          match bindings with [] -> true | (_, key) :: _ -> key = "")
+        (fun bindings -> match bindings with [] -> true | (_, key) :: _ -> key = "")
         items
     with
     | Some _ -> Error (Printf.sprintf "items: %s has an empty item key" path)
@@ -30,24 +28,16 @@ let check_keys ~path items =
   in
   let keys =
     List.filter_map
-      (fun bindings ->
-        match bindings with [] -> None | (_, key) :: _ -> Some key)
+      (fun bindings -> match bindings with [] -> None | (_, key) :: _ -> Some key)
       items
   in
-  match
-    List.find_opt
-      (fun key -> List.length (List.filter (fun k -> k = key) keys) > 1)
-      keys
-  with
-  | Some key ->
-      Error (Printf.sprintf "items: %s has duplicate item key %S" path key)
+  match List.find_opt (fun key -> List.length (List.filter (fun k -> k = key) keys) > 1) keys with
+  | Some key -> Error (Printf.sprintf "items: %s has duplicate item key %S" path key)
   | None -> Ok ()
 
 let load_tsv ~path content =
   let lines = String.split_on_char '\n' content in
-  let lines =
-    match List.rev lines with "" :: rest -> List.rev rest | _ -> lines
-  in
+  let lines = match List.rev lines with "" :: rest -> List.rev rest | _ -> lines in
   let lines = List.map trim_carriage_return lines in
   match lines with
   | [] -> Error (Printf.sprintf "items: %s contains no items" path)
@@ -56,13 +46,10 @@ let load_tsv ~path content =
       let* () =
         match
           List.find_opt
-            (fun column ->
-              List.length (List.filter (fun c -> c = column) header) > 1)
+            (fun column -> List.length (List.filter (fun c -> c = column) header) > 1)
             header
         with
-        | Some column ->
-            Error
-              (Printf.sprintf "items: %s has duplicate column %S" path column)
+        | Some column -> Error (Printf.sprintf "items: %s has duplicate column %S" path column)
         | None -> Ok ()
       in
       let width = List.length header in
@@ -70,22 +57,18 @@ let load_tsv ~path content =
         List.fold_right
           (fun (line_number, row) accumulator ->
             let* items = accumulator in
-            if row = "" then
-              Error
-                (Printf.sprintf "items: %s line %d is empty" path line_number)
+            if row = "" then Error (Printf.sprintf "items: %s line %d is empty" path line_number)
             else
               let fields = split_on_tabs row in
               if List.length fields <> width then
                 Error
-                  (Printf.sprintf
-                     "items: %s line %d has %d fields but the header has %d"
-                     path line_number (List.length fields) width)
+                  (Printf.sprintf "items: %s line %d has %d fields but the header has %d" path
+                     line_number (List.length fields) width)
               else Ok (List.combine header fields :: items))
           (List.mapi (fun index row -> (index + 2, row)) rows)
           (Ok [])
       in
-      if items = [] then
-        Error (Printf.sprintf "items: %s contains no items" path)
+      if items = [] then Error (Printf.sprintf "items: %s contains no items" path)
       else
         let* () = check_keys ~path items in
         Ok items
@@ -114,19 +97,14 @@ let load_json ~path content =
                       | `String text -> Ok ((key, text) :: bindings)
                       | _ ->
                           Error
-                            (Printf.sprintf
-                               "items: %s item %d key %S must be a string"
-                               path index key))
+                            (Printf.sprintf "items: %s item %d key %S must be a string" path index
+                               key))
                     pairs (Ok [])
                 in
                 Ok (bindings :: items)
-            | _ ->
-                Error
-                  (Printf.sprintf "items: %s must be a json array of objects"
-                     path))
+            | _ -> Error (Printf.sprintf "items: %s must be a json array of objects" path))
           entries (Ok [])
-    | _ ->
-        Error (Printf.sprintf "items: %s must be a json array of objects" path)
+    | _ -> Error (Printf.sprintf "items: %s must be a json array of objects" path)
   in
   if items = [] then Error (Printf.sprintf "items: %s contains no items" path)
   else
@@ -142,9 +120,7 @@ let load_json ~path content =
               let* () = accumulator in
               if List.map fst bindings <> columns then
                 Error
-                  (Printf.sprintf
-                     "items: %s items must all have the same keys in the \
-                      same order"
+                  (Printf.sprintf "items: %s items must all have the same keys in the same order"
                      path)
               else Ok ())
             (Ok ()) rest
@@ -154,14 +130,10 @@ let load_json ~path content =
     Ok items
 
 let load ~path =
-  let* content =
-    Result.map_error (fun message -> "items: " ^ message) (File.read path)
-  in
+  let* content = Result.map_error (fun message -> "items: " ^ message) (File.read path) in
   if Filename.check_suffix path ".tsv" then load_tsv ~path content
   else if Filename.check_suffix path ".json" then load_json ~path content
-  else
-    Error
-      (Printf.sprintf "items: %s must be a .tsv or .json file" path)
+  else Error (Printf.sprintf "items: %s must be a .tsv or .json file" path)
 
 (* The stable key of one item: its first column's value. *)
 let key bindings = match bindings with [] -> "" | (_, value) :: _ -> value
@@ -172,15 +144,8 @@ let check_columns ~path ~required items =
   List.fold_left
     (fun accumulator (index, bindings) ->
       let* () = accumulator in
-      match
-        List.find_opt
-          (fun column -> not (List.mem_assoc column bindings))
-          required
-      with
-      | Some column ->
-          Error
-            (Printf.sprintf "items: %s item %d has no column %S" path index
-               column)
+      match List.find_opt (fun column -> not (List.mem_assoc column bindings)) required with
+      | Some column -> Error (Printf.sprintf "items: %s item %d has no column %S" path index column)
       | None -> Ok ())
     (Ok ())
     (List.mapi (fun index bindings -> (index, bindings)) items)

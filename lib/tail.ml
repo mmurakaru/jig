@@ -71,8 +71,7 @@ let poll_source t source =
                 source.partial <- trailing;
                 let complete = List.rev complete_reversed in
                 let complete =
-                  if skipped then match complete with _ :: rest -> rest | [] -> []
-                  else complete
+                  if skipped then match complete with _ :: rest -> rest | [] -> [] else complete
                 in
                 List.iter (push t) complete))
 

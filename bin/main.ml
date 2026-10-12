@@ -222,8 +222,9 @@ let validate_workflow workflow =
 let latest_run_id ~runs_dir =
   match Jig_core.Store.Filesystem.list_runs ~runs_dir with
   | Error message -> Error message
-  | Ok [] -> Error "no runs yet - nothing under runs/"
-  | Ok (newest :: _) -> Ok newest.Jig_core.Run.id
+  | Ok { Jig_core.Store.runs = []; _ } ->
+      Error "no runs yet - nothing under runs/"
+  | Ok { Jig_core.Store.runs = newest :: _; _ } -> Ok newest.Jig_core.Run.id
 
 let show_status run_id latest json_output =
   let root = Sys.getcwd () in
@@ -400,7 +401,18 @@ let attach_run run_id latest step_number =
 
 let list_runs json_output =
   let runs_dir = Jig_core.Project.runs_dir ~root:(Sys.getcwd ()) in
-  match Jig_core.Store.Filesystem.list_runs ~runs_dir with
+  let listing =
+    Result.map
+      (fun listing ->
+        List.iter
+          (fun unreadable ->
+            Printf.eprintf "jig: warning: skipped run %s (unreadable): %s\n"
+              unreadable.Jig_core.Store.id unreadable.Jig_core.Store.reason)
+          listing.Jig_core.Store.unreadable_records;
+        listing.Jig_core.Store.runs)
+      (Jig_core.Store.Filesystem.list_runs ~runs_dir)
+  in
+  match listing with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1

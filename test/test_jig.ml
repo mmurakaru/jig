@@ -2163,7 +2163,7 @@ let probe_seen : Run.t list ref = ref []
 module Probe_executor : Executor.S = struct
   let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt:_ () =
     (match Store.Filesystem.list_runs ~runs_dir:!probe_runs_dir with
-    | Ok runs -> probe_seen := runs
+    | Ok listing -> probe_seen := listing.Store.runs
     | Error _ -> probe_seen := []);
     Ok { Executor.exit_code = 0; stdout = handoff_block (); stderr = "" }
 end
@@ -2235,7 +2235,7 @@ let test_list_runs_newest_first () =
   let second = run () in
   match Store.Filesystem.list_runs ~runs_dir:(Project.runs_dir ~root) with
   | Error message -> Alcotest.fail message
-  | Ok runs ->
+  | Ok { Store.runs; _ } ->
       Alcotest.(check (list string))
         "newest first" [ second; first ]
         (List.map (fun run -> run.Run.id) runs)
@@ -2244,7 +2244,8 @@ let test_list_runs_empty_when_none () =
   let root = make_temp_root () in
   match Store.Filesystem.list_runs ~runs_dir:(Project.runs_dir ~root) with
   | Error message -> Alcotest.fail message
-  | Ok runs -> Alcotest.(check int) "no runs" 0 (List.length runs)
+  | Ok { Store.runs; _ } ->
+      Alcotest.(check int) "no runs" 0 (List.length runs)
 
 (* skill_paths: resolution from external libraries *)
 

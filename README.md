@@ -89,6 +89,51 @@ run report; each step's full output lives in the run record.
 
 ![jig run rendering a workflow mid-run](docs/run-live.png)
 
+## Traces
+
+`jig status <run-id> --otlp` prints the run as one OpenTelemetry trace in OTLP/JSON.
+The run is the root span and each step attempt is a child span, with its tier, outcome, cost, and token usage as attributes.
+Handoffs, escalations, and resumes are span events.
+Trace and span ids derive from the run id and the step position, so a paused and resumed run stays one trace, and exporting the same run twice gives the same ids.
+The root span appears once the run is terminal (completed, failed, or aborted); before that, the export holds the finished steps only.
+
+jig sends nothing itself.
+Pipe the output to any OTLP/HTTP endpoint, for example a local [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) (install it per its README: Homebrew, release binaries, or Docker):
+
+```sh
+otel-desktop-viewer            # UI on http://localhost:8000, OTLP/HTTP on localhost:4318
+
+jig status <run-id> --otlp \
+  | curl -sf -X POST -H 'Content-Type: application/json' \
+      --data-binary @- http://localhost:4318/v1/traces
+```
+
+Open the viewer, find the `invoke_workflow <workflow>` trace, and expand it to see the steps.
+The viewer keeps traces in memory by default; start it with `--db <file>` to keep them across restarts.
+
+To export at every pause and every finish, put the same pipe in the `notify` hook in `.jig/config.yaml` (it runs from the project root, so `jig` must be on `PATH`):
+
+```yaml
+notify:
+  - sh
+  - -c
+  - >-
+    jig status {run_id} --otlp | curl -sf -X POST -H 'Content-Type: application/json'
+    --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}/v1/traces"
+```
+
+Each step's harness subprocess (and each command step) gets `TRACEPARENT` set to that step's span, so a harness that exports its own traces nests them under the step.
+Claude Code reads `TRACEPARENT` in `-p` mode once its tracing is on, for example:
+
+```sh
+export CLAUDE_CODE_ENABLE_TELEMETRY=1 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_TRACES_EXPORTER=otlp OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Configuration is the standard `OTEL_*` environment variables only.
+`OTEL_SERVICE_NAME` (default `jig`) and `OTEL_RESOURCE_ATTRIBUTES` set the resource of the export, and `OTEL_SDK_DISABLED=true` stops jig from setting `TRACEPARENT`.
+
 ## The verbs
 
 ```
@@ -100,7 +145,7 @@ jig run --resume <run-id> [--guidance "…"]  # continue a paused run
   [--skip]                                  #   a human finished the paused step; record it and move on
 jig attach <run-id>                         # open the paused step's session; exiting the chat hands back
 jig watch <run-id>                          # attach the live view to a running (or finished) run
-jig status <run-id> [--json]                # inspect a run
+jig status <run-id> [--json | --otlp]       # inspect a run, or print it as an OpenTelemetry trace
 jig list workflows|runs [--json]            # discover what is runnable, and what ran
 jig validate <workflow>                     # lint before running
 ```

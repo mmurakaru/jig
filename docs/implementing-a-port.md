@@ -15,12 +15,17 @@ module My_runner =
 
 ```ocaml
 val execute :
-  command:string list -> cwd:string -> prompt:string ->
+  ?on_spawn:(stdout_path:string -> stderr_path:string -> unit) ->
+  ?environment:(string * string) list ->
+  command:string list -> cwd:string -> prompt:string -> unit ->
   (Executor.exec_result, string) result
 ```
 
 The default spawns a local subprocess (prompt appended as the final
-argument, output captured via temp files). A Docker or microVM executor
+argument, output captured via temp files). `environment` holds variables
+the harness must see on top of the inherited ones - `TRACEPARENT` for the
+step span - so an executor that runs the harness elsewhere forwards them
+into its sandbox. A Docker or microVM executor
 implements the same signature; workspace isolation (`--isolated` worktrees)
 and the config `wrapper` already live at this layer.
 

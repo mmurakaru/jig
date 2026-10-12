@@ -27,6 +27,8 @@ eight step-skills they reference.
 - `attach:` / `attach_headless:` - interactive and headless session-reopen
   commands; `{session_id}` is substituted per step.
 - `notify:` - run on every run stop; `{run_id}` and `{status}` substituted.
+  To export traces, pipe `jig status {run_id} --otlp` to an OTLP/HTTP
+  `/v1/traces` endpoint with curl (README, Traces).
 
 ## Prove the wiring before the first real run
 

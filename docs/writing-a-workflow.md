@@ -134,10 +134,11 @@ The workflow does not change; concurrency is a property of the machine that runs
 - Above 1, the run must be `--isolated`; without it `jig run` refuses with an error before anything starts.
   A workflow with no forEach ignores the setting.
 - Each item runs in its own detached git worktree, created from the run worktree's current commit, at `<repo>-worktrees/<run-id>-e<entry>-i<item>` (zero-based entry and item indexes, as in step keys).
-  The item's steps edit only that worktree, and nothing merges back: the item's result stays in its worktree, or in the branch or pull request its steps create.
+  The item's steps edit only that worktree, and nothing merges back: the item's result stays on its own branch (below), or in the branch or pull request its steps create.
 - Each item keeps its own cursor (body entry, retry iteration, step) in the run record, under `position.for_each.items_in_progress`, together with its worktree path and status.
   A crash with several items in flight resumes each of them where it stopped; steps that already finished do not run again, and each cut-off attempt follows its skill's `on_interrupt` policy.
 - When an item passes, its worktree is removed.
+  If its steps made commits, jig first points the branch `jig/<run-id>-e<entry>-i<item>` at them, so they stay reachable; uncommitted changes go with the worktree, as they do for the run worktree.
   When an item pauses or fails, its worktree stays: a resume continues a paused item in it, and a failed item's worktree is left for inspection (remove it with `git worktree remove <path>` when done).
 - Routing is per item and follows the same rules as a sequential run.
   When one item escalates, fails, or aborts, no new item starts; the items in flight run to their own end, then the run stops.

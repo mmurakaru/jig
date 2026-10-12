@@ -102,6 +102,7 @@ harness:
 
 # Optional: how many forEach items run at once (default 1). Above 1 the run
 # must be --isolated: each item works in its own git worktree, created from
-# the run's worktree. A passed item's worktree is removed; a paused or
-# failed item's worktree stays, and jig status names it.
+# the run's worktree. A passed item's worktree is removed (its commits stay
+# on branch jig/<run-id>-e<entry>-i<item>); a paused or failed item's
+# worktree stays, and jig status names it.
 # concurrency: 3

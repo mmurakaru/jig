@@ -113,7 +113,7 @@ jig validate <workflow>                     # lint before running
   FIELDGUIDE.md        # repo knowledge agents accumulate across runs
   skills/<name>/SKILL.md
   workflows/<name>.yaml
-  runs/                # one JSON record per run + metering.jsonl
+  runs/                # one JSON record per run, a <run-id>.lock while a process drives it, metering.jsonl
 ```
 
 Everything is a file: skills and workflows are versioned with the code they

@@ -176,6 +176,13 @@ struct
 
   let runs_dir engine = Project.runs_dir ~root:engine.root
 
+  (* Held from the first save to the last, so one process drives a run. *)
+  let with_run_lock ~runs_dir ~run_id action =
+    let* run_lock = Store_port.acquire_run_lock ~runs_dir ~id:run_id in
+    Fun.protect
+      ~finally:(fun () -> Store_port.release_run_lock run_lock)
+      action
+
   let persist engine progress ~status ~finished =
     let run =
       {
@@ -681,6 +688,7 @@ struct
           Run.make_id ~workflow:workflow.Workflow.name ~time:started
             ~pid:(Unix.getpid ())
     in
+    with_run_lock ~runs_dir:(Project.runs_dir ~root) ~run_id @@ fun () ->
     let* workspace =
       if isolated then
         let* path = Workspace.create ~root ~run_id in
@@ -843,6 +851,7 @@ struct
       ?(skip = false) ~root ~run_id
       ~guidance () =
     let runs_directory = Project.runs_dir ~root in
+    with_run_lock ~runs_dir:runs_directory ~run_id @@ fun () ->
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
       match existing.Run.status with
@@ -894,11 +903,13 @@ struct
   (* After an interactive attach, the same session is resumed headlessly and
      asked for its handoff; that result completes the paused entry as if the
      step had just executed. An unparseable reply changes nothing - the run
-     stays paused on disk and the caller reports the error. *)
+     stays paused on disk and the caller reports the error. The chat runs
+     inside [collect_handoff], under the run lock. *)
   let continue_attached ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
       ~root ~run_id
-      ~(exec_result : Executor.exec_result) () =
+      ~(collect_handoff : unit -> (Executor.exec_result, string) result) () =
     let runs_directory = Project.runs_dir ~root in
+    with_run_lock ~runs_dir:runs_directory ~run_id @@ fun () ->
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
       match existing.Run.status with
@@ -922,6 +933,7 @@ struct
                run_id path)
       | _ -> Ok ()
     in
+    let* exec_result = collect_handoff () in
     let outcome, handoff, handoff_error = outcome_of_exec exec_result in
     let* () =
       match outcome with

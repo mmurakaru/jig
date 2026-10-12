@@ -559,13 +559,13 @@ struct
         };
     }
 
-  (* Best effort: a failing probe records its failure, never fails the step. *)
   (* What every process of an attempt sees: harness, command, probe. *)
   let attempt_environment ~run_id ~step_key ~attempt_id =
     [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ]
     @ Otlp.traceparent_environment ~getenv:Sys.getenv_opt ~run_id
         ~span_id:(Otlp.attempt_span_id ~attempt_id)
 
+  (* Best effort: a failing probe records its failure, never fails the step. *)
   let run_probe ~environment engine =
     match engine.config.Config.probe with
     | [] -> None

@@ -405,8 +405,7 @@ let interrupted_attempt_span ~run_id ~end_time (attempt : Run.attempt) =
         status_json ~code:status_code_error ~message:(Some "interrupted") );
     ]
 
-(* Ends where the next attempt at its step starts; until then, only a
-   terminal run fixes its end, and receivers keep a span's first copy. *)
+(* Sent once its end is final: receivers keep a span's first copy. *)
 let interrupted_attempt_spans (run : Run.t) =
   let finished_attempts =
     List.filter_map (fun (step : Run.step_record) -> step.Run.attempt)

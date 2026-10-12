@@ -1,14 +1,16 @@
-(* The active step's live-output pointer: runs/<run-id>.current names the
-   running step and its captured-output files while its subprocess runs.
-   The runner writes it at spawn and removes it when the step finishes, so
-   its presence means "a step is executing right now" - a watcher tails the
-   named paths for the Log box and drops the box when the file disappears.
+(* The active steps' live-output pointers: runs/<run-id>.current names each
+   running step (one per forEach item running in parallel) and its
+   captured-output files while its subprocess runs. The runner writes it at
+   spawn and removes it when no step runs, so its presence means "a step is
+   executing right now" - a watcher tails the named paths for the Log box
+   and drops the box when the file disappears.
    Everything is best-effort: the pointer is advisory display state, and a
    failure to write or remove it must never affect the run. *)
 
 type t = {
   skill : string;
   item_key : string option;
+  item_index : int option;
   tier : string option;
   stdout_path : string;
   stderr_path : string;
@@ -22,6 +24,9 @@ let to_json pointer =
     ([ ("skill", `String pointer.skill) ]
     @ (match pointer.item_key with
       | Some key -> [ ("item_key", `String key) ]
+      | None -> [])
+    @ (match pointer.item_index with
+      | Some index -> [ ("item_index", `Int index) ]
       | None -> [])
     @ (match pointer.tier with
       | Some tier -> [ ("tier", `String tier) ]
@@ -49,6 +54,10 @@ let of_json json =
         {
           skill;
           item_key = string_member "item_key";
+          item_index =
+            (match Yojson.Safe.Util.member "item_index" json with
+            | `Int index -> Some index
+            | _ -> None);
           tier = string_member "tier";
           stdout_path;
           stderr_path;
@@ -57,27 +66,28 @@ let of_json json =
   | _ -> None
 
 (* Temp-then-rename, so a reader never sees a half-written pointer. *)
-let write ~runs_dir ~run_id pointer =
+let write ~runs_dir ~run_id pointers =
   let destination = path ~runs_dir ~run_id in
   let temporary = destination ^ ".tmp" in
   try
     Out_channel.with_open_text temporary (fun channel ->
         Out_channel.output_string channel
-          (Yojson.Safe.to_string (to_json pointer)));
+          (Yojson.Safe.to_string (`List (List.map to_json pointers))));
     Sys.rename temporary destination
   with Sys_error _ -> ()
 
-(* None when absent or mid-write - the watcher just tries again next tick. *)
+(* Empty when absent or mid-write - the watcher just tries again next tick. *)
 let read ~runs_dir ~run_id =
   let file = path ~runs_dir ~run_id in
-  if not (Sys.file_exists file) then None
+  if not (Sys.file_exists file) then []
   else
     match
       Yojson.Safe.from_string
         (In_channel.with_open_text file In_channel.input_all)
     with
-    | json -> of_json json
-    | exception _ -> None
+    | `List entries -> List.filter_map of_json entries
+    | _ -> []
+    | exception _ -> []
 
 let remove ~runs_dir ~run_id =
   try Sys.remove (path ~runs_dir ~run_id) with Sys_error _ -> ()

@@ -36,7 +36,21 @@ harness:
 #     - --permission-mode
 #     - acceptEdits
 
-# Optional: wrap every harness invocation in an OS-level sandbox.
+# Optional: the wall-clock limit of each step attempt. Past it, jig sends
+# SIGTERM to the step's process group, waits the grace period, then sends
+# SIGKILL, and records the outcome timeout (routed like fail). Values need
+# a unit (s, m, h) or off. A skill step takes its tier's limit, else
+# default; a command step takes command. The first three values are the
+# defaults; tiers has none.
+# timeout:
+#   default: 60m
+#   command: 30m
+#   grace: 10s
+#   tiers:
+#     mechanical: 15m
+
+# Optional: wrap every harness invocation in an OS-level sandbox. The wrapper
+# must forward SIGTERM to the harness, or take it down when the wrapper dies.
 # wrapper:
 #   - srt
 
@@ -61,8 +75,48 @@ harness:
 
 # Optional: command run whenever a run stops executing (paused, completed,
 # failed, aborted) - {run_id} and {status} are substituted. Failures are
-# ignored.
+# ignored, and a command still running after 30 seconds is stopped.
 # notify:
 #   - sh
 #   - -c
 #   - osascript -e 'display notification "{run_id} {status}" with title "jig"'
+
+# Optional: let jig assign each skill step's session id before the harness
+# starts. Put "{session_id}" in the harness (or a tier) command, for
+# example `--session-id "{session_id}"` (claude and pi both take it; jig
+# assigns a UUID). The attempt record then names the session even if jig dies mid-step,
+# so `jig attach` and continue: below can reopen it.
+
+# Optional: on resume, reopen a step's interrupted session to finish it,
+# instead of a new attempt. Used for skills with on_interrupt: recover (the
+# default) or escalate (after a human resumes) whose attempt ran on the
+# default harness with a jig-assigned session id; {session_id} is
+# substituted and the recovery prompt is appended as the final argument.
+# Without it, a new attempt starts and its prompt describes the
+# interruption.
+# continue:
+#   - claude
+#   - -p
+#   - --resume
+#   - "{session_id}"
+#   - --output-format
+#   - json
+#   - --disallowedTools
+#   - "EnterWorktree,ExitWorktree"
+#   - --permission-mode
+#   - acceptEdits
+
+# Optional: command run in the workspace before and after each step
+# attempt. Its output is stored on the attempt, and a recovery prompt shows
+# it, so the agent sees what an interrupted attempt changed.
+# probe:
+#   - sh
+#   - -c
+#   - git branch --show-current; git rev-parse HEAD; git status --short
+
+# Optional: how many forEach items run at once (default 1). Above 1 the run
+# must be --isolated: each item works in its own git worktree, created from
+# the run's worktree. A passed item's worktree is removed (its commits stay
+# on branch jig/<run-id>-e<entry>-i<item>); a paused or failed item's
+# worktree stays, and jig status names it.
+# concurrency: 3

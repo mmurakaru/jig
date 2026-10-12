@@ -54,14 +54,43 @@ let print_steps_with_costs (run : Jig_core.Run.t) =
        else "");
   print_tier_breakdown run
 
+(* Every started, unfinished item of a parallel forEach, with its worktree. *)
+let print_items_in_progress (run : Jig_core.Run.t) =
+  let position = run.Jig_core.Run.position in
+  match
+    ( Jig_core.Run.parallel_items_in_progress position,
+      position.Jig_core.Run.for_each )
+  with
+  | [], _ | _, None -> ()
+  | items, Some state ->
+      Printf.printf "items in progress (concurrency %d):\n"
+        state.Jig_core.Run.concurrency;
+      List.iter
+        (fun (item : Jig_core.Run.item_in_progress) ->
+          let index = item.Jig_core.Run.started_item_index in
+          let key =
+            match List.nth_opt state.Jig_core.Run.items index with
+            | Some bindings -> Jig_core.Items.key bindings
+            | None -> "?"
+          in
+          Printf.printf "  item %d (%s): %s, body entry %d%s\n" (index + 1) key
+            (Jig_core.Run.string_of_status item.Jig_core.Run.item_status)
+            (item.Jig_core.Run.item_body_index + 1)
+            (match item.Jig_core.Run.item_workspace with
+            | Some path -> ", worktree " ^ path
+            | None -> ""))
+        items
+
 let report_run (run : Jig_core.Run.t) path =
   Printf.printf "run %s: %s\n" run.Jig_core.Run.id
     (Jig_core.Run.string_of_status run.Jig_core.Run.status);
   print_steps_with_costs run;
+  print_items_in_progress run;
   Printf.printf "run record: %s\n" path;
   match run.Jig_core.Run.status with
   | Jig_core.Run.Completed -> ()
   | Jig_core.Run.Paused ->
+      Option.iter (Printf.printf "%s\n") run.Jig_core.Run.error;
       (match Jig_core.Run.last_handoff run with
       | Some handoff ->
           Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
@@ -129,6 +158,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
     | None, None, _ -> Error "pass a workflow name or --resume <run-id>"
   in
   if not detach then (
+    Jig_core.Process_group.install_signal_forwarding ();
     match execute () with
     | Error message ->
         Printf.eprintf "jig: %s\n" message;
@@ -146,19 +176,30 @@ let run_workflow workflow resume task guidance skip detach isolated =
             (fun (path, workflow_dir) ->
               Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
                   Result.bind (Jig_core.Config.load ~jig_dir) (fun config ->
-                      Result.map
+                      Result.bind
+                        (Jig_core.Validate.concurrency_isolation
+                           ~concurrency:config.Jig_core.Config.concurrency
+                           ~isolated parsed)
                         (fun () ->
-                          Jig_core.Run.make_id ~workflow:name
-                            ~time:(Unix.gettimeofday ()) ~pid:(Unix.getpid ()))
-                        (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
-                           ~skill_paths:config.Jig_core.Config.skill_paths
-                           parsed))))
+                          Result.map
+                            (fun () ->
+                              Jig_core.Run.make_id ~workflow:name
+                                ~time:(Unix.gettimeofday ())
+                                ~pid:(Unix.getpid ()))
+                            (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
+                               ~skill_paths:config.Jig_core.Config.skill_paths
+                               parsed)))))
       | None, Some run_id, None ->
-          Result.map
-            (fun (_ : Jig_core.Run.t) -> run_id)
-            (Jig_core.Store.Filesystem.load
-               ~runs_dir:(Jig_core.Project.runs_dir ~root)
-               ~id:run_id)
+          let runs_dir = Jig_core.Project.runs_dir ~root in
+          (* Refuse a live run here, in the terminal, not in the log. *)
+          Result.bind (Jig_core.Store.Filesystem.load ~runs_dir ~id:run_id)
+            (fun (_ : Jig_core.Run.t) ->
+              Result.map
+                (fun run_lock ->
+                  Jig_core.Store.Filesystem.release_run_lock run_lock;
+                  run_id)
+                (Jig_core.Store.Filesystem.acquire_run_lock ~runs_dir
+                   ~id:run_id))
       | _ -> Error "--detach needs a workflow with --task, or --resume <run-id>"
     in
     match run_id_result with
@@ -175,6 +216,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
         if Unix.fork () > 0 then exit 0
         else (
           ignore (Unix.setsid ());
+          Jig_core.Process_group.install_signal_forwarding ();
           let devnull = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
           Unix.dup2 devnull Unix.stdin;
           Unix.close devnull;
@@ -202,12 +244,17 @@ let validate_workflow workflow =
         Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
             Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
               (fun skill_paths ->
+                let config = Jig_core.Config.load_if_valid ~jig_dir in
                 Result.map
                   (fun () ->
                     ( parsed.Jig_core.Workflow.name,
                       Jig_core.Validate.tier_warnings ~jig_dir ~skill_paths
-                        ~tiers:(Jig_core.Config.load_tiers ~jig_dir)
-                        parsed ))
+                        ~tiers:
+                          (Option.map
+                             (fun config -> config.Jig_core.Config.tiers)
+                             config)
+                        parsed
+                      @ Jig_core.Validate.timeout_tier_warnings config ))
                   (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
                      ~skill_paths parsed))))
   in
@@ -222,8 +269,9 @@ let validate_workflow workflow =
 let latest_run_id ~runs_dir =
   match Jig_core.Store.Filesystem.list_runs ~runs_dir with
   | Error message -> Error message
-  | Ok [] -> Error "no runs yet - nothing under runs/"
-  | Ok (newest :: _) -> Ok newest.Jig_core.Run.id
+  | Ok { Jig_core.Store.runs = []; _ } ->
+      Error "no runs yet - nothing under runs/"
+  | Ok { Jig_core.Store.runs = newest :: _; _ } -> Ok newest.Jig_core.Run.id
 
 let show_status run_id latest json_output otlp_output =
   let root = Sys.getcwd () in
@@ -263,6 +311,7 @@ let show_status run_id latest json_output otlp_output =
       | None -> ());
       Printf.printf "steps:\n";
       print_steps_with_costs run;
+      print_items_in_progress run;
       (match Jig_core.Run.last_handoff run with
       | Some handoff ->
           Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
@@ -311,20 +360,13 @@ let attach_run run_id latest step_number =
               Error
                 (Printf.sprintf "run %s has %d steps, no step %d" id
                    (List.length steps) number))
-      | None -> (
-          let newest_with_session =
-            List.fold_left
-              (fun found (step : Jig_core.Run.step_record) ->
-                match step.Jig_core.Run.session_id with
-                | Some _ as session -> session
-                | None -> found)
-              None steps
-          in
-          match newest_with_session with
-          | Some session -> Ok session
-          | None ->
-              Error
-                (Printf.sprintf "no step of run %s recorded a session id" id))
+      | None -> Jig_core.Attach.session_of_run run
+    in
+    let* () = Jig_core.Process_identity.refuse_while_attempts_run run in
+    let* () =
+      if Jig_core.Run.runs_items_in_parallel run.Jig_core.Run.position then
+        Error Jig_core.Runner.Default.parallel_items_refuse_one_item_message
+      else Ok ()
     in
     let workspace = Option.value run.Jig_core.Run.workspace ~default:root in
     let* () =
@@ -382,41 +424,75 @@ let attach_run run_id latest step_number =
             let environment =
               Jig_core.Otlp.traceparent_environment ~getenv:Sys.getenv_opt
                 ~run_id:id
-                ~step_index:(List.length run.Jig_core.Run.steps)
+                ~span_id:
+                  (Jig_core.Otlp.step_position_span_id ~run_id:id
+                     ~step_index:(List.length run.Jig_core.Run.steps))
             in
-            print_endline
-              "reopening the step's session - exit the chat to hand back to \
-               the run";
-            let chat =
-              Unix.create_process_env (List.hd command)
-                (Array.of_list command)
-                (Jig_core.Subprocess.environment_with_overrides environment)
-                Unix.stdin Unix.stdout Unix.stderr
+            let collect_handoff () =
+              print_endline
+                "reopening the step's session - exit the chat to hand back \
+                 to the run";
+              let chat =
+                Unix.create_process_env (List.hd command)
+                  (Array.of_list command)
+                  (Jig_core.Subprocess.environment_with_overrides environment)
+                  Unix.stdin Unix.stdout Unix.stderr
+              in
+              ignore (Unix.waitpid [] chat);
+              (* Only after the chat, which owns the terminal and its Ctrl-C. *)
+              Jig_core.Process_group.install_signal_forwarding ();
+              print_endline "collecting the step's handoff...";
+              let timeout = config.Jig_core.Config.timeout in
+              let time_limit =
+                Option.map
+                  (fun seconds ->
+                    Jig_core.Subprocess.time_limit_from_now
+                      ~seconds:(float_of_int seconds)
+                      ~grace_seconds:
+                        (float_of_int
+                           timeout.Jig_core.Step_timeout.grace_seconds))
+                  timeout.Jig_core.Step_timeout.skill_step_limit_seconds
+              in
+              Jig_core.Executor.Local.execute ~environment ?time_limit
+                ~command:headless_command ~cwd:workspace
+                ~prompt:Jig_core.Runner.elicit_handoff_prompt ()
             in
-            ignore (Unix.waitpid [] chat);
-            print_endline "collecting the step's handoff...";
-            let continued =
-              Result.bind
-                (Jig_core.Executor.Local.execute ~environment
-                   ~command:headless_command ~cwd:workspace
-                   ~prompt:Jig_core.Runner.elicit_handoff_prompt ())
-                (fun exec_result ->
-                  Jig_core.Runner.Default.continue_attached
-                    ~on_step:print_step_live ~root ~run_id:id ~exec_result ())
-            in
-            match continued with
+            match
+              Jig_core.Runner.Default.continue_attached
+                ~on_step:print_step_live ~root ~run_id:id ~collect_handoff ()
+            with
             | Ok (run, path) -> report_run run path
             | Error message ->
                 Printf.eprintf "jig: %s\n" message;
-                Printf.printf
-                  "still paused: jig run --resume %s [--guidance \"...\"] \
-                   [--skip], or jig attach %s\n"
-                  id id;
+                let still_paused =
+                  match
+                    Jig_core.Store.Filesystem.load
+                      ~runs_dir:(Jig_core.Project.runs_dir ~root) ~id
+                  with
+                  | Ok stored -> stored.Jig_core.Run.status = Jig_core.Run.Paused
+                  | Error _ -> false
+                in
+                if still_paused then
+                  Printf.printf
+                    "still paused: jig run --resume %s [--guidance \"...\"] \
+                     [--skip], or jig attach %s\n"
+                    id id;
                 exit 2))
 
 let list_runs json_output =
   let runs_dir = Jig_core.Project.runs_dir ~root:(Sys.getcwd ()) in
-  match Jig_core.Store.Filesystem.list_runs ~runs_dir with
+  let listing =
+    Result.map
+      (fun listing ->
+        List.iter
+          (fun unreadable ->
+            Printf.eprintf "jig: warning: skipped run %s (unreadable): %s\n"
+              unreadable.Jig_core.Store.id unreadable.Jig_core.Store.reason)
+          listing.Jig_core.Store.unreadable_records;
+        listing.Jig_core.Store.runs)
+      (Jig_core.Store.Filesystem.list_runs ~runs_dir)
+  in
+  match listing with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1

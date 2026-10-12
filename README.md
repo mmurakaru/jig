@@ -41,6 +41,20 @@ marked `escalate` pauses the run for you:
 jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lexer"
 ```
 
+jig saves each step attempt in the run record before the harness starts, so
+a run killed mid-step resumes too. The skill's `on_interrupt` decides what
+happens to the interrupted attempt: `recover` (the default) starts a new
+attempt that is told about it and checks the workspace first, `rerun`
+starts the step again, and `escalate` pauses for you. With a
+`{session_id}` in the harness command and a `continue:` command in
+`config.yaml`, a resume reopens the interrupted session to finish the step,
+and `jig attach` opens that session too. A resume or an attach refuses
+while the interrupted attempt's harness process still runs, so two
+harnesses never edit one workspace. Inside a `retry` block the run
+continues at that step, not at the start of the block. A run killed after a
+step finished does not run that step again: the resume acts on its saved
+result.
+
 ## Tiers
 
 Only the steps that need judgment - diagnosis, design, tradeoffs - need a
@@ -70,6 +84,12 @@ total cost: $3.6700
 by tier: default $3.0400 (4 steps); mechanical $0.6300 (3 steps)
 ```
 
+## Timeouts
+
+Every step attempt has a wall-clock limit from `timeout:` in `config.yaml` (60m for skill steps, 30m for command steps, per tier if you like).
+At the limit, jig stops the step's process group and records the outcome `timeout`, which routes like `fail`.
+See [step timeouts](docs/writing-a-workflow.md#step-timeouts).
+
 ## The field guide
 
 `.jig/FIELDGUIDE.md` is repo knowledge agents accumulate across runs -
@@ -84,6 +104,7 @@ On a TTY, `jig run` draws the run in place: the pipeline with a spinner on
 the active step and per-step durations, costs, and tiers, and beneath it a
 live tail of what the running step's agent is doing - titled with the
 step, its forEach item, and the tier it runs on.
+With `concurrency` above 1 in `config.yaml`, forEach items run in parallel, each in its own worktree, and the pipeline shows every item in flight.
 When the run ends, the completed pipeline stays in the scrollback above the
 run report; each step's full output lives in the run record.
 
@@ -92,10 +113,11 @@ run report; each step's full output lives in the run record.
 ## Traces
 
 `jig status <run-id> --otlp` prints the run as one OpenTelemetry trace in OTLP/JSON.
-The run is the root span and each step attempt is a child span, with its tier, outcome, cost, and token usage as attributes.
-Handoffs, escalations, and resumes are span events.
-Trace and span ids derive from the run id and the step position, so a paused and resumed run stays one trace, and exporting the same run twice gives the same ids.
-The root span appears once the run is terminal (completed, failed, or aborted); before that, the export holds the finished steps only.
+The run is the root span and each step attempt is a child span, with its step key, attempt id, tier, outcome, cost, token usage, and forEach item as attributes.
+Handoffs, escalations, timeouts, interruptions, and resumes are span events; a timed-out or interrupted attempt has an error status.
+The trace id derives from the run id and each span id from the attempt id, so a paused and resumed run stays one trace, and exporting the same run twice gives the same ids.
+A human skip or an attach hand-back has no attempt id, so its span id derives from its position in the run record.
+The root span appears once the run is terminal (completed, failed, or aborted); before that, the export holds the finished attempts only.
 
 jig sends nothing itself.
 Pipe the output to any OTLP/HTTP endpoint, for example a local [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) (install it per its README: Homebrew, release binaries, or Docker):
@@ -122,7 +144,9 @@ notify:
     --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}/v1/traces"
 ```
 
-Each step's harness subprocess (and each command step) gets `TRACEPARENT` set to that step's span, so a harness that exports its own traces nests them under the step.
+Every process of an attempt gets `TRACEPARENT` set to the attempt's span, next to `JIG_STEP_KEY` and `JIG_ATTEMPT_ID`: the harness (also a `continue:` session and a parallel forEach item), a command step, and the `probe:` command.
+A harness that exports its own traces nests them under the attempt.
+The `jig attach` chat and its hand-back get the `TRACEPARENT` of the span the hand-back record gets.
 Claude Code reads `TRACEPARENT` in `-p` mode once its tracing is on, for example:
 
 ```sh
@@ -139,7 +163,7 @@ Configuration is the standard `OTEL_*` environment variables only.
 ```
 jig init                                    # scaffold .jig/ from the embedded starter set
 jig run <workflow> --task "<description>"   # execute a workflow against a task
-  [--isolated]                              #   in a git worktree per run
+  [--isolated]                              #   in a git worktree per run (and per item with concurrency)
   [--detach]                                #   survives its terminal; steps stream to runs/<run-id>.log
 jig run --resume <run-id> [--guidance "…"]  # continue a paused run
   [--skip]                                  #   a human finished the paused step; record it and move on
@@ -150,6 +174,11 @@ jig list workflows|runs [--json]            # discover what is runnable, and wha
 jig validate <workflow>                     # lint before running
 ```
 
+Each step runs in its own process group.
+Ctrl-C on a run, or a SIGTERM or SIGHUP to a detached one, stops every running step, parallel forEach items included, with every process it started (SIGTERM, then SIGKILL after 5 seconds), and jig exits with 128 + the signal number.
+The stopped attempt stays in the run record, and `jig run --resume <run-id>` treats it as the skill's `on_interrupt` says.
+The interactive chat of `jig attach` keeps the terminal and its Ctrl-C.
+
 ## Layout
 
 ```
@@ -158,7 +187,7 @@ jig validate <workflow>                     # lint before running
   FIELDGUIDE.md        # repo knowledge agents accumulate across runs
   skills/<name>/SKILL.md
   workflows/<name>.yaml
-  runs/                # one JSON record per run + metering.jsonl
+  runs/                # one JSON record per run, a <run-id>.lock while a process drives it, metering.jsonl
 ```
 
 Everything is a file: skills and workflows are versioned with the code they

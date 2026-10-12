@@ -104,7 +104,11 @@ strings - jig never evaluates, inlines, or resolves them;
   handoff threads into the next attempt - that is the self-correction loop.
   The group completes when its `until: pass` step passes (or when all steps
   pass). Exhausting `max_iterations` triggers `on_exhausted`.
-- A forEach block runs its body once per item, in order. Items come from a
+- A resume inside a retry block continues the same iteration at the step
+  that paused or was interrupted; the steps that already passed in that
+  iteration do not run again.
+- A forEach block runs its body once per item, in order (or several items
+  at once; see below). Items come from a
   checked-in file: TSV with a header row (no quoting - values cannot
   contain tabs or newlines) or a JSON array of objects with string values.
   The first column is the item's *key* - its identity in position lines,
@@ -121,6 +125,62 @@ strings - jig never evaluates, inlines, or resolves them;
   previous item (or the step before the forEach). Threading within an item
   - step-to-step and retry - is unchanged. Per-item context comes from
   `with:`, not from an upstream handoff.
+
+### Running items in parallel
+
+Because items are independent, `concurrency: N` in `.jig/config.yaml` runs up to N items at once (default 1, one item at a time).
+The workflow does not change; concurrency is a property of the machine that runs it.
+
+- Above 1, the run must be `--isolated`; without it `jig run` refuses with an error before anything starts.
+  A workflow with no forEach ignores the setting.
+- Each item runs in its own detached git worktree, created from the run worktree's current commit, at `<repo>-worktrees/<run-id>-e<entry>-i<item>` (zero-based entry and item indexes, as in step keys).
+  The item's steps edit only that worktree, and nothing merges back: the item's result stays on its own branch (below), or in the branch or pull request its steps create.
+- Each item keeps its own cursor (body entry, retry iteration, step) in the run record, under `position.for_each.items_in_progress`, together with its worktree path and status.
+  A crash with several items in flight resumes each of them where it stopped; steps that already finished do not run again, and each cut-off attempt follows its skill's `on_interrupt` policy.
+- When an item passes, its worktree is removed.
+  If its steps made commits, jig first points the branch `jig/<run-id>-e<entry>-i<item>` at them, so they stay reachable; uncommitted changes go with the worktree, as they do for the run worktree.
+  When an item pauses or fails, its worktree stays: a resume continues a paused item in it, and a failed item's worktree is left for inspection (remove it with `git worktree remove <path>` when done).
+- Routing is per item and follows the same rules as a sequential run.
+  When one item escalates, fails, or aborts, no new item starts; the items in flight run to their own end, then the run stops.
+  A failure or abort decides the run's status over a pause.
+- A resume of a run paused inside a parallel forEach continues every paused item, and `--guidance` reaches each of them.
+  `--skip` and `jig attach` complete a single paused step, so they refuse such a run.
+- The live view, `jig watch`, and `jig status` (and `--json`) show every item in flight; the Log box follows the running step of the last item in flight.
+
+### Step timeouts
+
+Every step attempt runs under a wall-clock limit, set in `.jig/config.yaml` and never in the workflow:
+
+```yaml
+timeout:
+  default: 60m    # skill steps
+  command: 30m    # command steps
+  grace: 10s      # from SIGTERM to SIGKILL
+  tiers:
+    mechanical: 15m
+```
+
+- Each value needs a unit (`s`, `m`, `h`), or is `off`; a bare number is an error.
+  A skill step takes the limit of its tier, else `default`; a command step takes `command`.
+  `jig validate` warns about a `timeout.tiers` name that `tiers:` does not map.
+- The limit applies to one attempt, not to the step or the run: each retry iteration and each forEach item gets its own deadline.
+- jig saves the absolute deadline with the attempt before the process starts.
+  At the deadline, jig first saves a timeout mark in the run record, then sends SIGTERM to the step's process group, waits the grace period, and sends SIGKILL.
+- The step records the outcome `timeout`, with the output it wrote so far, its exit code, and cost `unknown` for a skill step (a command step costs 0).
+  jig decides the outcome from its own deadline, never from the exit code: a wrapper can exit 0 after its child is killed.
+- `timeout` routes like `fail`: a plain step obeys `on_fail` (no `on_fail` fails the run), a retry iteration fails and counts, and `on_exhausted` applies at the limit.
+  The next attempt's prompt says that the previous one timed out, with the end of its output.
+- A crash does not extend a deadline.
+  If jig stops after the timeout mark, or a resume comes after the deadline, the resume records the attempt as `timeout` (and first stops its process group if it still runs).
+  A resume before the deadline takes the interrupted path; a continued session (`continue:`) gets only the time left until that deadline.
+- The interactive chat of `jig attach` has no limit.
+  Its headless hand-back has the `default` limit; if it times out, the run stays paused.
+- A `wrapper:` must forward SIGTERM to its child or take it down when it dies, or a timeout can leave processes behind.
+
+Recorded decision: the limit is host configuration, like `wrapper:` and `concurrency:`, so the same workflow runs on a laptop, in CI, or in a sandbox pool with limits that fit each.
+A workflow has no `timeout:` key, at the top level or on a step; validation rejects one.
+The model is a start-to-close limit per attempt, as in [Temporal's activity timeouts](https://docs.temporal.io/encyclopedia/detecting-activity-failures), with the abort order of pi-durable ([earendil-works/pi](https://github.com/earendil-works/pi)): the decision is on disk before any signal.
+The default harness writes its output only when it ends, so there is no idle (no-output) limit.
 
 ## Pattern: the review stack
 

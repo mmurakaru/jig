@@ -116,6 +116,7 @@ run report; each step's full output lives in the run record.
 The run is the root span and each step attempt is a child span, with its step key, attempt id, tier, outcome, cost, token usage, and forEach item as attributes.
 Handoffs, escalations, timeouts, interruptions, and resumes are span events; a timed-out or interrupted attempt has an error status.
 The trace id derives from the run id and each span id from the attempt id, so a paused and resumed run stays one trace, and exporting the same run twice gives the same ids.
+A span never changes once it appears in an export.
 A human skip or an attach hand-back has no attempt id, so its span id derives from its position in the run record.
 The root span appears once the run is terminal (completed, failed, or aborted); before that, the export holds the finished attempts only.
 
@@ -133,14 +134,21 @@ jig status <run-id> --otlp \
 Open the viewer, find the `invoke_workflow <workflow>` trace, and expand it to see the steps.
 The viewer keeps traces in memory by default; start it with `--db <file>` to keep them across restarts.
 
-To export at every pause and every finish, put the same pipe in the `notify` hook in `.jig/config.yaml` (it runs from the project root, so `jig` must be on `PATH`):
+Receivers such as otel-desktop-viewer reject a whole batch that holds a span id they already have, so send each span once.
+Plain `--otlp` always prints the full trace: send it once, after the run is terminal.
+To send a run in parts, add `--new-spans-only`: it prints only the spans that no earlier `--new-spans-only` call printed for that run, and records their ids in `runs/<run-id>.otlp-sent`.
+With nothing new, it prints an empty trace, which receivers accept.
+jig records the ids once it prints them, so a failed send does not repeat; export again with plain `--otlp` to a fresh receiver to recover.
+
+To export at every pause and every finish, put the incremental pipe in the `notify` hook in `.jig/config.yaml` (it runs from the project root, so `jig` must be on `PATH`):
 
 ```yaml
 notify:
   - sh
   - -c
   - >-
-    jig status {run_id} --otlp | curl -sf -X POST -H 'Content-Type: application/json'
+    jig status {run_id} --otlp --new-spans-only
+    | curl -sf -X POST -H 'Content-Type: application/json'
     --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}/v1/traces"
 ```
 
@@ -170,6 +178,7 @@ jig run --resume <run-id> [--guidance "…"]  # continue a paused run
 jig attach <run-id>                         # open the paused step's session; exiting the chat hands back
 jig watch <run-id>                          # attach the live view to a running (or finished) run
 jig status <run-id> [--json | --otlp]       # inspect a run, or print it as an OpenTelemetry trace
+  [--new-spans-only]                        #   with --otlp: only spans not printed before
 jig list workflows|runs [--json]            # discover what is runnable, and what ran
 jig validate <workflow>                     # lint before running
 ```

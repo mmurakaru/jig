@@ -68,7 +68,9 @@ React to `status`:
   step opened one, and the run record path.
 - `paused` - a step escalated. Triage the last handoff (below).
 - `failed` / `aborted` - report the failing step's handoff and stderr tail;
-  suggest the fix or a `--resume` if the cause is transient.
+  suggest the fix or a `--resume` if the cause is transient. A step
+  outcome `timeout` means jig stopped the step at its wall-clock limit
+  (`timeout:` in `.jig/config.yaml`); its handoff holds the output tail.
 
 ## Triage a paused run
 

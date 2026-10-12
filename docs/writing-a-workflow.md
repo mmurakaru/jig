@@ -147,6 +147,41 @@ The workflow does not change; concurrency is a property of the machine that runs
   `--skip` and `jig attach` complete a single paused step, so they refuse such a run.
 - The live view, `jig watch`, and `jig status` (and `--json`) show every item in flight; the Log box follows the running step of the last item in flight.
 
+### Step timeouts
+
+Every step attempt runs under a wall-clock limit, set in `.jig/config.yaml` and never in the workflow:
+
+```yaml
+timeout:
+  default: 60m    # skill steps
+  command: 30m    # command steps
+  grace: 10s      # from SIGTERM to SIGKILL
+  tiers:
+    mechanical: 15m
+```
+
+- Each value needs a unit (`s`, `m`, `h`), or is `off`; a bare number is an error.
+  A skill step takes the limit of its tier, else `default`; a command step takes `command`.
+  `jig validate` warns about a `timeout.tiers` name that `tiers:` does not map.
+- The limit applies to one attempt, not to the step or the run: each retry iteration and each forEach item gets its own deadline.
+- jig saves the absolute deadline with the attempt before the process starts.
+  At the deadline, jig first saves a timeout mark in the run record, then sends SIGTERM to the step's process group, waits the grace period, and sends SIGKILL.
+- The step records the outcome `timeout`, with the output it wrote so far, its exit code, and cost `unknown`.
+  jig decides the outcome from its own deadline, never from the exit code: a wrapper can exit 0 after its child is killed.
+- `timeout` routes like `fail`: a plain step obeys `on_fail` (no `on_fail` fails the run), a retry iteration fails and counts, and `on_exhausted` applies at the limit.
+  The next attempt's prompt says that the previous one timed out, with the end of its output.
+- A crash does not extend a deadline.
+  If jig stops after the timeout mark, or a resume comes after the deadline, the resume records the attempt as `timeout` (and first stops its process group if it still runs).
+  A resume before the deadline takes the interrupted path; a continued session (`continue:`) gets only the time left until that deadline.
+- The interactive chat of `jig attach` has no limit.
+  Its headless hand-back has the `default` limit; if it times out, the run stays paused.
+- A `wrapper:` must forward SIGTERM to its child or take it down when it dies, or a timeout can leave processes behind.
+
+Recorded decision: the limit is host configuration, like `wrapper:` and `concurrency:`, so the same workflow runs on a laptop, in CI, or in a sandbox pool with limits that fit each.
+The schema does not change; `timeout:` in a workflow is rejected.
+The model is a start-to-close limit per attempt, as in [Temporal's activity timeouts](https://docs.temporal.io/encyclopedia/detecting-activity-failures), with the abort order of pi-durable ([earendil-works/pi](https://github.com/earendil-works/pi)): the decision is on disk before any signal.
+The default harness writes its output only when it ends, so there is no idle (no-output) limit.
+
 ## Pattern: the review stack
 
 Multiple uncorrelated review lenses catch what one reviewer misses - each

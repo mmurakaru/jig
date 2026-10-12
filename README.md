@@ -84,6 +84,12 @@ total cost: $3.6700
 by tier: default $3.0400 (4 steps); mechanical $0.6300 (3 steps)
 ```
 
+## Timeouts
+
+Every step attempt has a wall-clock limit from `timeout:` in `config.yaml` (60m for skill steps, 30m for command steps, per tier if you like).
+At the limit, jig stops the step's process group and records the outcome `timeout`, which routes like `fail`.
+See [step timeouts](docs/writing-a-workflow.md#step-timeouts).
+
 ## The field guide
 
 `.jig/FIELDGUIDE.md` is repo knowledge agents accumulate across runs -

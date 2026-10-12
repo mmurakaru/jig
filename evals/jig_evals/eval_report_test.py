@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from jig_evals.eval_report import build_eval_report, load_trial_outcomes, main
+from jig_evals.jig_agent import JIG_RUNS_LOG_NAME
 
 RECORDED_RUNS = Path(__file__).parent / "testdata" / "jig-runs"
 MODEL = "anthropic/claude-sonnet-4-6"
@@ -36,7 +37,7 @@ def write_trial(
     }
     (trial_directory / "result.json").write_text(json.dumps(result))
     if recorded_run is not None:
-        shutil.copytree(RECORDED_RUNS / recorded_run, trial_directory / "agent" / "jig-runs")
+        shutil.copytree(RECORDED_RUNS / recorded_run, trial_directory / "agent" / JIG_RUNS_LOG_NAME)
 
 
 @pytest.fixture
@@ -70,21 +71,22 @@ def test_a_solved_but_paused_run_is_not_an_unattended_solve(job_directory):
     assert (jig.trials, jig.solved, jig.solved_unattended) == (5, 3, 2)
 
 
-def test_jig_cost_metrics_count_failed_trials_and_keep_unknown_cost_visible(job_directory):
+def test_jig_cost_metrics_count_failed_trials_and_never_pass_a_partial_cost_as_whole(job_directory):
     jig = reports_by_agent(job_directory)["jig"]
-    known_costs = [1.0375, 0.25, 1.2875, 0.5, 0.7625]
-    assert jig.mean_cost_per_trial_usd == pytest.approx(sum(known_costs) / 5)
-    assert jig.cost_per_solved_task_usd == pytest.approx(sum(known_costs) / 3)
-    assert jig.unknown_cost_events == 1
-    assert jig.cost_by_tier_usd == pytest.approx({"default": 3.75, "mechanical": 0.0875})
+    whole_costs = [1.0375, 0.25, 1.2875, 0.5]
+    assert jig.trials_without_cost == 1
+    assert jig.mean_cost_per_trial_usd == pytest.approx(sum(whole_costs) / 4)
+    assert jig.cost_per_solved_task_usd == pytest.approx(sum(whole_costs) / 3)
+    assert jig.jig.unknown_cost_events == 1
+    assert jig.jig.cost_by_tier_usd == pytest.approx({"default": 3.75, "mechanical": 0.0875})
 
 
 def test_jig_workflow_metrics(job_directory):
-    jig = reports_by_agent(job_directory)["jig"]
-    assert jig.mean_retry_iterations == pytest.approx((2 + 0 + 3 + 0 + 1) / 5)
-    assert jig.escalations == 2
-    assert jig.escalations_by_cause == {"agent-escalated": 1, "failure-escalated": 1}
-    assert (jig.invalid_handoff_steps, jig.steps, jig.trials_with_invalid_handoff) == (1, 23, 1)
+    metrics = reports_by_agent(job_directory)["jig"].jig
+    assert metrics.mean_retry_iterations == pytest.approx((2 + 0 + 3 + 0 + 1) / 5)
+    assert metrics.escalations == 2
+    assert metrics.escalations_by_cause == {"agent-escalated": 1, "failure-escalated": 1}
+    assert (metrics.invalid_handoff_steps, metrics.steps, metrics.trials_with_invalid_handoff) == (1, 23, 1)
 
 
 def test_baseline_timeout_is_unsolved_and_costless(job_directory):
@@ -92,7 +94,7 @@ def test_baseline_timeout_is_unsolved_and_costless(job_directory):
     assert (baseline.solved, baseline.solved_unattended, baseline.timeouts) == (1, 1, 1)
     assert baseline.trials_without_cost == 1
     assert baseline.cost_per_solved_task_usd == pytest.approx(1.25)
-    assert not baseline.is_jig
+    assert baseline.jig is None
 
 
 def test_rendered_report_names_every_metric(job_directory, capsys):
@@ -115,3 +117,19 @@ def test_rendered_report_names_every_metric(job_directory, capsys):
 def test_empty_job_directory_is_an_error(tmp_path, capsys):
     assert main([str(tmp_path)]) == 1
     assert "no trials found" in capsys.readouterr().err
+
+
+def test_a_timed_out_jig_step_is_not_solved_even_with_reward_one(tmp_path):
+    job = tmp_path / "job"
+    write_trial(job, "duration-parse__a", "jig", 1.0)
+    record = {
+        "id": "run-1",
+        "status": "completed",
+        "steps": [{"skill": "implement-fix", "outcome": "timeout", "cost_usd": "unknown"}],
+        "started_at": "2026-10-12T00:00:00Z",
+    }
+    runs_directory = job / "duration-parse__a" / "agent" / JIG_RUNS_LOG_NAME
+    runs_directory.mkdir()
+    (runs_directory / "run-1.json").write_text(json.dumps(record))
+    (report,) = build_eval_report(load_trial_outcomes(job))
+    assert (report.solved, report.solved_unattended, report.timeouts) == (0, 0, 1)

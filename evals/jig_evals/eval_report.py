@@ -1,6 +1,7 @@
 """Report jig eval metrics per arm (agent configuration) from a Harbor job directory."""
 
 import argparse
+import dataclasses
 import json
 import statistics
 import sys
@@ -10,8 +11,10 @@ from pathlib import Path
 from jig_evals.jig_agent import JIG_RUNS_LOG_NAME
 from jig_evals.jig_run_summary import JigRunSummary, summarize_jig_run
 
+JIG_AGENT_NAME = "jig"
+
 # Host-specific paths say nothing about the arm, so they stay out of its label.
-ARM_LABEL_IGNORED_KWARGS = {"jig_binary_path"}
+ARM_LABEL_IGNORED_OPTIONS = {"jig_binary_path"}
 
 
 @dataclass(frozen=True)
@@ -28,14 +31,14 @@ class TrialOutcome:
 
     @property
     def solved(self) -> bool:
-        return self.reward is not None and self.reward >= 1.0
+        """Reward 1 within the time limit; a timed-out trial never counts as solved."""
+        return self.reward is not None and self.reward >= 1.0 and not self.timed_out
 
     @property
     def finished_unattended(self) -> bool:
         """jig: the run completed. Other agents: the agent ended without an error."""
-        if self.jig_run is not None:
-            return self.jig_run.completed and self.exception_type is None
-        return self.exception_type is None
+        jig_run_completed = self.jig_run is None or self.jig_run.completed
+        return jig_run_completed and self.exception_type is None and not self.timed_out
 
     @property
     def solved_unattended(self) -> bool:
@@ -47,20 +50,18 @@ class TrialOutcome:
         return harbor_timeout or (self.jig_run is not None and self.jig_run.timeout_steps > 0)
 
     @property
-    def known_cost_usd(self) -> float | None:
-        """Cost of the parts that reported one; None when nothing reported a cost."""
-        if self.jig_run is not None:
-            return self.jig_run.known_cost_usd if self.jig_run.cost_by_tier else None
-        return self.cost_usd
+    def reported_cost_usd(self) -> float | None:
+        """None when any part of the trial's cost is unknown, so a partial sum never passes as whole."""
+        return self.jig_run.cost_usd if self.jig_run is not None else self.cost_usd
 
 
-def arm_label(agent_name: str, model_name: str | None, kwargs: dict) -> str:
+def arm_label(agent_name: str, model_name: str | None, agent_options: dict) -> str:
     """Name an arm by agent, model, and the options that change its behavior."""
     label = agent_name + (f" ({model_name})" if model_name else "")
     options = [
-        f"{key}={json.dumps(value) if not isinstance(value, str) else value}"
-        for key, value in sorted(kwargs.items())
-        if key not in ARM_LABEL_IGNORED_KWARGS
+        f"{key}={value if isinstance(value, str) else json.dumps(value)}"
+        for key, value in sorted(agent_options.items())
+        if key not in ARM_LABEL_IGNORED_OPTIONS
     ]
     return label + (" " + " ".join(options) if options else "")
 
@@ -81,7 +82,7 @@ def load_trial_outcome(trial_directory: Path) -> TrialOutcome:
         reward=rewards.get("reward"),
         exception_type=exception_info.get("exception_type"),
         cost_usd=agent_result.get("cost_usd"),
-        jig_run=summarize_jig_run(jig_runs_directory) if agent_name == "jig" else None,
+        jig_run=summarize_jig_run(jig_runs_directory) if agent_name == JIG_AGENT_NAME else None,
     )
 
 
@@ -96,8 +97,22 @@ def load_trial_outcomes(job_directory: Path) -> list[TrialOutcome]:
 
 
 @dataclass
+class JigArmMetrics:
+    """Metrics only a jig run record can give."""
+
+    cost_by_tier_usd: dict[str, float]
+    unknown_cost_events: int
+    mean_retry_iterations: float
+    escalations: int
+    escalations_by_cause: dict[str, int]
+    steps: int
+    invalid_handoff_steps: int
+    trials_with_invalid_handoff: int
+
+
+@dataclass
 class ArmReport:
-    """The metrics of one arm; rates are fractions of the arm's trials."""
+    """The metrics of one arm; jig is None for arms that are not jig."""
 
     arm: str
     trials: int
@@ -107,29 +122,40 @@ class ArmReport:
     trials_without_cost: int
     cost_per_solved_task_usd: float | None
     timeouts: int
-    is_jig: bool
-    cost_by_tier_usd: dict[str, float] = field(default_factory=dict)
-    unknown_cost_events: int = 0
-    mean_retry_iterations: float | None = None
-    escalations: int = 0
-    escalations_by_cause: dict[str, int] = field(default_factory=dict)
-    steps: int = 0
-    invalid_handoff_steps: int = 0
-    trials_with_invalid_handoff: int = 0
     solved_by_task: dict[str, tuple[int, int]] = field(default_factory=dict)
+    jig: JigArmMetrics | None = None
+
+
+def build_jig_arm_metrics(jig_runs: list[JigRunSummary]) -> JigArmMetrics:
+    cost_by_tier_usd: dict[str, float] = {}
+    escalations_by_cause: dict[str, int] = {}
+    for run in jig_runs:
+        for tier, cost in run.cost_by_tier.items():
+            cost_by_tier_usd[tier] = cost_by_tier_usd.get(tier, 0.0) + cost
+        if run.escalation_cause is not None:
+            escalations_by_cause[run.escalation_cause] = escalations_by_cause.get(run.escalation_cause, 0) + 1
+    return JigArmMetrics(
+        cost_by_tier_usd=cost_by_tier_usd,
+        unknown_cost_events=sum(run.unknown_cost_events for run in jig_runs),
+        mean_retry_iterations=statistics.fmean(run.retry_iterations for run in jig_runs),
+        escalations=sum(escalations_by_cause.values()),
+        escalations_by_cause=escalations_by_cause,
+        steps=sum(run.step_count for run in jig_runs),
+        invalid_handoff_steps=sum(run.invalid_handoff_steps for run in jig_runs),
+        trials_with_invalid_handoff=sum(run.invalid_handoff_steps > 0 for run in jig_runs),
+    )
 
 
 def build_arm_report(arm: str, outcomes: list[TrialOutcome]) -> ArmReport:
     """Compute one arm's metrics; a cost per solved task counts failed trials' cost too."""
-    known_costs = [outcome.known_cost_usd for outcome in outcomes if outcome.known_cost_usd is not None]
+    known_costs = [outcome.reported_cost_usd for outcome in outcomes if outcome.reported_cost_usd is not None]
     solved = sum(outcome.solved for outcome in outcomes)
     jig_runs = [outcome.jig_run for outcome in outcomes if outcome.jig_run is not None]
     solved_by_task: dict[str, tuple[int, int]] = {}
     for outcome in outcomes:
         task_solved, task_trials = solved_by_task.get(outcome.task_name, (0, 0))
         solved_by_task[outcome.task_name] = (task_solved + outcome.solved, task_trials + 1)
-
-    report = ArmReport(
+    return ArmReport(
         arm=arm,
         trials=len(outcomes),
         solved=solved,
@@ -138,25 +164,9 @@ def build_arm_report(arm: str, outcomes: list[TrialOutcome]) -> ArmReport:
         trials_without_cost=len(outcomes) - len(known_costs),
         cost_per_solved_task_usd=sum(known_costs) / solved if solved and known_costs else None,
         timeouts=sum(outcome.timed_out for outcome in outcomes),
-        is_jig=bool(jig_runs),
         solved_by_task=dict(sorted(solved_by_task.items())),
+        jig=build_jig_arm_metrics(jig_runs) if jig_runs else None,
     )
-    if not jig_runs:
-        return report
-    for run in jig_runs:
-        for tier, cost in run.cost_by_tier.items():
-            report.cost_by_tier_usd[tier] = report.cost_by_tier_usd.get(tier, 0.0) + cost
-        if run.escalation_cause is not None:
-            report.escalations += 1
-            report.escalations_by_cause[run.escalation_cause] = (
-                report.escalations_by_cause.get(run.escalation_cause, 0) + 1
-            )
-    report.unknown_cost_events = sum(run.unknown_cost_events for run in jig_runs)
-    report.mean_retry_iterations = statistics.fmean(run.retry_iterations for run in jig_runs)
-    report.steps = sum(run.step_count for run in jig_runs)
-    report.invalid_handoff_steps = sum(run.invalid_handoff_steps for run in jig_runs)
-    report.trials_with_invalid_handoff = sum(run.invalid_handoff_steps > 0 for run in jig_runs)
-    return report
 
 
 def build_eval_report(outcomes: list[TrialOutcome]) -> list[ArmReport]:
@@ -167,47 +177,59 @@ def build_eval_report(outcomes: list[TrialOutcome]) -> list[ArmReport]:
     return [build_arm_report(arm, arms[arm]) for arm in sorted(arms)]
 
 
-def format_rate(count: int, total: int) -> str:
+def format_trial_rate(count: int, total: int) -> str:
     percent = 100.0 * count / total if total else 0.0
     return f"{percent:.1f}% ({count}/{total})"
 
 
-def format_usd(value: float | None) -> str:
+def format_cost_usd(value: float | None) -> str:
     return "n/a" if value is None else f"${value:.4f}"
+
+
+def render_jig_arm_rows(metrics: JigArmMetrics, trials: int) -> list[tuple[str, str]]:
+    tiers = ", ".join(f"{tier} {format_cost_usd(cost)}" for tier, cost in sorted(metrics.cost_by_tier_usd.items()))
+    unknown = f" (+{metrics.unknown_cost_events} unknown-cost steps)" if metrics.unknown_cost_events else ""
+    causes = ", ".join(f"{cause} {count}" for cause, count in sorted(metrics.escalations_by_cause.items()))
+    return [
+        ("cost per tier (all trials)", (tiers or "n/a") + unknown),
+        ("retry iterations", f"{metrics.mean_retry_iterations:.2f} per trial"),
+        ("escalation rate", format_trial_rate(metrics.escalations, trials) + (f": {causes}" if causes else "")),
+        (
+            "invalid-handoff rate",
+            f"{format_trial_rate(metrics.invalid_handoff_steps, metrics.steps)} of steps, "
+            f"in {metrics.trials_with_invalid_handoff} of {trials} trials",
+        ),
+    ]
 
 
 def render_arm_report(report: ArmReport) -> str:
     """Render one arm as aligned plain-text lines."""
-    cost_note = f" ({report.trials_without_cost} of {report.trials} trials reported no cost)" if report.trials_without_cost else ""
+    cost_note = (
+        f" ({report.trials_without_cost} of {report.trials} trials reported no cost)"
+        if report.trials_without_cost
+        else ""
+    )
     rows = [
         ("trials", str(report.trials)),
-        ("solve rate", format_rate(report.solved, report.trials)),
-        ("unattended solve rate", format_rate(report.solved_unattended, report.trials)),
-        ("cost per trial", f"{format_usd(report.mean_cost_per_trial_usd)}{cost_note}"),
-        ("cost per solved task", format_usd(report.cost_per_solved_task_usd)),
+        ("solve rate", format_trial_rate(report.solved, report.trials)),
+        ("unattended solve rate", format_trial_rate(report.solved_unattended, report.trials)),
+        ("cost per trial", f"{format_cost_usd(report.mean_cost_per_trial_usd)}{cost_note}"),
+        (
+            "cost per solved task",
+            format_cost_usd(report.cost_per_solved_task_usd)
+            + (" (lower bound)" if report.trials_without_cost and report.cost_per_solved_task_usd else ""),
+        ),
         ("timeouts", str(report.timeouts)),
     ]
-    if report.is_jig:
-        tiers = ", ".join(f"{tier} {format_usd(cost)}" for tier, cost in sorted(report.cost_by_tier_usd.items()))
-        unknown = f" (+{report.unknown_cost_events} unknown-cost steps)" if report.unknown_cost_events else ""
-        causes = ", ".join(f"{cause} {count}" for cause, count in sorted(report.escalations_by_cause.items()))
-        rows += [
-            ("cost per tier", (tiers or "n/a") + unknown),
-            ("retry iterations", f"{report.mean_retry_iterations:.2f} per trial"),
-            ("escalation rate", format_rate(report.escalations, report.trials) + (f": {causes}" if causes else "")),
-            (
-                "invalid-handoff rate",
-                f"{format_rate(report.invalid_handoff_steps, report.steps)} of steps, "
-                f"in {report.trials_with_invalid_handoff} of {report.trials} trials",
-            ),
-        ]
+    if report.jig is not None:
+        rows += render_jig_arm_rows(report.jig, report.trials)
     rows.append(("solved per task", ""))
     rows += [
         (f"  {task}", f"{task_solved}/{task_trials}")
         for task, (task_solved, task_trials) in report.solved_by_task.items()
     ]
     width = max(len(name) for name, _ in rows)
-    return "\n".join([report.arm] + [f"  {name.ljust(width)}  {value}" for name, value in rows])
+    return "\n".join([report.arm] + [f"  {name.ljust(width)}  {value}".rstrip() for name, value in rows])
 
 
 def render_eval_report(reports: list[ArmReport]) -> str:
@@ -225,7 +247,7 @@ def main(arguments: list[str] | None = None) -> int:
         return 1
     reports = build_eval_report(outcomes)
     if options.json:
-        print(json.dumps([report.__dict__ for report in reports], indent=2))
+        print(json.dumps([dataclasses.asdict(report) for report in reports], indent=2))
     else:
         print(render_eval_report(reports), end="")
     return 0

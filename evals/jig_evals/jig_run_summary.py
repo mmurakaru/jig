@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 JIG_EXIT_CODE_FILE = "jig-exit-code"
@@ -13,6 +14,14 @@ RETRY_ITERATION_SKILL = "run-tests"
 DEFAULT_TIER_NAME = "default"
 
 
+class EscalationCause(StrEnum):
+    """Why a paused run paused."""
+
+    AGENT_ESCALATED = "agent-escalated"
+    FAILURE_ESCALATED = "failure-escalated"
+    OTHER = "other"
+
+
 @dataclass(frozen=True)
 class JigRunSummary:
     """What one jig run did; cost_usd is None when any step's cost is unknown."""
@@ -20,7 +29,7 @@ class JigRunSummary:
     run_id: str | None
     status: str | None
     exit_code: int | None
-    escalation_cause: str | None
+    escalation_cause: EscalationCause | None
     retry_iterations: int
     step_count: int
     invalid_handoff_steps: int
@@ -88,19 +97,19 @@ def load_metering_events(runs_directory: Path, run_id: str | None) -> list[dict]
     return events
 
 
-def classify_escalation_cause(record: dict) -> str | None:
+def classify_escalation_cause(record: dict) -> EscalationCause | None:
     """Name why a paused run paused: the agent asked, or jig escalated a failure."""
     if record.get("status") != "paused":
         return None
     steps = record.get("steps") or []
     if not steps:
-        return "other"
+        return EscalationCause.OTHER
     last_outcome = steps[-1].get("outcome")
     if last_outcome == "escalate":
-        return "agent-escalated"
-    if last_outcome in ("fail", "invalid-handoff"):
-        return "failure-escalated"
-    return "other"
+        return EscalationCause.AGENT_ESCALATED
+    if last_outcome in ("fail", "invalid-handoff", "timeout"):
+        return EscalationCause.FAILURE_ESCALATED
+    return EscalationCause.OTHER
 
 
 def sum_token_usage(events: list[dict]) -> tuple[int | None, int | None, int | None]:

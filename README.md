@@ -121,8 +121,8 @@ jig validate <workflow>                     # lint before running
 ```
 
 Each step runs in its own process group.
-Ctrl-C on a run, or a SIGTERM or SIGHUP to a detached one, stops the running step with every process it started (SIGTERM, then SIGKILL after 5 seconds), and jig exits with 128 + the signal number.
-The run record keeps the steps that finished, and `jig run --resume <run-id>` runs the stopped step again.
+Ctrl-C on a run, or a SIGTERM or SIGHUP to a detached one, stops every running step, parallel forEach items included, with every process it started (SIGTERM, then SIGKILL after 5 seconds), and jig exits with 128 + the signal number.
+The stopped attempt stays in the run record, and `jig run --resume <run-id>` treats it as the skill's `on_interrupt` says.
 The interactive chat of `jig attach` keeps the terminal and its Ctrl-C.
 
 ## Layout

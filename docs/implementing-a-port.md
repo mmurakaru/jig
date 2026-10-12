@@ -66,7 +66,7 @@ not record an attempt id twice. The runner records an event after it saves
 the step, and a resume offers the event of every attempt in the run again,
 so an attempt whose event a crash lost is metered once. An attempt that a
 crash interrupted is metered with cost `unknown` and `interrupted: true`;
-an attempt that timed out, with cost `unknown` and `timed_out: true`.
+an attempt that timed out, with `timed_out: true` and cost `unknown` (a skill step) or 0 (a command step).
 
 **Store** - persists and loads run records, and owns the lock that lets
 one process at a time drive a run.

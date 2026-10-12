@@ -6411,6 +6411,10 @@ let test_a_hung_command_step_ends_as_timeout () =
         (Run.string_of_outcome step.Run.outcome);
       Alcotest.(check int) "the exit code stays as evidence" 143
         step.Run.exit_code;
+      Alcotest.(check bool) "a command step spends nothing" true
+        (step.Run.cost = Metering.Cost_usd 0.0);
+      Alcotest.(check int) "so no step has an unknown cost" 0
+        (snd (Run.cost_summary run));
       Alcotest.(check bool) "the partial output is kept" true
         (contains ~affix:"started" step.Run.stdout);
       Alcotest.(check bool) "the handoff says it timed out" true
@@ -6681,6 +6685,8 @@ let test_a_crash_after_the_timeout_mark_resumes_as_timeout () =
     (Run.string_of_outcome step.Run.outcome);
   Alcotest.(check string) "the same attempt" "marked/e0/r0/s0#1"
     (step_attempt step).Run.attempt_id;
+  Alcotest.(check bool) "a command step spends nothing after a crash too" true
+    (step.Run.cost = Metering.Cost_usd 0.0);
   Alcotest.(check int) "not an interrupted attempt" 0
     (List.length run.Run.interrupted_attempts);
   Alcotest.(check bool) "nothing in flight" true
@@ -6727,6 +6733,8 @@ let test_a_resume_past_the_deadline_records_a_timeout () =
     (Run.string_of_outcome step.Run.outcome);
   Alcotest.(check bool) "the partial output is kept" true
     (contains ~affix:"partial-work-done" step.Run.stdout);
+  Alcotest.(check bool) "a skill step's spend is unknown" true
+    (step.Run.cost = Metering.Unknown_cost);
   Alcotest.(check bool) "the mark is saved" true
     ((step_attempt step).Run.timeout_requested_at <> None);
   Alcotest.(check bool) "no new attempt ran" false (Sys.file_exists ran_again)

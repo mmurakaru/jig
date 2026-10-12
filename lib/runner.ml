@@ -922,7 +922,7 @@ struct
                       (interpolate command_template) exit_code)
                  (stdout ^ stderr)),
             None,
-            Metering.Unknown_cost,
+            Metering.Cost_usd 0.0,
             None )
       | Workflow.Skill_step _ ->
           let outcome, handoff, handoff_error = outcome_of_exec exec_result in
@@ -2060,15 +2060,46 @@ struct
     | Some deadline -> now >= deadline
     | None -> false
 
+  (* The workflow step an attempt ran, from the coordinates in its step key. *)
+  let workflow_step_of_attempt engine ~run_id (attempt : Run.attempt) =
+    let step_in_entry entry step_index =
+      match entry with
+      | Workflow.Step step -> Some step
+      | Workflow.Retry retry -> List.nth_opt retry.Workflow.retry_steps step_index
+      | Workflow.For_each _ -> None
+    in
+    match Run.coordinates_of_step_key ~run_id attempt.Run.step_key with
+    | None -> None
+    | Some coordinates -> (
+        match
+          ( List.nth_opt engine.entries coordinates.Run.coordinate_entry_index,
+            coordinates.Run.coordinate_body_index )
+        with
+        | Some (Workflow.For_each for_each), Some body_index ->
+            Option.bind (List.nth_opt for_each.Workflow.body body_index)
+              (fun entry -> step_in_entry entry coordinates.Run.coordinate_step_index)
+        | Some entry, None ->
+            step_in_entry entry coordinates.Run.coordinate_step_index
+        | _ -> None)
+
   (* Exit code -1: jig never saw the process exit. *)
-  let timed_out_step_record (run : Run.t) (attempt : Run.attempt) ~finished_at =
+  let timed_out_step_record engine (run : Run.t) (attempt : Run.attempt)
+      ~finished_at =
     let stdout =
       match attempt.Run.stdout_path with
       | Some path -> Result.value (File.read path) ~default:""
       | None -> ""
     in
     let item_index =
-      Run.item_index_of_step_key ~run_id:run.Run.id attempt.Run.step_key
+      Option.bind
+        (Run.coordinates_of_step_key ~run_id:run.Run.id attempt.Run.step_key)
+        (fun coordinates -> coordinates.Run.coordinate_item_index)
+    in
+    (* A command step runs no model, so its timeout costs nothing. *)
+    let cost =
+      match workflow_step_of_attempt engine ~run_id:run.Run.id attempt with
+      | Some { Workflow.action = Workflow.Command_step _; _ } -> Metering.Cost_usd 0.0
+      | Some _ | None -> Metering.Unknown_cost
     in
     let item_key =
       match (item_index, run.Run.position.Run.for_each) with
@@ -2080,7 +2111,7 @@ struct
       Run.skill = attempt.Run.skill;
       outcome = Run.Timeout;
       exit_code = -1;
-      cost = Metering.Unknown_cost;
+      cost;
       tier = attempt.Run.tier;
       stdout;
       stderr = "";
@@ -2152,7 +2183,7 @@ struct
       in
       let records =
         List.map
-          (timed_out_step_record with_marks ~finished_at:now_text)
+          (timed_out_step_record engine with_marks ~finished_at:now_text)
           marked_attempts
       in
       let settled =

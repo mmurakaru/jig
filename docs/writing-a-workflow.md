@@ -166,7 +166,7 @@ timeout:
 - The limit applies to one attempt, not to the step or the run: each retry iteration and each forEach item gets its own deadline.
 - jig saves the absolute deadline with the attempt before the process starts.
   At the deadline, jig first saves a timeout mark in the run record, then sends SIGTERM to the step's process group, waits the grace period, and sends SIGKILL.
-- The step records the outcome `timeout`, with the output it wrote so far, its exit code, and cost `unknown`.
+- The step records the outcome `timeout`, with the output it wrote so far, its exit code, and cost `unknown` for a skill step (a command step costs 0).
   jig decides the outcome from its own deadline, never from the exit code: a wrapper can exit 0 after its child is killed.
 - `timeout` routes like `fail`: a plain step obeys `on_fail` (no `on_fail` fails the run), a retry iteration fails and counts, and `on_exhausted` applies at the limit.
   The next attempt's prompt says that the previous one timed out, with the end of its output.

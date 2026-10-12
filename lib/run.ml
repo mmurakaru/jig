@@ -180,18 +180,48 @@ let step_key_of_position ~run_id ~(position : position) =
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
     position.iterations_used position.step_index
 
-(** The forEach item index a step key names, if the step ran inside a forEach. *)
-let item_index_of_step_key ~run_id step_key =
-  let prefix = run_id ^ "/e" in
+(** Where a step key places its step: entry, forEach item and body entry, retry step. *)
+type step_coordinates = {
+  coordinate_entry_index : int;
+  coordinate_item_index : int option;
+  coordinate_body_index : int option;
+  coordinate_step_index : int;
+}
+
+(** Parses a key that [step_key_of_position] made; None for any other text. *)
+let coordinates_of_step_key ~run_id step_key =
+  let prefix = run_id ^ "/" in
   if not (String.starts_with ~prefix step_key) then None
   else
     let rest =
       String.sub step_key (String.length prefix)
         (String.length step_key - String.length prefix)
     in
-    match Scanf.sscanf rest "%d/i%d/" (fun _ item_index -> item_index) with
-    | item_index -> Some item_index
-    | exception _ -> None
+    let in_for_each () =
+      Scanf.sscanf rest "e%d/i%d/b%d/r%_d/s%d%!"
+        (fun entry_index item_index body_index step_index ->
+          {
+            coordinate_entry_index = entry_index;
+            coordinate_item_index = Some item_index;
+            coordinate_body_index = Some body_index;
+            coordinate_step_index = step_index;
+          })
+    in
+    let outside_for_each () =
+      Scanf.sscanf rest "e%d/r%_d/s%d%!" (fun entry_index step_index ->
+          {
+            coordinate_entry_index = entry_index;
+            coordinate_item_index = None;
+            coordinate_body_index = None;
+            coordinate_step_index = step_index;
+          })
+    in
+    match in_for_each () with
+    | coordinates -> Some coordinates
+    | exception _ -> (
+        match outside_for_each () with
+        | coordinates -> Some coordinates
+        | exception _ -> None)
 
 (* The step-key prefix shared by every attempt of one forEach item. *)
 let item_step_key_prefix ~run_id ~entry_index ~item_index =

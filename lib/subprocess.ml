@@ -171,10 +171,9 @@ let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
                (Unix.error_message error))
       | Sys_error message -> Error (Printf.sprintf "subprocess: %s" message))
 
-(** Forwards SIGINT, SIGTERM and SIGHUP to the running step's process group,
-    then exits with 128 + the signal number. *)
+(** On SIGINT, SIGTERM or SIGHUP, stops the running step's group and exits 128 + n. *)
 let install_signal_forwarding () =
-  (* The handler may run on any thread, so only the thread waiting in [run] reaps the child. *)
+  (* The handler can run on the live view's thread; only [run]'s thread may reap. *)
   let forward_signal signal =
     match !current_child_process_group with
     | Some _ -> requested_stop_signal := Some signal

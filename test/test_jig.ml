@@ -847,8 +847,6 @@ let test_agents_md_and_inline_context_conflict () =
       Alcotest.(check bool) "names the double source" true
         (contains ~affix:"AGENTS.md" message)
 
-(* Real-process helpers for the process group and signal tests. *)
-
 let read_pid_file path =
   int_of_string
     (String.trim (In_channel.with_open_text path In_channel.input_all))

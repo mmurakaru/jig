@@ -143,7 +143,7 @@ let build_prompt ~context ~field_guide ~task ~position ~inputs ~skill_body
     field_guide_section task position inputs_section guidance_section
     handoff_section skill_body protocol
 
-(** Fixed time limit for the notify hook, in seconds. *)
+(** A hung notify hook must not block the end of a run. *)
 let notify_time_limit_seconds = 30.0
 
 module Make

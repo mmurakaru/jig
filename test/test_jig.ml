@@ -5374,6 +5374,37 @@ let test_attach_after_a_crash_opens_the_interrupted_session () =
       Alcotest.(check bool) "names the attempt" true
         (contains ~affix:cut_off.Run.attempt_id message)
 
+let test_continue_skips_sessions_of_a_tier_harness () =
+  let root = make_temp_root () in
+  let assigned_path = Filename.concat root "assigned" in
+  setup_project root ~harness:passing_harness;
+  write_file
+    (Filename.concat root ".jig/skills/say-hi/SKILL.md")
+    "---\ntier: cheap\n---\n# Say hi\n\nGreet the user.\n";
+  let continued_path = Filename.concat root "continued" in
+  let reported_path = Filename.concat root "reported" in
+  let config_with ~cheap =
+    write_config root
+      [
+        yaml_list "harness" passing_harness;
+        "tiers:\n";
+        "  cheap:\n"
+        ^ String.concat ""
+            (List.map (fun part -> Printf.sprintf "    - %S\n" part) cheap);
+        yaml_list "continue" (session_recording_command ~path:continued_path);
+      ]
+  in
+  config_with ~cheap:(session_reporting_crash_harness ~path:assigned_path);
+  crash_run root ~run_id:"tier-run";
+  config_with ~cheap:(session_recording_command ~path:reported_path);
+  let run = resume root ~run_id:"tier-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check bool) "continue: is not given the tier's session" false
+    (Sys.file_exists continued_path);
+  Alcotest.(check bool) "the tier harness recovers with a new attempt" true
+    (contains ~affix:"Interrupted attempt" (read_text reported_path))
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -5915,6 +5946,8 @@ let () =
             test_continue_reopens_the_interrupted_session;
           Alcotest.test_case "without continue the policy applies" `Quick
             test_without_continue_a_new_session_follows_the_policy;
+          Alcotest.test_case "continue skips a tier harness's session" `Quick
+            test_continue_skips_sessions_of_a_tier_harness;
           Alcotest.test_case "attach opens the interrupted session" `Quick
             test_attach_after_a_crash_opens_the_interrupted_session;
         ] );

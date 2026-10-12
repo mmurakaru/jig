@@ -20,8 +20,7 @@ let resolve_path ~jig_dir ~skill_paths ~name =
         (Printf.sprintf "skill: %s not found; searched %s" name
            (String.concat ", " directories))
 
-(* What a resume does with an attempt of this skill that a crash cut off:
-   start it again, start it again told about the interruption, or pause. *)
+(* What a resume does with an attempt of this skill that a crash cut off. *)
 type on_interrupt = Rerun | Recover | Escalate
 
 let string_of_on_interrupt = function
@@ -39,14 +38,15 @@ let on_interrupt_of_string = function
            "on_interrupt must be rerun, recover, or escalate; got %S" other)
 
 (* What the runner needs from a skill file: the instructions to put in the
-   prompt, the skill's own default tier, and its interrupt policy. *)
+   prompt, and the skill's own default tier. *)
 type t = { body : string; tier : string option; on_interrupt : on_interrupt }
 
 (* YAML frontmatter is runner metadata, not instructions - the body the
    agent sees excludes it. A file without a leading `---` line has no
    frontmatter and is passed byte-for-byte, so existing skills are
-   untouched. Only `tier:` and `on_interrupt:` are read; other keys (name, description) belong
-   to the harness ecosystems skills are shared with and are ignored. *)
+   untouched. Only `tier:` and `on_interrupt:` are read; other keys (name,
+   description) belong to the harness ecosystems skills are shared with and
+   are ignored. *)
 let split_frontmatter content =
   let lines = String.split_on_char '\n' content in
   match lines with

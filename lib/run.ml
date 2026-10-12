@@ -188,27 +188,19 @@ let attempt_number attempt =
 let attempt_at_position run attempt =
   attempt.step_key = step_key_of_position ~run_id:run.id ~position:run.position
 
-(* An interrupted attempt at the run's position that no later attempt of
-   its step has followed: the cut-off work a resume or an attach must face. *)
+(* Interrupted attempts at the position that no later attempt followed. *)
 let unresolved_interrupted_attempts run =
   let candidates =
     List.map snd (Step_key_map.bindings run.attempts_in_flight)
     @ run.interrupted_attempts
   in
+  let finished_attempts = List.filter_map (fun step -> step.attempt) run.steps in
   let followed attempt =
     List.exists
-      (fun step ->
-        match step.attempt with
-        | Some later ->
-            later.step_key = attempt.step_key
-            && attempt_number later > attempt_number attempt
-        | None -> false)
-      run.steps
-    || List.exists
-         (fun later ->
-           later.step_key = attempt.step_key
-           && attempt_number later > attempt_number attempt)
-         candidates
+      (fun later ->
+        later.step_key = attempt.step_key
+        && attempt_number later > attempt_number attempt)
+      (finished_attempts @ candidates)
   in
   List.filter
     (fun attempt -> attempt_at_position run attempt && not (followed attempt))

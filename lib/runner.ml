@@ -104,8 +104,7 @@ let interruption_text_limit = 4000
 
 let session_id_random_state = lazy (Random.State.make_self_init ())
 
-(* A random (version 4) UUID: harnesses such as claude --session-id require
-   the UUID shape. *)
+(* Version 4 UUID shape: claude --session-id rejects anything else. *)
 let new_session_id () =
   let state = Lazy.force session_id_random_state in
   let bytes = Bytes.init 16 (fun _ -> Char.chr (Random.State.int state 256)) in
@@ -123,18 +122,18 @@ let new_session_id () =
   Printf.sprintf "%s-%s-%s-%s-%s" (String.sub hex 0 8) (String.sub hex 8 4)
     (String.sub hex 12 4) (String.sub hex 16 4) (String.sub hex 20 12)
 
-(* What a new attempt learns about the attempt a crash cut off. Partial
-   output is read from the cut-off attempt's capture file, if it is left. *)
-let interruption_section ~(interrupted : Run.attempt) ~probe_now =
-  let partial_output =
-    match interrupted.Run.stdout_path with
-    | None -> None
-    | Some path -> (
-        match File.read path with
-        | Ok text when String.trim text <> "" ->
-            Some (tail_text ~limit:interruption_text_limit text)
-        | Ok _ | Error _ -> None)
-  in
+(* The capture file outlives a killed jig, so it holds the partial output. *)
+let partial_output_of (interrupted : Run.attempt) =
+  match interrupted.Run.stdout_path with
+  | None -> None
+  | Some path -> (
+      match File.read path with
+      | Ok text when String.trim text <> "" ->
+          Some (tail_text ~limit:interruption_text_limit text)
+      | Ok _ | Error _ -> None)
+
+let interruption_section ~(interrupted : Run.attempt) ~probe_now
+    ~partial_output =
   let labelled label = function
     | Some text -> Printf.sprintf "%s:\n%s\n" label text
     | None -> ""
@@ -152,8 +151,7 @@ let interruption_section ~(interrupted : Run.attempt) ~probe_now =
     (labelled "Probe now" probe_now)
     (labelled "Its partial output" partial_output)
 
-(* Sent through continue: to the cut-off session, which already holds the
-   step's full prompt and protocol. *)
+(* The reopened session already holds its output, prompt and protocol. *)
 let continue_session_prompt ~(interrupted : Run.attempt) ~probe_now ~guidance =
   let guidance_section =
     match guidance with
@@ -162,8 +160,7 @@ let continue_session_prompt ~(interrupted : Run.attempt) ~probe_now ~guidance =
   in
   Printf.sprintf
     "%s%sFinish the step, then end your reply with the handoff block."
-    (interruption_section ~interrupted:{ interrupted with Run.stdout_path = None }
-       ~probe_now)
+    (interruption_section ~interrupted ~probe_now ~partial_output:None)
     guidance_section
 
 let build_prompt ?interruption ~context ~field_guide ~task ~position ~inputs
@@ -437,14 +434,18 @@ struct
               (Printf.sprintf "probe exited %d\n%s%s" exit_code stdout stderr)
         | Error message -> Some message)
 
-  (* How a new attempt treats the interrupted one before it: rerun ignores
-     it; recover (and escalate, once a human resumed) reopens its session
-     through continue: when it has one, else tells a fresh attempt about it. *)
   type recovery =
     | Fresh_attempt
     | Recovery_prompt of Run.attempt
     | Continue_session of { cut_off : Run.attempt; session_id : string }
 
+  (* continue: reopens sessions of the default harness only, not of a tier. *)
+  let ran_on_default_harness engine (attempt : Run.attempt) =
+    match attempt.Run.tier with
+    | None -> true
+    | Some tier -> not (List.mem_assoc tier engine.config.Config.tiers)
+
+  (* Escalate reaches here only after a human resumed, so it recovers. *)
   let recovery_plan engine (interrupted : Run.attempt option) =
     match interrupted with
     | None -> Fresh_attempt
@@ -454,7 +455,9 @@ struct
         | Skill.Recover | Skill.Escalate -> (
             match (engine.config.Config.continue_session, cut_off.Run.session_id)
             with
-            | _ :: _, Some session_id -> Continue_session { cut_off; session_id }
+            | _ :: _, Some session_id when ran_on_default_harness engine cut_off
+              ->
+                Continue_session { cut_off; session_id }
             | _ -> Recovery_prompt cut_off))
 
   (* Guidance rides on exactly one step - the first one executed after a
@@ -522,8 +525,7 @@ struct
         ->
           let command =
             engine.config.Config.wrapper
-            @ List.map
-                (Attach.substitute ~placeholder:"{session_id}" ~value:session_id)
+            @ Attach.substitute_session_id ~session_id
                 engine.config.Config.continue_session
           in
           let prompt =
@@ -550,10 +552,8 @@ struct
           in
           let command =
             match session_id with
-            | Some value ->
-                List.map
-                  (Attach.substitute ~placeholder:"{session_id}" ~value)
-                  resolved_command
+            | Some session_id ->
+                Attach.substitute_session_id ~session_id resolved_command
             | None -> resolved_command
           in
           let inputs =
@@ -565,7 +565,8 @@ struct
             | Recovery_prompt cut_off ->
                 Some
                   (interruption_section ~interrupted:cut_off
-                     ~probe_now:probe_before)
+                     ~probe_now:probe_before
+                     ~partial_output:(partial_output_of cut_off))
             | Fresh_attempt | Continue_session _ -> None
           in
           let prompt =
@@ -1236,8 +1237,6 @@ struct
           position = advance_after_human_pass ~entries run.Run.position;
         } )
 
-  (* on_interrupt: escalate - the run pauses, and the human's next resume,
-     --skip, or attach decides what happens to the cut-off work. *)
   let pause_for_interruption engine progress (attempts : Run.attempt list) =
     let probe_now = run_probe engine in
     let progress =
@@ -1318,17 +1317,18 @@ struct
           error = None;
         }
     in
-    (* Found cut off by this resume, and their skill wants a human first. *)
-    let escalating =
+    let attempts_to_escalate =
       List.filter
         (fun (_, (attempt : Run.attempt)) ->
           attempt.Run.on_interrupt = Skill.Escalate)
         (Run.Step_key_map.bindings existing.Run.attempts_in_flight)
     in
-    if escalating <> [] && (not skip) && Option.is_none guidance then
+    (* Guidance or a skip is already the human's decision. *)
+    if attempts_to_escalate <> [] && (not skip) && Option.is_none guidance
+    then
       pause_for_interruption engine
         { run; last_handoff; guidance = None }
-        (List.map snd escalating)
+        (List.map snd attempts_to_escalate)
     else if skip then
       let* record, run =
         human_skip ~entries:workflow.Workflow.entries ~guidance run

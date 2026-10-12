@@ -4339,6 +4339,7 @@ let test_resume_records_the_interrupted_attempt_and_meters_each_once () =
 (* Dies exactly between the step save and the metering append. *)
 module Crashing_metering : Metering.S = struct
   let record ~runs_dir:_ ~event:_ = Unix._exit 3
+  let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
 end
 
 module Crashing_metering_runner =
@@ -4383,21 +4384,76 @@ let sample_metering_event =
     recorded_at = "";
   }
 
-let test_metering_skips_an_attempt_already_recorded () =
+let test_ledger_lists_the_attempt_ids_of_one_run () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
-  let event = sample_metering_event in
   let record event =
     match Metering.Jsonl.record ~runs_dir ~event with
     | Ok () -> ()
     | Error message -> Alcotest.fail message
   in
-  record event;
-  record event;
-  record { event with attempt_id = Some "run/e0/r0/s0#2" };
-  Alcotest.(check (list string)) "one line per attempt id"
-    [ "run/e0/r0/s0#1"; "run/e0/r0/s0#2" ]
-    (metered_attempt_ids root)
+  record sample_metering_event;
+  record { sample_metering_event with run_id = "other"; attempt_id = Some "other/e0/r0/s0#1" };
+  record { sample_metering_event with attempt_id = None };
+  record { sample_metering_event with attempt_id = Some "run/e0/r0/s0#2" };
+  match Metering.Jsonl.recorded_attempt_ids ~runs_dir ~run_id:"run" with
+  | Error message -> Alcotest.fail message
+  | Ok attempt_ids ->
+      Alcotest.(check (list string)) "only this run's attempts"
+        [ "run/e0/r0/s0#1"; "run/e0/r0/s0#2" ]
+        attempt_ids
+
+(* Counts ledger reads and keeps the ledger in memory. *)
+let ledger_reads = ref 0
+let ledger_events : Metering.event list ref = ref []
+
+module Counting_metering : Metering.S = struct
+  let record ~runs_dir:_ ~event =
+    ledger_events := !ledger_events @ [ event ];
+    Ok ()
+
+  let recorded_attempt_ids ~runs_dir:_ ~run_id =
+    incr ledger_reads;
+    Ok
+      (List.filter_map
+         (fun event ->
+           if event.Metering.run_id = run_id then event.Metering.attempt_id
+           else None)
+         !ledger_events)
+end
+
+module Counting_metering_runner =
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Counting_metering)
+    (Store.Filesystem)
+
+let test_a_drive_reads_the_ledger_at_most_once () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  ledger_reads := 0;
+  ledger_events := [];
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
+  (match
+     Counting_metering_runner.execute_run ~run_id:"counted" ~root
+       ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  Alcotest.(check int) "a new run never reads the ledger" 0 !ledger_reads;
+  match
+    Counting_metering_runner.resume_run ~root ~run_id:"counted"
+      ~guidance:None ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "the resume reads the ledger once" 1 !ledger_reads;
+      Alcotest.(check (list string)) "one event per attempt"
+        [ "counted/e0/r0/s0#1"; "counted/e1/r0/s0#1"; "counted/e1/r0/s0#2"; "counted/e2/r0/s0#1" ]
+        (List.filter_map
+           (fun event -> event.Metering.attempt_id)
+           !ledger_events)
 
 let test_metering_appends_after_a_torn_line () =
   let root = make_temp_root () in
@@ -4571,6 +4627,8 @@ module Budget_gate_metering : Metering.S = struct
       decr budget_events_left;
       Ok ())
     else Error "budget: spend cap reached"
+
+  let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
 end
 
 module Budget_gate_runner =
@@ -5072,8 +5130,10 @@ let () =
             test_resume_records_the_interrupted_attempt_and_meters_each_once;
           Alcotest.test_case "resume meters a step saved before a crash"
             `Quick test_resume_meters_a_step_saved_before_a_crash;
-          Alcotest.test_case "metering skips a recorded attempt" `Quick
-            test_metering_skips_an_attempt_already_recorded;
+          Alcotest.test_case "the ledger lists one run's attempt ids" `Quick
+            test_ledger_lists_the_attempt_ids_of_one_run;
+          Alcotest.test_case "a drive reads the ledger at most once" `Quick
+            test_a_drive_reads_the_ledger_at_most_once;
           Alcotest.test_case "metering appends after a torn line" `Quick
             test_metering_appends_after_a_torn_line;
           Alcotest.test_case "step keys follow items, iterations, steps"

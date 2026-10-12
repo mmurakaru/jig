@@ -44,17 +44,20 @@ provider could pick different harnesses or models per skill.
 
 ```ocaml
 val record : runs_dir:string -> event:Metering.event -> (unit, string) result
+val recorded_attempt_ids :
+  runs_dir:string -> run_id:string -> (string list, string) result
 ```
 
 The default appends JSONL to `.jig/runs/metering.jsonl`. A budget gate would
 return `Error` when spend crosses a cap - the run stops with that message.
 
-`record` must be idempotent per `attempt_id`: when an event with the same
-attempt id is already recorded, it records nothing and returns `Ok`. The
-runner records an event after it saves the step, and a resume records the
-event of every attempt in the run again, so an attempt whose event a crash
-lost is metered once. An attempt that a crash interrupted is metered with
-cost `unknown` and `interrupted: true`.
+`record` appends every event it gets. `recorded_attempt_ids` returns the
+attempt ids that the run's recorded events carry. The runner calls it at
+most once per drive (never for a new run), keeps the ids in memory, and does
+not record an attempt id twice. The runner records an event after it saves
+the step, and a resume offers the event of every attempt in the run again,
+so an attempt whose event a crash lost is metered once. An attempt that a
+crash interrupted is metered with cost `unknown` and `interrupted: true`.
 
 **Store** - persists and loads run records, and owns the lock that lets
 one process at a time drive a run.

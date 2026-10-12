@@ -162,6 +162,8 @@ struct
     workspace : string;
     on_step : Run.step_record -> unit;
     on_event : run_event -> unit;
+    (* Loaded from the ledger at most once per drive; None until first use. *)
+    metered_attempt_ids : (string, unit) Hashtbl.t option ref;
   }
 
   type progress = {
@@ -255,11 +257,38 @@ struct
     attempt_metering_event ~run_id ~cost:Metering.Unknown_cost ~usage:None
       ~interrupted:true attempt
 
+  let metered_attempt_ids engine ~run_id =
+    match !(engine.metered_attempt_ids) with
+    | Some attempt_ids -> Ok attempt_ids
+    | None ->
+        let* recorded =
+          Metering_port.recorded_attempt_ids ~runs_dir:(runs_dir engine)
+            ~run_id
+        in
+        let attempt_ids = Hashtbl.create 64 in
+        List.iter
+          (fun attempt_id -> Hashtbl.replace attempt_ids attempt_id ())
+          recorded;
+        engine.metered_attempt_ids := Some attempt_ids;
+        Ok attempt_ids
+
+  (* At most one event per attempt id, so a resume can re-record safely. *)
+  let record_attempt_metering engine (event : Metering.event) =
+    match event.Metering.attempt_id with
+    | None -> Metering_port.record ~runs_dir:(runs_dir engine) ~event
+    | Some attempt_id ->
+        let* attempt_ids =
+          metered_attempt_ids engine ~run_id:event.Metering.run_id
+        in
+        if Hashtbl.mem attempt_ids attempt_id then Ok ()
+        else
+          let* () = Metering_port.record ~runs_dir:(runs_dir engine) ~event in
+          Hashtbl.replace attempt_ids attempt_id ();
+          Ok ()
+
   (* A crash between the step save and its metering loses the event. *)
   let record_missing_metering engine (run : Run.t) =
-    let record event =
-      Metering_port.record ~runs_dir:(runs_dir engine) ~event
-    in
+    let record event = record_attempt_metering engine event in
     let* () =
       List.fold_left
         (fun previous (step_record : Run.step_record) ->
@@ -451,10 +480,9 @@ struct
           in
           let* _ = persist engine progress ~status:Run.Running ~finished:false in
           let* () =
-            Metering_port.record ~runs_dir:(runs_dir engine)
-              ~event:
-                (interrupted_metering_event ~run_id:progress.run.Run.id
-                   !spawned_attempt)
+            record_attempt_metering engine
+              (interrupted_metering_event ~run_id:progress.run.Run.id
+                 !spawned_attempt)
           in
           Error message
     in
@@ -534,10 +562,9 @@ struct
     in
     let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
     let* () =
-      Metering_port.record ~runs_dir:(runs_dir engine)
-        ~event:
-          (finished_metering_event ~run_id:progress.run.Run.id step_record
-             !spawned_attempt)
+      record_attempt_metering engine
+        (finished_metering_event ~run_id:progress.run.Run.id step_record
+           !spawned_attempt)
     in
     engine.on_step step_record;
     engine.on_event (Step_finished step_record);
@@ -839,6 +866,8 @@ struct
         workspace = Option.value workspace ~default:root;
         on_step;
         on_event;
+        (* A new run id has no events in the ledger yet. *)
+        metered_attempt_ids = ref (Some (Hashtbl.create 64));
       }
     in
     let run =
@@ -1023,6 +1052,7 @@ struct
         workspace = Option.value existing.Run.workspace ~default:root;
         on_step;
         on_event;
+        metered_attempt_ids = ref None;
       }
     in
     let last_handoff = Run.last_handoff existing in
@@ -1101,6 +1131,7 @@ struct
         workspace = Option.value existing.Run.workspace ~default:root;
         on_step;
         on_event;
+        metered_attempt_ids = ref None;
       }
     in
     let cost, usage = Metering.parse_cost exec_result.Executor.stdout in

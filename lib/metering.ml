@@ -79,8 +79,12 @@ let event_to_json event =
     @ [ ("recorded_at", `String event.recorded_at) ])
 
 module type S = sig
-  (* Skips a recorded attempt_id, so a resume can re-record safely. *)
+  (* Appends unconditionally; the runner skips attempt ids already recorded. *)
   val record : runs_dir:string -> event:event -> (unit, string) result
+
+  (* Read once per drive, so an append never rescans the ledger. *)
+  val recorded_attempt_ids :
+    runs_dir:string -> run_id:string -> (string list, string) result
 end
 
 (* Default: append-only JSONL next to the run records. *)
@@ -89,25 +93,39 @@ module Jsonl : S = struct
     try Unix.mkdir path 0o755
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
 
-  (* A torn or foreign line names no attempt, so it never blocks an append. *)
-  let line_attempt_id line =
+  let ledger_path ~runs_dir = Filename.concat runs_dir "metering.jsonl"
+
+  (* A torn or foreign line names no attempt, so it is skipped. *)
+  let line_attempt_id ~run_id line =
     match Yojson.Safe.from_string line with
     | exception Yojson.Json_error _ -> None
     | json -> (
-        match Yojson.Safe.Util.member "attempt_id" json with
-        | `String attempt_id -> Some attempt_id
+        match
+          ( Yojson.Safe.Util.member "run_id" json,
+            Yojson.Safe.Util.member "attempt_id" json )
+        with
+        | `String line_run_id, `String attempt_id when line_run_id = run_id ->
+            Some attempt_id
         | _ -> None
         | exception Yojson.Safe.Util.Type_error _ -> None)
 
-  let already_recorded ~path ~attempt_id =
-    Sys.file_exists path
-    && In_channel.with_open_text path (fun channel ->
-           let rec scan () =
-             match In_channel.input_line channel with
-             | None -> false
-             | Some line -> line_attempt_id line = Some attempt_id || scan ()
-           in
-           scan ())
+  let recorded_attempt_ids ~runs_dir ~run_id =
+    let path = ledger_path ~runs_dir in
+    if not (Sys.file_exists path) then Ok []
+    else
+      try
+        Ok
+          (In_channel.with_open_text path (fun channel ->
+               let rec scan attempt_ids =
+                 match In_channel.input_line channel with
+                 | None -> List.rev attempt_ids
+                 | Some line -> (
+                     match line_attempt_id ~run_id line with
+                     | Some attempt_id -> scan (attempt_id :: attempt_ids)
+                     | None -> scan attempt_ids)
+               in
+               scan []))
+      with Sys_error message -> Error (Printf.sprintf "metering: %s" message)
 
   (* Ends a line torn by a crash, so the next event stays parseable. *)
   let ends_mid_line path =
@@ -132,10 +150,8 @@ module Jsonl : S = struct
   let record ~runs_dir ~event =
     try
       ensure_directory runs_dir;
-      let path = Filename.concat runs_dir "metering.jsonl" in
-      (match event.attempt_id with
-      | Some attempt_id when already_recorded ~path ~attempt_id -> ()
-      | _ -> append ~path (Yojson.Safe.to_string (event_to_json event)));
+      append ~path:(ledger_path ~runs_dir)
+        (Yojson.Safe.to_string (event_to_json event));
       Ok ()
     with
     | Sys_error message -> Error (Printf.sprintf "metering: %s" message)
@@ -145,4 +161,5 @@ end
 
 module Noop : S = struct
   let record ~runs_dir:_ ~event:_ = Ok ()
+  let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
 end

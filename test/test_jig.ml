@@ -3906,19 +3906,29 @@ let test_resolve_unmapped_tier_falls_back_to_harness () =
             [ "srt"; "claude"; "-p" ]
             command)
 
+let parse_skill content =
+  match Skill.parse content with
+  | Ok skill -> skill
+  | Error message -> Alcotest.fail message
+
 let test_skill_frontmatter_tier_and_body () =
   let skill =
-    Skill.parse "---\nname: run-tests\ntier: mechanical\n---\n# Run tests\n"
+    parse_skill
+      "---\nname: run-tests\ntier: mechanical\non_interrupt: rerun\n---\n# Run tests\n"
   in
   Alcotest.(check (option string))
     "tier read from frontmatter" (Some "mechanical") skill.Skill.tier;
+  Alcotest.(check bool) "on_interrupt read from frontmatter" true
+    (skill.Skill.on_interrupt = Skill.Rerun);
   Alcotest.(check string)
     "frontmatter stripped from the body" "# Run tests\n" skill.Skill.body
 
 let test_skill_without_frontmatter_is_untouched () =
   let content = "# Say hi\n\nGreet the user.\n" in
-  let skill = Skill.parse content in
+  let skill = parse_skill content in
   Alcotest.(check (option string)) "no tier" None skill.Skill.tier;
+  Alcotest.(check bool) "on_interrupt defaults to recover" true
+    (skill.Skill.on_interrupt = Skill.Recover);
   Alcotest.(check string) "body byte-for-byte" content skill.Skill.body
 
 (* Records the command each skill step resolved to. *)
@@ -4546,6 +4556,11 @@ let sample_attempt ~step_key ~number =
     command = [ "harness"; "--flag" ];
     started_at = "2026-10-12T10:00:00Z";
     child_pid = Some 4242;
+    session_id = Some "5f0c2a52-8d4e-4c1b-9a77-0b1d2e3f4a5b";
+    on_interrupt = Skill.Escalate;
+    probe_before = Some "abc123 main";
+    probe_after = None;
+    stdout_path = Some "/tmp/jig-stdout.log";
   }
 
 let test_run_json_round_trips_attempts () =

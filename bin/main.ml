@@ -62,6 +62,7 @@ let report_run (run : Jig_core.Run.t) path =
   match run.Jig_core.Run.status with
   | Jig_core.Run.Completed -> ()
   | Jig_core.Run.Paused ->
+      Option.iter (Printf.printf "%s\n") run.Jig_core.Run.error;
       (match Jig_core.Run.last_handoff run with
       | Some handoff ->
           Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
@@ -308,20 +309,7 @@ let attach_run run_id latest step_number =
               Error
                 (Printf.sprintf "run %s has %d steps, no step %d" id
                    (List.length steps) number))
-      | None -> (
-          let newest_with_session =
-            List.fold_left
-              (fun found (step : Jig_core.Run.step_record) ->
-                match step.Jig_core.Run.session_id with
-                | Some _ as session -> session
-                | None -> found)
-              None steps
-          in
-          match newest_with_session with
-          | Some session -> Ok session
-          | None ->
-              Error
-                (Printf.sprintf "no step of run %s recorded a session id" id))
+      | None -> Jig_core.Attach.session_of_run run
     in
     let workspace = Option.value run.Jig_core.Run.workspace ~default:root in
     let* () =

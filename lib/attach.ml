@@ -41,8 +41,10 @@ let command ~attach ~session_id =
 let mentions_placeholder ~placeholder part =
   substitute ~placeholder ~value:"" part <> part
 
-(* After a crash the cut-off attempt's session is the one to reopen, never
-   an earlier step's. *)
+let substitute_session_id ~session_id parts =
+  List.map (substitute ~placeholder:"{session_id}" ~value:session_id) parts
+
+(* After a crash, an earlier step's session is the wrong one to reopen. *)
 let session_of_run (run : Run.t) =
   match List.rev (Run.unresolved_interrupted_attempts run) with
   | attempt :: _ -> (

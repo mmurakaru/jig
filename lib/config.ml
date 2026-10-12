@@ -7,11 +7,8 @@ type t = {
   attach : string list;
   attach_headless : string list;
   notify : string list;
-  (* Reopens an interrupted attempt's session by its {session_id}; the
-     recovery prompt is appended like a harness prompt. *)
+  (* The YAML key is `continue`, an OCaml keyword. *)
   continue_session : string list;
-  (* Run in the workspace before and after each attempt; the output is
-     stored on the attempt. *)
   probe : string list;
   (* Named alternates to the default harness, for steps that declare a
      tier - the map from an abstract cost tier to a concrete command. *)

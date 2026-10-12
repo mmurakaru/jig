@@ -4980,6 +4980,7 @@ let test_run_json_round_trips_attempts () =
         Run.Step_key_map.(
           empty |> add first.Run.step_key first |> add second.Run.step_key second);
       interrupted_attempts = [ { interrupted with Run.child_pid = None } ];
+      paused_on_attempt = Some "run/e1/r0/s0#2";
     }
   in
   let saved_text = Yojson.Safe.to_string (Run.to_json run) in
@@ -4994,6 +4995,26 @@ let test_run_json_round_trips_attempts () =
         = Run.Step_key_map.bindings run.Run.attempts_in_flight);
       Alcotest.(check bool) "the rest of the record survives" true
         (without_map loaded = without_map run)
+
+let test_older_paused_record_was_paused_by_its_last_step () =
+  let run =
+    persisted_run
+      ~steps:
+        [
+          {
+            (recorded "say-hi") with
+            Run.attempt = Some (sample_attempt ~step_key:"run/e0/r0/s0" ~number:1);
+          };
+        ]
+      ~status:Run.Paused ~position:(pos 0)
+  in
+  match Run.of_json (Run.to_json run) with
+  | Error message -> Alcotest.fail message
+  | Ok loaded ->
+      Alcotest.(check (option string)) "the last step paused the run"
+        (Some "run/e0/r0/s0#1") loaded.Run.paused_on_attempt;
+      Alcotest.(check bool) "so its result is not routed again" true
+        (Run.unrouted_finished_step loaded ~step_key:"run/e0/r0/s0" = None)
 
 (* The harness runs, then reading its output fails. *)
 module Spawn_then_fail_executor : Executor.S = struct
@@ -5592,6 +5613,8 @@ let () =
             `Quick test_step_keys_follow_items_iterations_and_retry_steps;
           Alcotest.test_case "run json round-trips attempts" `Quick
             test_run_json_round_trips_attempts;
+          Alcotest.test_case "an older paused record was paused by its last step"
+            `Quick test_older_paused_record_was_paused_by_its_last_step;
           Alcotest.test_case "an error after spawn keeps the attempt" `Quick
             test_an_error_after_spawn_keeps_the_attempt;
           Alcotest.test_case "an infrastructure error keeps saved steps"

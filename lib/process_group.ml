@@ -33,8 +33,7 @@ let requested_stop_signal : int option ref = ref None
 (* A forked worker must skip the at_exit handlers it inherited from the driver. *)
 let exit_after_stop = ref exit
 
-(* Before the child's setsid the group does not exist yet, so fall back to the pid. *)
-(* macOS answers EPERM for a group whose members are all zombies; none can take a signal. *)
+(* No group before the child's setsid (pid fallback); EPERM on macOS: only zombies left. *)
 let signal_process_group process_group_id signal =
   try Unix.kill (-process_group_id) signal with
   | Unix.Unix_error (Unix.EPERM, _, _) -> ()

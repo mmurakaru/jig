@@ -6251,13 +6251,14 @@ let test_a_zombie_only_group_takes_signals_quietly () =
       ignore (Unix.setsid ());
       Unix._exit 0
   | zombie_pid ->
-      let rejects_signals () =
-        match Unix.kill (-zombie_pid) 0 with
-        | () -> false
-        | exception Unix.Unix_error (Unix.EPERM, _, _) -> true
-        | exception Unix.Unix_error _ -> false
+      let is_zombie () =
+        match
+          Subprocess.run ~argv:[ "ps"; "-o"; "stat="; "-p"; string_of_int zombie_pid ] ()
+        with
+        | Ok { Subprocess.stdout; _ } -> String.starts_with ~prefix:"Z" (String.trim stdout)
+        | Error _ -> false
       in
-      let zombie_only = poll_until ~seconds:5.0 rejects_signals in
+      let zombie_only = poll_until ~seconds:10.0 is_zombie in
       let raised =
         match
           Process_group.signal_process_group zombie_pid Sys.sigterm;
@@ -6268,11 +6269,11 @@ let test_a_zombie_only_group_takes_signals_quietly () =
       in
       let has_members = Process_group.process_group_has_members zombie_pid in
       ignore (Unix.waitpid [] zombie_pid);
+      Alcotest.(check bool) "the group holds only a zombie" true zombie_only;
       Alcotest.(check (option string)) "signals to the group do not raise" None
         raised;
-      if zombie_only then
-        Alcotest.(check bool) "an unreaped zombie still holds the group" true
-          has_members
+      Alcotest.(check bool) "an unreaped zombie still holds the group" true
+        has_members
 
 let test_child_within_time_limit_keeps_exit_code () =
   let started_at = Unix.gettimeofday () in

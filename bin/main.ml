@@ -379,20 +379,27 @@ let attach_run run_id latest step_number =
             exit 1
         | Ok headless_command -> (
             let command = interactive_command () in
+            let environment =
+              Jig_core.Otlp.traceparent_environment ~getenv:Sys.getenv_opt
+                ~run_id:id
+                ~step_index:(List.length run.Jig_core.Run.steps)
+            in
             print_endline
               "reopening the step's session - exit the chat to hand back to \
                the run";
             let chat =
-              Unix.create_process (List.hd command)
-                (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
+              Unix.create_process_env (List.hd command)
+                (Array.of_list command)
+                (Jig_core.Subprocess.environment_with_overrides environment)
+                Unix.stdin Unix.stdout Unix.stderr
             in
             ignore (Unix.waitpid [] chat);
             print_endline "collecting the step's handoff...";
             let continued =
               Result.bind
-                (Jig_core.Executor.Local.execute ~command:headless_command
-                   ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
-                   ())
+                (Jig_core.Executor.Local.execute ~environment
+                   ~command:headless_command ~cwd:workspace
+                   ~prompt:Jig_core.Runner.elicit_handoff_prompt ())
                 (fun exec_result ->
                   Jig_core.Runner.Default.continue_attached
                     ~on_step:print_step_live ~root ~run_id:id ~exec_result ())

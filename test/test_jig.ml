@@ -5665,6 +5665,34 @@ let test_parallel_items_run_at_once_each_in_its_own_worktree () =
             (sequential_seconds >= 6.0
             && parallel_seconds < 0.6 *. sequential_seconds))
 
+let test_a_passed_items_commits_stay_on_a_branch () =
+  let root = make_temp_root () in
+  setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ]
+    ~body:
+      "        - command: \"test {{ it.name }} = b || git -c \
+       user.email=jig@test -c user.name=jig commit -q --allow-empty -m \
+       from-{{ it.name }}\"\n";
+  match run_fan root with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "completed" "completed"
+        (Run.string_of_status run.Run.status);
+      let branch item_index =
+        "jig/" ^ item_worktree_name ~run_id:run.Run.id ~item_index
+      in
+      let subject_path = Filename.concat root "subject" in
+      Alcotest.(check int) "the committing item's branch exists" 0
+        (Sys.command
+           (Printf.sprintf "git -C %s log -1 --format=%%s %s > %s"
+              (Filename.quote root) (branch 0) (Filename.quote subject_path)));
+      Alcotest.(check string) "it holds the item's commit" "from-a"
+        (String.trim (read_text subject_path));
+      Alcotest.(check bool) "an item without commits leaves no branch" true
+        (Sys.command
+           (Printf.sprintf "git -C %s rev-parse -q --verify %s > /dev/null"
+              (Filename.quote root) (branch 1))
+        <> 0)
+
 let test_parallel_items_need_an_isolated_run () =
   let root = make_temp_root () in
   setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b" ]
@@ -6540,6 +6568,8 @@ let () =
           Alcotest.test_case "config concurrency" `Quick test_config_concurrency;
           Alcotest.test_case "items run at once, each in its own worktree"
             `Quick test_parallel_items_run_at_once_each_in_its_own_worktree;
+          Alcotest.test_case "a passed item's commits stay on a branch"
+            `Quick test_a_passed_items_commits_stay_on_a_branch;
           Alcotest.test_case "concurrency above 1 needs --isolated" `Quick
             test_parallel_items_need_an_isolated_run;
           Alcotest.test_case "a crash with items in flight resumes each item"

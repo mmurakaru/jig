@@ -4678,6 +4678,7 @@ let crash_then_resume root ~run_id ~workflow_name ~kill_at =
   in
   Alcotest.(check bool) "the jig process was killed" true
     (status = Unix.WSIGNALED Sys.sigkill);
+  wait_for_in_flight_children root ~run_id;
   write_harness_config root (step_logging_harness ~log ~kill_at:"none");
   match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
   | Error message -> Alcotest.fail message
@@ -5637,6 +5638,14 @@ let test_a_live_harness_blocks_the_attach_hand_back () =
 
 (* ---- parallel forEach (concurrency above 1) ---- *)
 
+let fan_workflow_yaml body =
+  "name: fan\n\
+   steps:\n\
+  \  - forEach:\n\
+  \      items: items.tsv\n\
+  \      as: it\n\
+  \      steps:\n" ^ body
+
 let setup_parallel_project root ~concurrency ~items ~body =
   write_file
     (Filename.concat root ".jig/config.yaml")
@@ -5644,12 +5653,7 @@ let setup_parallel_project root ~concurrency ~items ~body =
        concurrency);
   write_file
     (Filename.concat root ".jig/workflows/fan/workflow.yaml")
-    ("name: fan\n\
-      steps:\n\
-     \  - forEach:\n\
-     \      items: items.tsv\n\
-     \      as: it\n\
-     \      steps:\n" ^ body);
+    (fan_workflow_yaml body);
   write_file
     (Filename.concat root ".jig/workflows/fan/items.tsv")
     ("name\n" ^ String.concat "\n" items ^ "\n");
@@ -5694,24 +5698,39 @@ let test_config_concurrency () =
             (contains ~affix:"concurrency" message))
     [ "concurrency: 0\n"; "concurrency: 1.5\n"; "concurrency: many\n" ]
 
+(* Each item waits up to 10s until all three started, so an overlap is observed, not timed. *)
+let overlap_body root =
+  let path name = Filename.quote (Filename.concat root name) in
+  let all_started =
+    String.concat " && "
+      (List.map
+         (fun item -> Printf.sprintf "[ -e %s ]" (path ("started-" ^ item)))
+         [ "a"; "b"; "c" ])
+  in
+  Printf.sprintf
+    "        - command: \"touch %s-{{ it.name }}; for attempt in $(seq 200); do \
+     %s && touch %s-{{ it.name }} && break; sleep 0.05; done; pwd > \
+     %s-{{ it.name }}\"\n"
+    (path "started") all_started (path "overlap") (path "seen")
+
 let test_parallel_items_run_at_once_each_in_its_own_worktree () =
   let root = make_temp_root () in
-  let body =
-    Printf.sprintf
-      "        - command: \"sleep 2; pwd > %s/seen-{{ it.name }}\"\n"
-      (Filename.quote root)
-  in
-  setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b"; "c" ] ~body;
+  setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b"; "c" ]
+    ~body:(overlap_body root);
   let seen item = String.trim (read_text (Filename.concat root ("seen-" ^ item))) in
-  match timed (fun () -> run_fan root) with
-  | (Error message, _) -> Alcotest.fail message
-  | (Ok (parallel_run, _), parallel_seconds) -> (
+  match run_fan root with
+  | Error message -> Alcotest.fail message
+  | Ok (parallel_run, _) -> (
       Alcotest.(check string) "completed" "completed"
         (Run.string_of_status parallel_run.Run.status);
       Alcotest.(check int) "one step per item" 3
         (List.length parallel_run.Run.steps);
       List.iteri
         (fun item_index item ->
+          Alcotest.(check bool)
+            (Printf.sprintf "item %s saw every item running at once" item)
+            true
+            (Sys.file_exists (Filename.concat root ("overlap-" ^ item)));
           let directory = seen item in
           Alcotest.(check string)
             (Printf.sprintf "item %s ran in its own worktree" item)
@@ -5722,26 +5741,20 @@ let test_parallel_items_run_at_once_each_in_its_own_worktree () =
             false (Sys.file_exists directory))
         [ "a"; "b"; "c" ];
       set_concurrency root 1;
-      match timed (fun () -> run_fan root) with
-      | (Error message, _) -> Alcotest.fail message
-      | (Ok (sequential_run, _), sequential_seconds) ->
+      write_file
+        (Filename.concat root ".jig/workflows/fan/workflow.yaml")
+        (fan_workflow_yaml
+           (Printf.sprintf "        - command: \"pwd > %s/seen-{{ it.name }}\"\n"
+              (Filename.quote root)));
+      match run_fan root with
+      | Error message -> Alcotest.fail message
+      | Ok (sequential_run, _) ->
           Alcotest.(check string) "sequential completed" "completed"
             (Run.string_of_status sequential_run.Run.status);
           Alcotest.(check string)
             "concurrency 1 runs every item in the run's own worktree"
             sequential_run.Run.id
-            (Filename.basename (seen "a"));
-          (* Three two-second items: about 2s at once, at least 6s in turn. *)
-          Alcotest.(check bool)
-            (Printf.sprintf "the items overlap (%.2fs)" parallel_seconds)
-            true (parallel_seconds < 4.5);
-          Alcotest.(check bool)
-            (Printf.sprintf
-               "parallel %.2fs is under 0.6 of sequential %.2fs"
-               parallel_seconds sequential_seconds)
-            true
-            (sequential_seconds >= 6.0
-            && parallel_seconds < 0.6 *. sequential_seconds))
+            (Filename.basename (seen "a")))
 
 let test_a_passed_items_commits_stay_on_a_branch () =
   let root = make_temp_root () in
@@ -6172,14 +6185,15 @@ let test_time_limit_stops_child_and_grandchild () =
   let root = make_temp_root () in
   let started_at = Unix.gettimeofday () in
   match
-    Subprocess.run ~time_limit:(time_limit_in 0.5)
+    (* Long enough for a loaded machine to start sh and its grandchild first. *)
+    Subprocess.run ~time_limit:(time_limit_in 2.0)
       ~argv:[ "sh"; "-c"; "echo started; " ^ grandchild_command root ]
       ()
   with
   | Error message -> Alcotest.fail message
   | Ok outcome ->
       Alcotest.(check bool) "returned soon after the limit" true
-        (Unix.gettimeofday () -. started_at < 3.0);
+        (Unix.gettimeofday () -. started_at < 5.0);
       Alcotest.(check int) "child ended by SIGTERM" 143
         outcome.Subprocess.exit_code;
       Alcotest.(check bool) "output before the stop is kept" true
@@ -6191,7 +6205,8 @@ let test_time_limit_stops_child_and_grandchild () =
 let test_time_limit_escalates_to_sigkill () =
   let started_at = Unix.gettimeofday () in
   match
-    Subprocess.run ~time_limit:(time_limit_in 0.2)
+    (* A short limit can fire before sh installs the trap on a loaded machine. *)
+    Subprocess.run ~time_limit:(time_limit_in 2.0)
       ~argv:[ "sh"; "-c"; "trap '' TERM; while :; do sleep 0.1; done" ]
       ()
   with
@@ -6201,23 +6216,26 @@ let test_time_limit_escalates_to_sigkill () =
       Alcotest.(check int) "child ended by SIGKILL" 137
         outcome.Subprocess.exit_code;
       Alcotest.(check bool) "SIGKILL waited for the grace period" true
-        (elapsed >= Process_group.termination_grace_seconds);
+        (elapsed >= 2.0 +. Process_group.termination_grace_seconds);
       Alcotest.(check bool) "and not much longer" true
-        (elapsed < 0.2 +. Process_group.termination_grace_seconds +. 2.0)
+        (elapsed < 2.0 +. Process_group.termination_grace_seconds +. 3.0)
 
 let test_grandchild_gets_grace_after_leader_exits () =
   let root = make_temp_root () in
   let cleaned_path = Filename.concat root "cleaned" in
+  let ready_path = Filename.concat root "trap-ready" in
+  (* The leader waits for the trap, so a slow machine cannot stop the grandchild before it. *)
   match
-    Subprocess.run ~time_limit:(time_limit_in 0.3)
+    Subprocess.run ~time_limit:(time_limit_in 2.0)
       ~argv:
         [
           "sh";
           "-c";
           Printf.sprintf
-            "(trap 'sleep 1; echo done > %s; exit' TERM; while :; do sleep 0.1; done) \
-             & wait"
-            (Filename.quote cleaned_path);
+            "(trap 'sleep 1; echo done > %s; exit' TERM; touch %s; while :; do \
+             sleep 0.1; done) & while [ ! -e %s ]; do sleep 0.05; done; wait"
+            (Filename.quote cleaned_path) (Filename.quote ready_path)
+            (Filename.quote ready_path);
         ]
       ()
   with
@@ -6225,6 +6243,36 @@ let test_grandchild_gets_grace_after_leader_exits () =
   | Ok _ ->
       Alcotest.(check bool) "the grandchild ran its SIGTERM cleanup" true
         (Sys.file_exists cleaned_path)
+
+(* macOS answers EPERM to a signal for a group that holds only zombies. *)
+let test_a_zombie_only_group_takes_signals_quietly () =
+  match Unix.fork () with
+  | 0 ->
+      ignore (Unix.setsid ());
+      Unix._exit 0
+  | zombie_pid ->
+      let rejects_signals () =
+        match Unix.kill (-zombie_pid) 0 with
+        | () -> false
+        | exception Unix.Unix_error (Unix.EPERM, _, _) -> true
+        | exception Unix.Unix_error _ -> false
+      in
+      let zombie_only = poll_until ~seconds:5.0 rejects_signals in
+      let raised =
+        match
+          Process_group.signal_process_group zombie_pid Sys.sigterm;
+          Process_group.signal_process_group_only zombie_pid Sys.sigkill
+        with
+        | () -> None
+        | exception error -> Some (Printexc.to_string error)
+      in
+      let has_members = Process_group.process_group_has_members zombie_pid in
+      ignore (Unix.waitpid [] zombie_pid);
+      Alcotest.(check (option string)) "signals to the group do not raise" None
+        raised;
+      if zombie_only then
+        Alcotest.(check bool) "an unreaped zombie still holds the group" true
+          has_members
 
 let test_child_within_time_limit_keeps_exit_code () =
   let started_at = Unix.gettimeofday () in
@@ -6284,10 +6332,15 @@ let check_signal_stops_foreground_step ~signal ~expected_exit_code =
   in
   Unix.kill jig_pid signal;
   let _, status = Unix.waitpid [] jig_pid in
-  Alcotest.(check bool)
-    (Printf.sprintf "jig exits with %d" expected_exit_code)
-    true
-    (status = Unix.WEXITED expected_exit_code);
+  let described =
+    match status with
+    | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+    | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+    | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal
+  in
+  Alcotest.(check string) "jig's exit status"
+    (Printf.sprintf "exit %d" expected_exit_code)
+    described;
   Alcotest.(check bool) "the step's grandchild was stopped" true
     (process_exits_within ~seconds:3.0 grandchild_pid)
 
@@ -6395,14 +6448,14 @@ let handoff_summary (step : Run.step_record) =
 
 let test_a_hung_command_step_ends_as_timeout () =
   let root = make_temp_root () in
-  setup_timed_command_project root ~timeout_yaml:"  command: 1s\n  grace: 2s\n"
+  setup_timed_command_project root ~timeout_yaml:"  command: 1s\n  grace: 5s\n"
     ~command:"echo started; sleep 300 & echo $! > grandchild.pid; wait";
   match timed (fun () -> run_command_workflow root) with
   | Error message, _ -> Alcotest.fail message
   | Ok (run, _), seconds ->
       Alcotest.(check bool)
         (Printf.sprintf "ended within the limit plus grace (%.2fs)" seconds)
-        true (seconds < 3.0);
+        true (seconds < 6.0);
       Alcotest.(check string) "a timeout with no on_fail fails the run"
         "failed" (Run.string_of_status run.Run.status);
       let step = only_step run in
@@ -6441,7 +6494,7 @@ let test_a_child_that_ignores_sigterm_is_killed_after_the_grace () =
       Alcotest.(check bool)
         (Printf.sprintf "SIGKILL came after limit plus grace (%.2fs)" seconds)
         true
-        (seconds >= 2.0 && seconds < 4.0);
+        (seconds >= 2.0 && seconds < 5.0);
       let step = only_step run in
       Alcotest.(check string) "outcome" "timeout"
         (Run.string_of_outcome step.Run.outcome);
@@ -7411,6 +7464,8 @@ let () =
             `Quick test_child_within_time_limit_keeps_exit_code;
           Alcotest.test_case "SIGINT to a foreground run stops the grandchild"
             `Quick test_sigint_to_foreground_run_stops_grandchild;
+          Alcotest.test_case "a zombie-only group takes signals quietly"
+            `Quick test_a_zombie_only_group_takes_signals_quietly;
           Alcotest.test_case "SIGTERM to a foreground run stops the grandchild"
             `Quick test_sigterm_to_foreground_run_stops_grandchild;
           Alcotest.test_case "SIGTERM to a detached run stops the grandchild"

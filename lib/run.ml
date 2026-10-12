@@ -12,6 +12,9 @@ type attempt = {
   command : string list;
   started_at : string;
   child_pid : int option;
+  child_host : string option;
+  (* Tells the child apart from a later process that reuses its pid. *)
+  child_start_time : string option;
   (* Assigned by jig before the start when the command has {session_id}. *)
   session_id : string option;
   (* What a resume does if this attempt is cut off. *)
@@ -250,6 +253,13 @@ let attempt_to_json attempt =
     @ (match attempt.child_pid with
       | Some pid -> [ ("child_pid", `Int pid) ]
       | None -> [])
+    @ List.filter_map
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
+        [
+          ("child_host", attempt.child_host);
+          ("child_start_time", attempt.child_start_time);
+        ]
     @ [
         ( "on_interrupt",
           `String (Skill.string_of_on_interrupt attempt.on_interrupt) );
@@ -477,6 +487,8 @@ let attempt_of_json json =
       command;
       started_at;
       child_pid = optional_int json "child_pid";
+      child_host = optional_string json "child_host";
+      child_start_time = optional_string json "child_start_time";
       session_id = optional_string json "session_id";
       on_interrupt;
       probe_before = optional_string json "probe_before";

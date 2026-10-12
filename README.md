@@ -49,6 +49,8 @@ starts the step again, and `escalate` pauses for you. With a
 `{session_id}` in the harness command and a `continue:` command in
 `config.yaml`, a resume reopens the interrupted session to finish the step,
 and `jig attach` opens that session too.
+A resume or an attach refuses while the interrupted attempt's harness
+process still runs, so two harnesses never edit one workspace.
 
 ## Tiers
 

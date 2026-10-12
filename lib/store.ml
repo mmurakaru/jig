@@ -104,8 +104,9 @@ module Filesystem : S = struct
           parsed)
 
   let compare_newest_first a b =
-    (* Same-second ties: with equal prefixes a longer id is a later run. *)
-    match String.compare b.Run.started_at a.Run.started_at with
+    (* Epochs order whole-second and millisecond records; ties go by id. *)
+    let started run = Run.epoch_of_iso8601 run.Run.started_at in
+    match compare (started b) (started a) with
     | 0 -> (
         match compare (String.length b.Run.id) (String.length a.Run.id) with
         | 0 -> String.compare b.Run.id a.Run.id

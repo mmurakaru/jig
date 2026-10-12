@@ -244,12 +244,17 @@ let validate_workflow workflow =
         Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
             Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
               (fun skill_paths ->
+                let config = Jig_core.Config.load_if_valid ~jig_dir in
                 Result.map
                   (fun () ->
                     ( parsed.Jig_core.Workflow.name,
                       Jig_core.Validate.tier_warnings ~jig_dir ~skill_paths
-                        ~tiers:(Jig_core.Config.load_tiers ~jig_dir)
-                        parsed ))
+                        ~tiers:
+                          (Option.map
+                             (fun config -> config.Jig_core.Config.tiers)
+                             config)
+                        parsed
+                      @ Jig_core.Validate.timeout_tier_warnings config ))
                   (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
                      ~skill_paths parsed))))
   in
@@ -268,11 +273,15 @@ let latest_run_id ~runs_dir =
       Error "no runs yet - nothing under runs/"
   | Ok { Jig_core.Store.runs = newest :: _; _ } -> Ok newest.Jig_core.Run.id
 
-let show_status run_id latest json_output =
+let show_status run_id latest json_output otlp_output new_spans_only =
   let root = Sys.getcwd () in
   let runs_dir = Jig_core.Project.runs_dir ~root in
   let resolved =
     match (run_id, latest) with
+    | _ when json_output && otlp_output ->
+        Error "pass --json or --otlp, not both"
+    | _ when new_spans_only && not otlp_output ->
+        Error "--new-spans-only needs --otlp"
     | Some _, true -> Error "pass a run id or --latest, not both"
     | Some id, false -> Ok id
     | None, true -> latest_run_id ~runs_dir
@@ -287,6 +296,28 @@ let show_status run_id latest json_output =
       exit 1
   | Ok run when json_output ->
       print_endline (Yojson.Safe.pretty_to_string (Jig_core.Run.to_json run))
+  | Ok run when otlp_output && new_spans_only -> (
+      let resource_attributes =
+        Jig_core.Otlp.resource_attributes_of_environment ~getenv:Sys.getenv_opt
+      in
+      match
+        Jig_core.Otlp_sent_spans.print_new_spans ~runs_dir ~resource_attributes
+          ~print:(fun text ->
+            print_endline text;
+            flush stdout)
+          run
+      with
+      | Ok () -> ()
+      | Error message ->
+          Printf.eprintf "jig: %s\n" message;
+          exit 1)
+  | Ok run when otlp_output ->
+      let resource_attributes =
+        Jig_core.Otlp.resource_attributes_of_environment ~getenv:Sys.getenv_opt
+      in
+      print_endline
+        (Yojson.Safe.to_string
+           (Jig_core.Otlp.traces_of_run ~resource_attributes run))
   | Ok run ->
       Printf.printf "run %s: %s\n" run.Jig_core.Run.id
         (Jig_core.Run.string_of_status run.Jig_core.Run.status);
@@ -407,21 +438,41 @@ let attach_run run_id latest step_number =
             exit 1
         | Ok headless_command -> (
             let command = interactive_command () in
+            let environment =
+              Jig_core.Otlp.traceparent_environment ~getenv:Sys.getenv_opt
+                ~run_id:id
+                ~span_id:
+                  (Jig_core.Otlp.step_position_span_id ~run_id:id
+                     ~step_index:(List.length run.Jig_core.Run.steps))
+            in
             let collect_handoff () =
               print_endline
                 "reopening the step's session - exit the chat to hand back \
                  to the run";
               let chat =
-                Unix.create_process (List.hd command)
-                  (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
+                Unix.create_process_env (List.hd command)
+                  (Array.of_list command)
+                  (Jig_core.Subprocess.environment_with_overrides environment)
+                  Unix.stdin Unix.stdout Unix.stderr
               in
               ignore (Unix.waitpid [] chat);
               (* Only after the chat, which owns the terminal and its Ctrl-C. *)
               Jig_core.Process_group.install_signal_forwarding ();
               print_endline "collecting the step's handoff...";
-              Jig_core.Executor.Local.execute ~command:headless_command
-                ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
-                ()
+              let timeout = config.Jig_core.Config.timeout in
+              let time_limit =
+                Option.map
+                  (fun seconds ->
+                    Jig_core.Subprocess.time_limit_from_now
+                      ~seconds:(float_of_int seconds)
+                      ~grace_seconds:
+                        (float_of_int
+                           timeout.Jig_core.Step_timeout.grace_seconds))
+                  timeout.Jig_core.Step_timeout.skill_step_limit_seconds
+              in
+              Jig_core.Executor.Local.execute ~environment ?time_limit
+                ~command:headless_command ~cwd:workspace
+                ~prompt:Jig_core.Runner.elicit_handoff_prompt ()
             in
             match
               Jig_core.Runner.Default.continue_attached
@@ -485,7 +536,7 @@ let list_runs json_output =
           Printf.printf "%s  %s  %s  %s\n" run.Jig_core.Run.id
             run.Jig_core.Run.workflow
             (Jig_core.Run.string_of_status run.Jig_core.Run.status)
-            run.Jig_core.Run.started_at)
+            (Jig_core.Run.whole_second_timestamp run.Jig_core.Run.started_at))
         runs
 
 let list_workflows json_output =
@@ -606,10 +657,27 @@ let latest_flag =
   let doc = "Inspect the newest run." in
   Arg.(value & flag & info [ "latest" ] ~doc)
 
+let otlp_flag =
+  let doc =
+    "Print the run as one OpenTelemetry trace (OTLP/JSON) for an OTLP/HTTP \
+     /v1/traces endpoint. jig never sends it; pipe it to curl."
+  in
+  Arg.(value & flag & info [ "otlp" ] ~doc)
+
+let new_spans_only_flag =
+  let doc =
+    "With --otlp, print only spans that no earlier --new-spans-only call \
+     printed for this run (recorded in runs/<run-id>.otlp-sent), so a \
+     receiver never sees a span id twice."
+  in
+  Arg.(value & flag & info [ "new-spans-only" ] ~doc)
+
 let status_cmd =
   let doc = "Inspect a run's progress, outcomes, and last handoff." in
   Cmd.v (Cmd.info "status" ~doc)
-    Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
+    Term.(
+      const show_status $ run_id_arg $ latest_flag $ json_flag $ otlp_flag
+      $ new_spans_only_flag)
 
 let watch_run run_id latest =
   let root = Sys.getcwd () in

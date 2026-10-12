@@ -1,6 +1,7 @@
 open Result_syntax
 
-type outcome = Pass | Fail | Escalate | Invalid_handoff
+(* Timeout: jig stopped the attempt at its deadline; it routes like Fail. *)
+type outcome = Pass | Fail | Escalate | Invalid_handoff | Timeout
 
 (* Saved before the step's process starts, so a crash leaves a record. *)
 type attempt = {
@@ -23,6 +24,11 @@ type attempt = {
   probe_after : string option;
   (* The live capture file; a resume reads the partial output from it. *)
   stdout_path : string option;
+  time_limit_seconds : int option;
+  (* Saved before the start, so a resume never grants the attempt a new limit. *)
+  deadline_at : string option;
+  (* Saved before jig signals the attempt, so a crash cannot lose the decision. *)
+  timeout_requested_at : string option;
 }
 
 module Step_key_map = Map.Make (String)
@@ -44,6 +50,8 @@ type step_record = {
   item_key : string option;
   (* None for a human skip, an attach hand-back, or an older record. *)
   attempt : attempt option;
+  (* True for the first step recorded after a paused run resumed. *)
+  resumed : bool;
   started_at : string;
   finished_at : string;
 }
@@ -112,6 +120,17 @@ let iso8601 time =
     (utc.Unix.tm_mon + 1) utc.Unix.tm_mday utc.Unix.tm_hour utc.Unix.tm_min
     utc.Unix.tm_sec
 
+(** [iso8601] with milliseconds: the run record format; a 1s limit needs it. *)
+let iso8601_milliseconds time =
+  let total_milliseconds = int_of_float (Float.round (time *. 1000.0)) in
+  let whole_seconds = iso8601 (float_of_int (total_milliseconds / 1000)) in
+  Printf.sprintf "%s.%03dZ"
+    (String.sub whole_seconds 0 (String.length whole_seconds - 1))
+    (total_milliseconds mod 1000)
+
+(** Now, as run records store time: RFC 3339 UTC with milliseconds. *)
+let record_timestamp_now () = iso8601_milliseconds (Unix.gettimeofday ())
+
 (* Inverse of [iso8601], for durations between recorded timestamps without
    depending on the environment's timezone (civil-date day arithmetic). *)
 let epoch_of_iso8601 text =
@@ -128,15 +147,28 @@ let epoch_of_iso8601 text =
     in
     (era * 146097) + day_of_era - 719468
   in
+  let whole_seconds year month day hour minute second =
+    float_of_int
+      ((((days_from_civil year month day * 24) + hour) * 60 + minute) * 60
+      + second)
+  in
   match
-    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2dZ"
-      (fun year month day hour minute second ->
-        float_of_int
-          ((((days_from_civil year month day * 24) + hour) * 60 + minute) * 60
-          + second))
+    Scanf.sscanf text "%4d-%2d-%2dT%2d:%2d:%2d%s%!"
+      (fun year month day hour minute second rest ->
+        let seconds = whole_seconds year month day hour minute second in
+        if rest = "Z" then Some seconds
+        else
+          Scanf.sscanf rest ".%3d%[0-9]Z%!" (fun milliseconds _ ->
+              Some (seconds +. (float_of_int milliseconds /. 1000.0))))
   with
-  | seconds -> Some seconds
+  | seconds -> seconds
   | exception _ -> None
+
+(** A record timestamp cut to whole seconds, for a terminal column. *)
+let whole_second_timestamp text =
+  match epoch_of_iso8601 text with
+  | Some seconds -> iso8601 (Float.of_int (int_of_float seconds))
+  | None -> text
 
 (* pid separates concurrent jig processes; the sequence separates runs
    started by one process within the same second. *)
@@ -158,6 +190,49 @@ let step_key_of_position ~run_id ~(position : position) =
   in
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
     position.iterations_used position.step_index
+
+(** Where a step key places its step: entry, forEach item and body entry, retry step. *)
+type step_coordinates = {
+  coordinate_entry_index : int;
+  coordinate_item_index : int option;
+  coordinate_body_index : int option;
+  coordinate_step_index : int;
+}
+
+(** Parses a key that [step_key_of_position] made; None for any other text. *)
+let coordinates_of_step_key ~run_id step_key =
+  let prefix = run_id ^ "/" in
+  if not (String.starts_with ~prefix step_key) then None
+  else
+    let rest =
+      String.sub step_key (String.length prefix)
+        (String.length step_key - String.length prefix)
+    in
+    let in_for_each () =
+      Scanf.sscanf rest "e%d/i%d/b%d/r%_d/s%d%!"
+        (fun entry_index item_index body_index step_index ->
+          {
+            coordinate_entry_index = entry_index;
+            coordinate_item_index = Some item_index;
+            coordinate_body_index = Some body_index;
+            coordinate_step_index = step_index;
+          })
+    in
+    let outside_for_each () =
+      Scanf.sscanf rest "e%d/r%_d/s%d%!" (fun entry_index step_index ->
+          {
+            coordinate_entry_index = entry_index;
+            coordinate_item_index = None;
+            coordinate_body_index = None;
+            coordinate_step_index = step_index;
+          })
+    in
+    match in_for_each () with
+    | coordinates -> Some coordinates
+    | exception _ -> (
+        match outside_for_each () with
+        | coordinates -> Some coordinates
+        | exception _ -> None)
 
 (* The step-key prefix shared by every attempt of one forEach item. *)
 let item_step_key_prefix ~run_id ~entry_index ~item_index =
@@ -312,12 +387,14 @@ let string_of_outcome = function
   | Fail -> "fail"
   | Escalate -> "escalate"
   | Invalid_handoff -> "invalid-handoff"
+  | Timeout -> "timeout"
 
 let outcome_of_string = function
   | "pass" -> Ok Pass
   | "fail" -> Ok Fail
   | "escalate" -> Ok Escalate
   | "invalid-handoff" -> Ok Invalid_handoff
+  | "timeout" -> Ok Timeout
   | other -> Error (Printf.sprintf "run: unknown outcome %S" other)
 
 let string_of_status = function
@@ -371,6 +448,16 @@ let attempt_to_json attempt =
           ("probe_before", attempt.probe_before);
           ("probe_after", attempt.probe_after);
           ("stdout_path", attempt.stdout_path);
+        ]
+    @ (match attempt.time_limit_seconds with
+      | Some seconds -> [ ("time_limit_seconds", `Int seconds) ]
+      | None -> [])
+    @ List.filter_map
+        (fun (key, value) ->
+          Option.map (fun text -> (key, `String text)) value)
+        [
+          ("deadline_at", attempt.deadline_at);
+          ("timeout_requested_at", attempt.timeout_requested_at);
         ])
 
 let item_in_progress_to_json item =
@@ -420,6 +507,9 @@ let step_to_json step =
     | Some key -> [ ("item_key", `String key) ]
     | None -> []
   in
+  let resumed_field =
+    if step.resumed then [ ("resumed", `Bool true) ] else []
+  in
   `Assoc
     ([
        ("skill", `String step.skill);
@@ -428,7 +518,7 @@ let step_to_json step =
        ("cost_usd", Metering.cost_to_json step.cost);
      ]
     @ tier_field @ handoff_field @ handoff_error_field @ session_field
-    @ item_fields
+    @ item_fields @ resumed_field
     @ (match step.attempt with
       | Some attempt -> [ ("attempt", attempt_to_json attempt) ]
       | None -> [])
@@ -625,6 +715,9 @@ let attempt_of_json json =
       probe_before = optional_string json "probe_before";
       probe_after = optional_string json "probe_after";
       stdout_path = optional_string json "stdout_path";
+      time_limit_seconds = optional_int json "time_limit_seconds";
+      deadline_at = optional_string json "deadline_at";
+      timeout_requested_at = optional_string json "timeout_requested_at";
     }
 
 let item_in_progress_of_json json =
@@ -685,6 +778,7 @@ let step_of_json json =
       item_index = optional_int json "item_index";
       item_key = optional_string json "item_key";
       attempt;
+      resumed = Yojson.Safe.Util.member "resumed" json = `Bool true;
       started_at;
       finished_at;
     }

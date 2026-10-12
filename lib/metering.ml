@@ -12,6 +12,8 @@ type event = {
   step_key : string option;
   attempt_id : string option;
   interrupted : bool;
+  (* The attempt hit its time limit; its cost is unknown. *)
+  timed_out : bool;
   recorded_at : string;
 }
 
@@ -76,6 +78,7 @@ let event_to_json event =
       | Some attempt_id -> [ ("attempt_id", `String attempt_id) ]
       | None -> [])
     @ (if event.interrupted then [ ("interrupted", `Bool true) ] else [])
+    @ (if event.timed_out then [ ("timed_out", `Bool true) ] else [])
     @ [ ("recorded_at", `String event.recorded_at) ])
 
 module type S = sig

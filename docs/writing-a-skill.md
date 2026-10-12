@@ -35,8 +35,8 @@ opened a pull request.
   the previous attempt was interrupted, with its partial output and the
   `probe:` output from before it and from now. The agent checks the
   workspace before it acts. When `config.yaml` has `continue:` and the
-  attempt has a session id that jig assigned, jig reopens that session
-  instead and asks it to finish the step.
+  attempt ran on the default harness with a session id that jig assigned,
+  jig reopens that session instead and asks it to finish the step.
 - `rerun`: a new attempt starts with the normal prompt. Use it only when
   the skill is safe to run twice, for example a read-only check.
 - `escalate`: the resume pauses the run for a human. The next

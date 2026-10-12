@@ -30,7 +30,7 @@ eight step-skills they reference.
 - `{session_id}` in `harness:` or a tier command - jig assigns the step's
   session id (a UUID) before the start, so a crashed step's session can be
   reopened (`claude` and `pi` both take `--session-id`).
-- `continue:` - reopens an interrupted attempt's session on resume;
+- `continue:` - reopens an interrupted default-harness session on resume;
   `{session_id}` substituted, recovery prompt appended.
 - `probe:` - run before and after each attempt; the output is stored on the
   attempt and shown to a recovery attempt (e.g. branch, HEAD, status).

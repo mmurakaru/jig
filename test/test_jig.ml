@@ -4594,6 +4594,195 @@ let test_crash_in_a_for_each_retry_group_resumes_at_the_item_and_step () =
     (crash_then_resume root ~run_id:"crashed" ~workflow_name:"fanout"
        ~kill_at:"crashed/e0/i1/b0/r0/s1")
 
+(* Dies right after the save that records the given count of finished steps. *)
+let crash_after_finished_steps = ref 0
+
+module Crashing_after_result_store : Store.S = struct
+  include Store.Filesystem
+
+  let save ~runs_dir run =
+    let saved = Store.Filesystem.save ~runs_dir run in
+    if
+      List.length run.Run.steps = !crash_after_finished_steps
+      && Run.Step_key_map.is_empty run.Run.attempts_in_flight
+      && run.Run.status = Run.Running
+    then Unix._exit 3
+    else saved
+end
+
+module Crashing_after_result_runner =
+  Runner.Make (Executor.Local) (Model_provider.Default) (Metering.Jsonl)
+    (Crashing_after_result_store)
+
+let handoff_command status =
+  Printf.sprintf "printf '```handoff\\nstatus: %s\\n```\\n'" status
+
+(* Logs each step key and prompt; runs the [answers] command of a key, else passes. *)
+let answering_harness ~root ~answers =
+  let cases =
+    String.concat ""
+      (List.map
+         (fun (key, command) ->
+           Printf.sprintf "%s) %s ;; " (Filename.quote key) command)
+         answers)
+  in
+  [
+    "sh";
+    "-c";
+    Printf.sprintf
+      "printf '%%s\\n' \"$JIG_STEP_KEY\" >> %s; printf '%%s' \"$0\" > %s; \
+       case \"$JIG_STEP_KEY\" in %s*) %s ;; esac"
+      (Filename.quote (Filename.concat root "step-keys.log"))
+      (Filename.quote (Filename.concat root "last-prompt.txt"))
+      cases pass_handoff_command;
+  ]
+
+let logged_step_keys root =
+  String.split_on_char '\n'
+    (String.trim (read_text (Filename.concat root "step-keys.log")))
+
+let expect_jig_died_after_result_save root ~run_id ~finished_steps action =
+  crash_after_finished_steps := finished_steps;
+  let exit_status = in_child_process action in
+  Alcotest.(check bool) "jig died after the result save" true
+    (exit_status = Unix.WEXITED 3);
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run_id with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check int) "the result was saved" finished_steps
+        (List.length run.Run.steps);
+      Alcotest.(check string) "the save left the run running" "running"
+        (Run.string_of_status run.Run.status)
+
+(* Crashes after the result save of the [finished_steps]-th step. *)
+let crash_after_result ?(answers = []) root ~run_id ~workflow_name
+    ~finished_steps =
+  write_harness_config root (answering_harness ~root ~answers);
+  expect_jig_died_after_result_save root ~run_id ~finished_steps (fun () ->
+      ignore
+        (Crashing_after_result_runner.execute_run ~run_id ~root ~workflow_name
+           ~task:"go" ~isolated:false ()))
+
+let resume_crashed ?(answers = []) root ~run_id =
+  write_harness_config root (answering_harness ~root ~answers);
+  match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) -> run
+
+let test_crash_after_a_plain_step_result_does_not_run_it_again () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  crash_after_result root ~run_id:"plain" ~workflow_name:"pipeline"
+    ~finished_steps:1;
+  let run = resume_crashed root ~run_id:"plain" in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string)) "the first entry runs once"
+    [ "plain/e0/r0/s0"; "plain/e1/r0/s0"; "plain/e2/r0/s0" ]
+    (logged_step_keys root)
+
+let test_crash_after_a_retry_step_result_does_not_run_it_again () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
+  crash_after_result root ~run_id:"group" ~workflow_name:"fixloop"
+    ~finished_steps:1;
+  let run = resume_crashed root ~run_id:"group" in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string)) "the resume starts at the next step"
+    [ "group/e0/r0/s0"; "group/e0/r0/s1" ]
+    (logged_step_keys root)
+
+let test_crash_after_a_failed_retry_step_starts_the_next_iteration () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
+  crash_after_result root ~run_id:"failed" ~workflow_name:"fixloop"
+    ~finished_steps:2
+    ~answers:[ ("failed/e0/r0/s1", handoff_command "fail") ];
+  let run = resume_crashed root ~run_id:"failed" in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string)) "the saved fail fails the iteration"
+    [ "failed/e0/r0/s0"; "failed/e0/r0/s1"; "failed/e0/r1/s0"; "failed/e0/r1/s1" ]
+    (logged_step_keys root)
+
+let test_crash_after_an_invalid_handoff_threads_its_output () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
+  crash_after_result root ~run_id:"garbled" ~workflow_name:"fixloop"
+    ~finished_steps:2
+    ~answers:[ ("garbled/e0/r0/s1", "echo tests-printed-no-handoff") ];
+  let run =
+    resume_crashed root ~run_id:"garbled"
+      ~answers:[ ("garbled/e0/r1/s0", handoff_command "escalate") ]
+  in
+  Alcotest.(check string) "paused at the next iteration" "paused"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check bool) "the next iteration sees the saved output" true
+    (contains ~affix:"tests-printed-no-handoff"
+       (read_text (Filename.concat root "last-prompt.txt")))
+
+let test_crash_after_a_for_each_item_result_moves_to_the_next_item () =
+  let root = make_temp_root () in
+  setup_fanout_project ~workflow:retry_fanout_workflow_yaml root;
+  crash_after_result root ~run_id:"fanned" ~workflow_name:"fanout"
+    ~finished_steps:2;
+  let run = resume_crashed root ~run_id:"fanned" in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string)) "item 1 does not run again"
+    [
+      "fanned/e0/i0/b0/r0/s0";
+      "fanned/e0/i0/b0/r0/s1";
+      "fanned/e0/i1/b0/r0/s0";
+      "fanned/e0/i1/b0/r0/s1";
+    ]
+    (logged_step_keys root)
+
+let test_crash_after_an_escalate_result_pauses_then_reruns_on_resume () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  crash_after_result root ~run_id:"stuck" ~workflow_name:"hello"
+    ~finished_steps:1
+    ~answers:[ ("stuck/e0/r0/s0", handoff_command "escalate") ];
+  let paused = resume_crashed root ~run_id:"stuck" in
+  Alcotest.(check string) "the saved escalate pauses" "paused"
+    (Run.string_of_status paused.Run.status);
+  Alcotest.(check (list string)) "without running the step again"
+    [ "stuck/e0/r0/s0" ] (logged_step_keys root);
+  let run = resume_crashed root ~run_id:"stuck" in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string)) "resuming the pause runs the step again"
+    [ "stuck/e0/r0/s0"; "stuck/e0/r0/s0" ]
+    (logged_step_keys root)
+
+let test_crash_early_in_a_paused_resume_still_reruns_the_step () =
+  let root = make_temp_root () in
+  setup_project root ~harness:[ "irrelevant" ];
+  write_harness_config root
+    (answering_harness ~root
+       ~answers:[ ("early/e0/r0/s0", handoff_command "escalate") ]);
+  (match
+     Runner.Default.execute_run ~run_id:"early" ~root ~workflow_name:"hello"
+       ~task:"go" ~isolated:false ()
+   with
+  | Error message -> Alcotest.fail message
+  | Ok (run, _) ->
+      Alcotest.(check string) "paused" "paused"
+        (Run.string_of_status run.Run.status));
+  expect_jig_died_after_result_save root ~run_id:"early" ~finished_steps:1
+    (fun () ->
+      ignore
+        (Crashing_after_result_runner.resume_run ~root ~run_id:"early"
+           ~guidance:None ()));
+  let run = resume_crashed root ~run_id:"early" in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string)) "the paused step runs again"
+    [ "early/e0/r0/s0"; "early/e0/r0/s0" ]
+    (logged_step_keys root)
+
 let sample_metering_event =
   {
     Metering.run_id = "run";
@@ -5369,6 +5558,30 @@ let () =
             "a crash in a forEach retry group resumes at the item and step"
             `Quick
             test_crash_in_a_for_each_retry_group_resumes_at_the_item_and_step;
+          Alcotest.test_case
+            "a crash after a plain step result does not run it again" `Quick
+            test_crash_after_a_plain_step_result_does_not_run_it_again;
+          Alcotest.test_case
+            "a crash after a retry step result does not run it again" `Quick
+            test_crash_after_a_retry_step_result_does_not_run_it_again;
+          Alcotest.test_case
+            "a crash after a failed retry step starts the next iteration"
+            `Quick
+            test_crash_after_a_failed_retry_step_starts_the_next_iteration;
+          Alcotest.test_case
+            "a crash after an invalid handoff threads its output" `Quick
+            test_crash_after_an_invalid_handoff_threads_its_output;
+          Alcotest.test_case
+            "a crash early in a paused resume still re-runs the step" `Quick
+            test_crash_early_in_a_paused_resume_still_reruns_the_step;
+          Alcotest.test_case
+            "a crash after a forEach item result moves to the next item"
+            `Quick
+            test_crash_after_a_for_each_item_result_moves_to_the_next_item;
+          Alcotest.test_case
+            "a crash after an escalate result pauses, then re-runs on resume"
+            `Quick
+            test_crash_after_an_escalate_result_pauses_then_reruns_on_resume;
           Alcotest.test_case "the ledger lists one run's attempt ids" `Quick
             test_ledger_lists_the_attempt_ids_of_one_run;
           Alcotest.test_case "a drive reads the ledger at most once" `Quick

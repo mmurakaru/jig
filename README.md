@@ -42,10 +42,18 @@ jig run --resume <run-id> --guidance "the fix belongs in the parser, not the lex
 ```
 
 jig saves each step attempt in the run record before the harness starts, so
-a run killed mid-step resumes too: the record keeps the interrupted attempt,
-and the step runs again. Inside a `retry` block the run continues at that
-step, not at the start of the block. A run killed after a step finished
-does not run that step again: the resume acts on its saved result.
+a run killed mid-step resumes too. The skill's `on_interrupt` decides what
+happens to the interrupted attempt: `recover` (the default) starts a new
+attempt that is told about it and checks the workspace first, `rerun`
+starts the step again, and `escalate` pauses for you. With a
+`{session_id}` in the harness command and a `continue:` command in
+`config.yaml`, a resume reopens the interrupted session to finish the step,
+and `jig attach` opens that session too. A resume or an attach refuses
+while the interrupted attempt's harness process still runs, so two
+harnesses never edit one workspace. Inside a `retry` block the run
+continues at that step, not at the start of the block. A run killed after a
+step finished does not run that step again: the resume acts on its saved
+result.
 
 ## Tiers
 

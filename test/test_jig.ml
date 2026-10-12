@@ -3921,19 +3921,29 @@ let test_resolve_unmapped_tier_falls_back_to_harness () =
             [ "srt"; "claude"; "-p" ]
             command)
 
+let parse_skill content =
+  match Skill.parse content with
+  | Ok skill -> skill
+  | Error message -> Alcotest.fail message
+
 let test_skill_frontmatter_tier_and_body () =
   let skill =
-    Skill.parse "---\nname: run-tests\ntier: mechanical\n---\n# Run tests\n"
+    parse_skill
+      "---\nname: run-tests\ntier: mechanical\non_interrupt: rerun\n---\n# Run tests\n"
   in
   Alcotest.(check (option string))
     "tier read from frontmatter" (Some "mechanical") skill.Skill.tier;
+  Alcotest.(check bool) "on_interrupt read from frontmatter" true
+    (skill.Skill.on_interrupt = Skill.Rerun);
   Alcotest.(check string)
     "frontmatter stripped from the body" "# Run tests\n" skill.Skill.body
 
 let test_skill_without_frontmatter_is_untouched () =
   let content = "# Say hi\n\nGreet the user.\n" in
-  let skill = Skill.parse content in
+  let skill = parse_skill content in
   Alcotest.(check (option string)) "no tier" None skill.Skill.tier;
+  Alcotest.(check bool) "on_interrupt defaults to recover" true
+    (skill.Skill.on_interrupt = Skill.Recover);
   Alcotest.(check string) "body byte-for-byte" content skill.Skill.body
 
 (* Records the command each skill step resolved to. *)
@@ -4256,6 +4266,24 @@ let in_child_process action =
       let _, status = Unix.waitpid [] child_pid in
       status
 
+(* A killed jig's harness may outlive it briefly; a resume must not race it. *)
+let wait_for_in_flight_children root ~run_id =
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run_id with
+  | Error _ -> ()
+  | Ok run ->
+      Run.Step_key_map.iter
+        (fun _ (attempt : Run.attempt) ->
+          match attempt.Run.child_pid with
+          | None -> ()
+          | Some pid ->
+              let rec poll remaining =
+                if Process_identity.pid_exists pid && remaining > 0 then (
+                  Unix.sleepf 0.05;
+                  poll (remaining - 1))
+              in
+              poll 200)
+        run.Run.attempts_in_flight
+
 let pass_handoff_command = "printf '```handoff\\nstatus: pass\\n```\\n'"
 
 let test_killed_step_leaves_its_attempt_in_flight () =
@@ -4308,6 +4336,7 @@ let test_resume_records_the_interrupted_attempt_and_meters_each_once () =
          ignore
            (Runner.Default.execute_run ~run_id:"resumed-run" ~root
               ~workflow_name:"hello" ~task:"say hi" ~isolated:false ())));
+  wait_for_in_flight_children root ~run_id:"resumed-run";
   let resume_with ~then_run =
     let environment_path = Filename.concat root "resume-environment" in
     write_harness_config root
@@ -4959,6 +4988,13 @@ let sample_attempt ~step_key ~number =
     command = [ "harness"; "--flag" ];
     started_at = "2026-10-12T10:00:00Z";
     child_pid = Some 4242;
+    child_host = Some "build-host";
+    child_start_time = Some "Mon Oct 12 10:00:00 2026";
+    session_id = Some "5f0c2a52-8d4e-4c1b-9a77-0b1d2e3f4a5b";
+    on_interrupt = Skill.Escalate;
+    probe_before = Some "abc123 main";
+    probe_after = None;
+    stdout_path = Some "/tmp/jig-stdout.log";
   }
 
 let test_run_json_round_trips_attempts () =
@@ -5092,6 +5128,421 @@ let test_infrastructure_error_keeps_the_saved_steps () =
         (List.map (fun step -> step.Run.skill) run.Run.steps);
       Alcotest.(check (option string)) "the error is recorded"
         (Some "budget: spend cap reached") run.Run.error
+
+(* on_interrupt, continue: and probe: *)
+
+let yaml_list key parts =
+  Printf.sprintf "%s:\n%s" key
+    (String.concat ""
+       (List.map (fun part -> Printf.sprintf "  - %S\n" part) parts))
+
+let write_config root sections =
+  write_file
+    (Filename.concat root ".jig/config.yaml")
+    (String.concat "" sections)
+
+let write_say_hi_skill root ~on_interrupt =
+  write_file
+    (Filename.concat root ".jig/skills/say-hi/SKILL.md")
+    (Printf.sprintf "---\non_interrupt: %s\n---\n# Say hi\n\nGreet the user.\n"
+       on_interrupt)
+
+(* Waits until jig has recorded the child, so a resume can check it. *)
+let wait_until_child_recorded = "for attempt in $(seq 100); do grep -qs child_start_time .jig/runs/*.json && break; sleep 0.05; done"
+
+let crashing_harness =
+  [
+    "sh";
+    "-c";
+    "echo dirty > state; echo partial-work-done; " ^ wait_until_child_recorded
+    ^ "; kill -9 $PPID";
+  ]
+
+let state_probe = [ "sh"; "-c"; "cat state 2>/dev/null || echo clean" ]
+
+let crash_run_without_waiting root ~run_id =
+  ignore
+    (in_child_process (fun () ->
+         ignore
+           (Runner.Default.execute_run ~run_id ~root ~workflow_name:"hello"
+              ~task:"say hi" ~isolated:false ())))
+
+let crash_run root ~run_id =
+  crash_run_without_waiting root ~run_id;
+  wait_for_in_flight_children root ~run_id
+
+(* Records the prompt ($0 of the script) to [path], then passes. *)
+let prompt_recording_harness ~path =
+  [
+    "sh";
+    "-c";
+    Printf.sprintf "printf '%%s' \"$0\" > %s; %s" (Filename.quote path)
+      pass_handoff_command;
+  ]
+
+let resume root ~run_id ~guidance =
+  match Runner.Default.resume_run ~root ~run_id ~guidance () with
+  | Ok (run, _) -> run
+  | Error message -> Alcotest.fail message
+
+let test_validate_rejects_an_unknown_on_interrupt () =
+  let root = make_temp_root () in
+  setup_project root ~harness:passing_harness;
+  write_say_hi_skill root ~on_interrupt:"sometimes";
+  let jig_dir = Filename.concat root ".jig" in
+  match
+    Result.bind
+      (Workflow.load ~path:(Filename.concat jig_dir "workflows/hello.yaml"))
+      (fun workflow ->
+        Validate.workflow
+          ~workflow_dir:(Filename.concat jig_dir "workflows")
+          ~jig_dir ~skill_paths:[] workflow)
+  with
+  | Ok () -> Alcotest.fail "expected validation to reject the value"
+  | Error message ->
+      Alcotest.(check bool) "names the key" true
+        (contains ~affix:"on_interrupt" message);
+      Alcotest.(check bool) "names the bad value" true
+        (contains ~affix:"sometimes" message)
+
+let test_recover_tells_the_new_attempt_about_the_cut_off_one () =
+  let root = make_temp_root () in
+  setup_project root ~harness:crashing_harness;
+  write_config root
+    [ yaml_list "harness" crashing_harness; yaml_list "probe" state_probe ];
+  crash_run root ~run_id:"recover-run";
+  let prompt_path = Filename.concat root "prompt" in
+  write_config root
+    [
+      yaml_list "harness" (prompt_recording_harness ~path:prompt_path);
+      yaml_list "probe" state_probe;
+    ];
+  let run = resume root ~run_id:"recover-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  let prompt = read_text prompt_path in
+  List.iter
+    (fun affix ->
+      Alcotest.(check bool) (Printf.sprintf "prompt has %S" affix) true
+        (contains ~affix prompt))
+    [
+      "Interrupted attempt";
+      "recover-run/e0/r0/s0#1";
+      "Probe before that attempt:\nclean";
+      "Probe now:\ndirty";
+      "partial-work-done";
+      "Greet the user.";
+    ];
+  match run.Run.interrupted_attempts with
+  | [ cut_off ] ->
+      Alcotest.(check (option string)) "probe before the cut-off attempt"
+        (Some "clean\n") cut_off.Run.probe_before;
+      Alcotest.(check (option string)) "probe after it, taken on resume"
+        (Some "dirty\n") cut_off.Run.probe_after
+  | attempts ->
+      Alcotest.fail
+        (Printf.sprintf "expected one interrupted attempt, found %d"
+           (List.length attempts))
+
+let test_rerun_starts_the_step_again_unchanged () =
+  let root = make_temp_root () in
+  setup_project root ~harness:crashing_harness;
+  write_say_hi_skill root ~on_interrupt:"rerun";
+  crash_run root ~run_id:"rerun-run";
+  let prompt_path = Filename.concat root "prompt" in
+  write_harness_config root (prompt_recording_harness ~path:prompt_path);
+  let run = resume root ~run_id:"rerun-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  let prompt = read_text prompt_path in
+  Alcotest.(check bool) "the prompt says nothing of the interruption" false
+    (contains ~affix:"Interrupted attempt" prompt);
+  Alcotest.(check bool) "the prompt is the step's normal prompt" true
+    (contains ~affix:"Greet the user." prompt)
+
+let test_escalate_pauses_until_a_human_resumes () =
+  let root = make_temp_root () in
+  setup_project root ~harness:crashing_harness;
+  write_say_hi_skill root ~on_interrupt:"escalate";
+  crash_run root ~run_id:"escalate-run";
+  let prompt_path = Filename.concat root "prompt" in
+  write_harness_config root (prompt_recording_harness ~path:prompt_path);
+  let paused = resume root ~run_id:"escalate-run" ~guidance:None in
+  Alcotest.(check string) "paused" "paused"
+    (Run.string_of_status paused.Run.status);
+  Alcotest.(check bool) "no attempt ran" false (Sys.file_exists prompt_path);
+  Alcotest.(check bool) "the pause names the policy" true
+    (contains ~affix:"on_interrupt: escalate"
+       (Option.value paused.Run.error ~default:""));
+  let resumed = resume root ~run_id:"escalate-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status resumed.Run.status);
+  Alcotest.(check bool) "the human's resume recovers" true
+    (contains ~affix:"Interrupted attempt" (read_text prompt_path));
+  Alcotest.(check (option string)) "the pause message is cleared" None
+    resumed.Run.error
+
+(* $0 is the session id jig assigns; the prompt follows as $1. *)
+let session_reporting_crash_harness ~path =
+  [
+    "sh";
+    "-c";
+    Printf.sprintf "printf '%%s' \"$0\" > %s; kill -9 $PPID"
+      (Filename.quote path);
+    "{session_id}";
+  ]
+
+let crash_with_assigned_session root ~run_id =
+  let assigned_path = Filename.concat root "assigned" in
+  setup_project root
+    ~harness:(session_reporting_crash_harness ~path:assigned_path);
+  crash_run root ~run_id;
+  let assigned = read_text assigned_path in
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run_id with
+  | Error message -> Alcotest.fail message
+  | Ok run -> (
+      match Run.Step_key_map.bindings run.Run.attempts_in_flight with
+      | [ (_, attempt) ] ->
+          Alcotest.(check (option string))
+            "the session id is on the attempt before the harness ran"
+            (Some assigned) attempt.Run.session_id;
+          Alcotest.(check int) "a UUID" 36 (String.length assigned);
+          Alcotest.(check char) "version 4" '4' assigned.[14];
+          assigned
+      | _ -> Alcotest.fail "expected one attempt in flight")
+
+(* Writes "$0|$1" (session id, prompt) to [path], then passes. *)
+let session_recording_command ~path =
+  [
+    "sh";
+    "-c";
+    Printf.sprintf "printf '%%s|%%s' \"$0\" \"$1\" > %s; %s"
+      (Filename.quote path) pass_handoff_command;
+    "{session_id}";
+  ]
+
+let test_continue_reopens_the_interrupted_session () =
+  let root = make_temp_root () in
+  let assigned = crash_with_assigned_session root ~run_id:"continue-run" in
+  let continued_path = Filename.concat root "continued" in
+  write_config root
+    [
+      yaml_list "harness" passing_harness;
+      yaml_list "continue" (session_recording_command ~path:continued_path);
+    ];
+  let run = resume root ~run_id:"continue-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  let continued = read_text continued_path in
+  Alcotest.(check bool) "continue: got the same session id" true
+    (String.starts_with ~prefix:(assigned ^ "|") continued);
+  Alcotest.(check bool) "with a recovery prompt" true
+    (contains ~affix:"Interrupted attempt" continued);
+  match List.rev run.Run.steps with
+  | last :: _ ->
+      Alcotest.(check (option string)) "the step keeps the session"
+        (Some assigned) last.Run.session_id
+  | [] -> Alcotest.fail "expected a step"
+
+let test_without_continue_a_new_session_follows_the_policy () =
+  let root = make_temp_root () in
+  let assigned = crash_with_assigned_session root ~run_id:"fallback-run" in
+  let reported_path = Filename.concat root "reported" in
+  write_harness_config root (session_recording_command ~path:reported_path);
+  let run = resume root ~run_id:"fallback-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  let reported = read_text reported_path in
+  Alcotest.(check bool) "a new session id" false
+    (String.starts_with ~prefix:assigned reported);
+  Alcotest.(check bool) "the recover prompt" true
+    (contains ~affix:"Interrupted attempt" reported)
+
+let test_attach_after_a_crash_opens_the_interrupted_session () =
+  let previous =
+    { (recorded "first") with Run.session_id = Some "previous-session" }
+  in
+  let cut_off =
+    {
+      (sample_attempt ~step_key:"r/e1/r0/s0" ~number:1) with
+      Run.session_id = Some "interrupted-session";
+    }
+  in
+  let crashed =
+    {
+      (persisted_run ~steps:[ previous ] ~status:Run.Running ~position:(pos 1))
+      with
+      Run.attempts_in_flight =
+        Run.Step_key_map.singleton cut_off.Run.step_key cut_off;
+    }
+  in
+  Alcotest.(check (result string string))
+    "the interrupted attempt's session" (Ok "interrupted-session")
+    (Attach.session_of_run crashed);
+  let escalated =
+    {
+      crashed with
+      Run.status = Run.Paused;
+      attempts_in_flight = Run.Step_key_map.empty;
+      interrupted_attempts = [ cut_off ];
+    }
+  in
+  Alcotest.(check (result string string))
+    "the same once a resume marked it interrupted" (Ok "interrupted-session")
+    (Attach.session_of_run escalated);
+  Alcotest.(check (result string string))
+    "once the position moves on, the newest step's session"
+    (Ok "previous-session")
+    (Attach.session_of_run { escalated with Run.position = pos 2 });
+  match
+    Attach.session_of_run
+      {
+        escalated with
+        Run.interrupted_attempts = [ { cut_off with Run.session_id = None } ];
+      }
+  with
+  | Ok session -> Alcotest.fail ("expected a refusal, got " ^ session)
+  | Error message ->
+      Alcotest.(check bool) "names the attempt" true
+        (contains ~affix:cut_off.Run.attempt_id message)
+
+let test_continue_skips_sessions_of_a_tier_harness () =
+  let root = make_temp_root () in
+  let assigned_path = Filename.concat root "assigned" in
+  setup_project root ~harness:passing_harness;
+  write_file
+    (Filename.concat root ".jig/skills/say-hi/SKILL.md")
+    "---\ntier: cheap\n---\n# Say hi\n\nGreet the user.\n";
+  let continued_path = Filename.concat root "continued" in
+  let reported_path = Filename.concat root "reported" in
+  let config_with ~cheap =
+    write_config root
+      [
+        yaml_list "harness" passing_harness;
+        "tiers:\n";
+        "  cheap:\n"
+        ^ String.concat ""
+            (List.map (fun part -> Printf.sprintf "    - %S\n" part) cheap);
+        yaml_list "continue" (session_recording_command ~path:continued_path);
+      ]
+  in
+  config_with ~cheap:(session_reporting_crash_harness ~path:assigned_path);
+  crash_run root ~run_id:"tier-run";
+  config_with ~cheap:(session_recording_command ~path:reported_path);
+  let run = resume root ~run_id:"tier-run" ~guidance:None in
+  Alcotest.(check string) "completed" "completed"
+    (Run.string_of_status run.Run.status);
+  Alcotest.(check bool) "continue: is not given the tier's session" false
+    (Sys.file_exists continued_path);
+  Alcotest.(check bool) "the tier harness recovers with a new attempt" true
+    (contains ~affix:"Interrupted attempt" (read_text reported_path))
+
+(* A live harness left behind by a killed jig *)
+
+let in_flight_attempts root ~run_id =
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run_id with
+  | Error message -> Alcotest.fail message
+  | Ok run -> List.map snd (Run.Step_key_map.bindings run.Run.attempts_in_flight)
+
+let edit_in_flight_attempt root ~run_id edit =
+  let runs_dir = Project.runs_dir ~root in
+  match Store.Filesystem.load ~runs_dir ~id:run_id with
+  | Error message -> Alcotest.fail message
+  | Ok run -> (
+      let run =
+        {
+          run with
+          Run.attempts_in_flight =
+            Run.Step_key_map.map edit run.Run.attempts_in_flight;
+        }
+      in
+      match Store.Filesystem.save ~runs_dir run with
+      | Ok _ -> ()
+      | Error message -> Alcotest.fail message)
+
+let resume_error root ~run_id =
+  match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
+  | Ok _ -> Alcotest.fail "expected the resume to refuse"
+  | Error message -> message
+
+let test_a_live_orphan_harness_blocks_the_resume () =
+  let root = make_temp_root () in
+  setup_project root
+    ~harness:
+      [ "sh"; "-c"; wait_until_child_recorded ^ "; kill -9 $PPID; sleep 2" ];
+  crash_run_without_waiting root ~run_id:"orphan-run";
+  let orphan_pid =
+    match in_flight_attempts root ~run_id:"orphan-run" with
+    | [ { Run.child_pid = Some pid; _ } ] -> pid
+    | _ -> Alcotest.fail "expected one attempt in flight with a child pid"
+  in
+  let prompt_path = Filename.concat root "prompt" in
+  write_harness_config root (prompt_recording_harness ~path:prompt_path);
+  let message = resume_error root ~run_id:"orphan-run" in
+  List.iter
+    (fun affix ->
+      Alcotest.(check bool) (Printf.sprintf "refusal has %S" affix) true
+        (contains ~affix message))
+    [ string_of_int orphan_pid; "orphan-run/e0/r0/s0#1"; "stop it or wait" ];
+  Alcotest.(check bool) "no harness ran" false (Sys.file_exists prompt_path);
+  wait_for_in_flight_children root ~run_id:"orphan-run";
+  let run = resume root ~run_id:"orphan-run" ~guidance:None in
+  Alcotest.(check string) "completed once the orphan exited" "completed"
+    (Run.string_of_status run.Run.status)
+
+let crash_and_point_the_attempt_at root ~run_id edit =
+  setup_project root ~harness:crashing_harness;
+  crash_run root ~run_id;
+  edit_in_flight_attempt root ~run_id edit;
+  write_harness_config root passing_harness
+
+let test_a_child_on_another_host_blocks_the_resume () =
+  let root = make_temp_root () in
+  crash_and_point_the_attempt_at root ~run_id:"remote-run" (fun attempt ->
+      { attempt with Run.child_host = Some "build-agent-7" });
+  Alcotest.(check bool) "names the other host" true
+    (contains ~affix:"build-agent-7" (resume_error root ~run_id:"remote-run"))
+
+let test_a_reused_pid_does_not_block_the_resume () =
+  let root = make_temp_root () in
+  let live_pid = Unix.getpid () in
+  crash_and_point_the_attempt_at root ~run_id:"reused-run" (fun attempt ->
+      {
+        attempt with
+        Run.child_pid = Some live_pid;
+        child_start_time = Process_identity.start_time live_pid;
+      });
+  Alcotest.(check bool) "the same live process blocks" true
+    (contains ~affix:"still running" (resume_error root ~run_id:"reused-run"));
+  edit_in_flight_attempt root ~run_id:"reused-run" (fun attempt ->
+      { attempt with Run.child_start_time = Some "Thu Jan  1 00:00:00 1970" });
+  let run = resume root ~run_id:"reused-run" ~guidance:None in
+  Alcotest.(check string) "a pid with another start time is a new process"
+    "completed"
+    (Run.string_of_status run.Run.status)
+
+let test_a_live_harness_blocks_the_attach_hand_back () =
+  let root = make_temp_root () in
+  let live_pid = Unix.getpid () in
+  crash_and_point_the_attempt_at root ~run_id:"attach-run" (fun attempt ->
+      {
+        attempt with
+        Run.child_pid = Some live_pid;
+        child_start_time = Process_identity.start_time live_pid;
+      });
+  let chat_opened = ref false in
+  match
+    Runner.Default.continue_attached ~root ~run_id:"attach-run"
+      ~collect_handoff:(fun () ->
+        chat_opened := true;
+        Ok { Executor.exit_code = 0; stdout = handoff_block (); stderr = "" })
+      ()
+  with
+  | Ok _ -> Alcotest.fail "expected the attach to refuse"
+  | Error message ->
+      Alcotest.(check bool) "names the live pid" true
+        (contains ~affix:(string_of_int live_pid) message);
+      Alcotest.(check bool) "no session was reopened" false !chat_opened
 
 let () =
   Random.self_init ();
@@ -5619,6 +6070,33 @@ let () =
             test_an_error_after_spawn_keeps_the_attempt;
           Alcotest.test_case "an infrastructure error keeps saved steps"
             `Quick test_infrastructure_error_keeps_the_saved_steps;
+        ] );
+      ( "interrupted attempts",
+        [
+          Alcotest.test_case "validate rejects an unknown on_interrupt" `Quick
+            test_validate_rejects_an_unknown_on_interrupt;
+          Alcotest.test_case "recover tells the new attempt" `Quick
+            test_recover_tells_the_new_attempt_about_the_cut_off_one;
+          Alcotest.test_case "rerun starts the step again unchanged" `Quick
+            test_rerun_starts_the_step_again_unchanged;
+          Alcotest.test_case "escalate pauses until a human resumes" `Quick
+            test_escalate_pauses_until_a_human_resumes;
+          Alcotest.test_case "continue reopens the interrupted session" `Quick
+            test_continue_reopens_the_interrupted_session;
+          Alcotest.test_case "without continue the policy applies" `Quick
+            test_without_continue_a_new_session_follows_the_policy;
+          Alcotest.test_case "continue skips a tier harness's session" `Quick
+            test_continue_skips_sessions_of_a_tier_harness;
+          Alcotest.test_case "attach opens the interrupted session" `Quick
+            test_attach_after_a_crash_opens_the_interrupted_session;
+          Alcotest.test_case "a live orphan harness blocks the resume" `Quick
+            test_a_live_orphan_harness_blocks_the_resume;
+          Alcotest.test_case "a child on another host blocks the resume"
+            `Quick test_a_child_on_another_host_blocks_the_resume;
+          Alcotest.test_case "a reused pid does not block the resume" `Quick
+            test_a_reused_pid_does_not_block_the_resume;
+          Alcotest.test_case "a live harness blocks the attach hand-back"
+            `Quick test_a_live_harness_blocks_the_attach_hand_back;
         ] );
       ( "telemetry",
         [

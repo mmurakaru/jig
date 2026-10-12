@@ -37,3 +37,38 @@ let command ~attach ~session_id =
         (List.map
            (substitute ~placeholder:"{session_id}" ~value:session_id)
            parts)
+
+let mentions_placeholder ~placeholder part =
+  substitute ~placeholder ~value:"" part <> part
+
+let substitute_session_id ~session_id parts =
+  List.map (substitute ~placeholder:"{session_id}" ~value:session_id) parts
+
+(* After a crash, an earlier step's session is the wrong one to reopen. *)
+let session_of_run (run : Run.t) =
+  match List.rev (Run.unresolved_interrupted_attempts run) with
+  | attempt :: _ -> (
+      match attempt.Run.session_id with
+      | Some session_id -> Ok session_id
+      | None ->
+          Error
+            (Printf.sprintf
+               "attempt %s was interrupted and has no session id (put \
+                {session_id} in the harness command to assign one); resume \
+                it with jig run --resume %s, or --skip"
+               attempt.Run.attempt_id run.Run.id))
+  | [] -> (
+      let newest_with_session =
+        List.fold_left
+          (fun found (step : Run.step_record) ->
+            match step.Run.session_id with
+            | Some _ as session -> session
+            | None -> found)
+          None run.Run.steps
+      in
+      match newest_with_session with
+      | Some session_id -> Ok session_id
+      | None ->
+          Error
+            (Printf.sprintf "no step of run %s recorded a session id"
+               run.Run.id))

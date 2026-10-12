@@ -94,8 +94,77 @@ let field_guide_protocol =
   ^ " as one short factual line. Do not restate what the code or docs \
      already say."
 
-let build_prompt ~context ~field_guide ~task ~position ~inputs ~skill_body
-    ~previous_handoff ~guidance =
+(* The end of a long output carries the freshest state. *)
+let tail_text ~limit text =
+  let length = String.length text in
+  if length <= limit then text
+  else "[earlier output truncated]\n" ^ String.sub text (length - limit) limit
+
+let interruption_text_limit = 4000
+
+let session_id_random_state = lazy (Random.State.make_self_init ())
+
+(* Version 4 UUID shape: claude --session-id rejects anything else. *)
+let new_session_id () =
+  let state = Lazy.force session_id_random_state in
+  let bytes = Bytes.init 16 (fun _ -> Char.chr (Random.State.int state 256)) in
+  let set index transform =
+    Bytes.set bytes index
+      (Char.chr (transform (Char.code (Bytes.get bytes index))))
+  in
+  set 6 (fun byte -> (byte land 0x0f) lor 0x40);
+  set 8 (fun byte -> (byte land 0x3f) lor 0x80);
+  let hex =
+    String.concat ""
+      (List.init 16 (fun index ->
+           Printf.sprintf "%02x" (Char.code (Bytes.get bytes index))))
+  in
+  Printf.sprintf "%s-%s-%s-%s-%s" (String.sub hex 0 8) (String.sub hex 8 4)
+    (String.sub hex 12 4) (String.sub hex 16 4) (String.sub hex 20 12)
+
+(* The capture file outlives a killed jig, so it holds the partial output. *)
+let partial_output_of (interrupted : Run.attempt) =
+  match interrupted.Run.stdout_path with
+  | None -> None
+  | Some path -> (
+      match File.read path with
+      | Ok text when String.trim text <> "" ->
+          Some (tail_text ~limit:interruption_text_limit text)
+      | Ok _ | Error _ -> None)
+
+let interruption_section ~(interrupted : Run.attempt) ~probe_now
+    ~partial_output =
+  let labelled label = function
+    | Some text -> Printf.sprintf "%s:\n%s\n" label text
+    | None -> ""
+  in
+  Printf.sprintf
+    "Interrupted attempt:\n\
+     An earlier attempt of this step (%s) stopped before it finished. It \
+     may have done part of the work: changed files, made commits, pushed a \
+     branch, or opened a pull request. Inspect the workspace and any \
+     external state first, keep what is done, do not repeat side effects \
+     that already happened, then finish the step.\n\
+     %s%s%s\n"
+    interrupted.Run.attempt_id
+    (labelled "Probe before that attempt" interrupted.Run.probe_before)
+    (labelled "Probe now" probe_now)
+    (labelled "Its partial output" partial_output)
+
+(* The reopened session already holds its output, prompt and protocol. *)
+let continue_session_prompt ~(interrupted : Run.attempt) ~probe_now ~guidance =
+  let guidance_section =
+    match guidance with
+    | Some text -> Printf.sprintf "Human guidance:\n%s\n\n" text
+    | None -> ""
+  in
+  Printf.sprintf
+    "%s%sFinish the step, then end your reply with the handoff block."
+    (interruption_section ~interrupted ~probe_now ~partial_output:None)
+    guidance_section
+
+let build_prompt ?interruption ~context ~field_guide ~task ~position ~inputs
+    ~skill_body ~previous_handoff ~guidance () =
   let context_section =
     match context with
     | Some text when String.trim text <> "" ->
@@ -139,9 +208,10 @@ let build_prompt ~context ~field_guide ~task ~position ~inputs ~skill_body
         Printf.sprintf "Previous handoff:\n%s\n\n" (Handoff.render handoff)
     | None -> ""
   in
-  Printf.sprintf "%s%sTask: %s\n\n%s\n\n%s%s%s%s\n\n%s" context_section
+  let interruption_section = Option.value interruption ~default:"" in
+  Printf.sprintf "%s%sTask: %s\n\n%s\n\n%s%s%s%s%s\n\n%s" context_section
     field_guide_section task position inputs_section guidance_section
-    handoff_section skill_body protocol
+    interruption_section handoff_section skill_body protocol
 
 module Make
     (Executor_port : Executor.S)
@@ -219,13 +289,8 @@ struct
   let degraded_text_limit = 4000
 
   let degraded_handoff stdout =
-    let text = Handoff.agent_text stdout in
     let text =
-      let length = String.length text in
-      if length <= degraded_text_limit then text
-      else
-        "[earlier output truncated]\n"
-        ^ String.sub text (length - degraded_text_limit) degraded_text_limit
+      tail_text ~limit:degraded_text_limit (Handoff.agent_text stdout)
     in
     {
       Handoff.status = Handoff.Fail;
@@ -342,6 +407,59 @@ struct
         Some (degraded_handoff step_record.Run.stdout)
     | None, _ -> progress.last_handoff
 
+  let with_interrupted_attempt progress (updated : Run.attempt) =
+    {
+      progress with
+      run =
+        {
+          progress.run with
+          Run.interrupted_attempts =
+            List.map
+              (fun (attempt : Run.attempt) ->
+                if attempt.Run.attempt_id = updated.Run.attempt_id then updated
+                else attempt)
+              progress.run.Run.interrupted_attempts;
+        };
+    }
+
+  (* Best effort: a failing probe records its failure, never fails the step. *)
+  let run_probe engine =
+    match engine.config.Config.probe with
+    | [] -> None
+    | argv -> (
+        match Subprocess.run ~cwd:engine.workspace ~argv () with
+        | Ok { Subprocess.exit_code = 0; stdout; _ } -> Some stdout
+        | Ok { Subprocess.exit_code; stdout; stderr } ->
+            Some
+              (Printf.sprintf "probe exited %d\n%s%s" exit_code stdout stderr)
+        | Error message -> Some message)
+
+  type recovery =
+    | Fresh_attempt
+    | Recovery_prompt of Run.attempt
+    | Continue_session of { cut_off : Run.attempt; session_id : string }
+
+  (* continue: reopens sessions of the default harness only, not of a tier. *)
+  let ran_on_default_harness engine (attempt : Run.attempt) =
+    match attempt.Run.tier with
+    | None -> true
+    | Some tier -> not (List.mem_assoc tier engine.config.Config.tiers)
+
+  (* Escalate reaches here only after a human resumed, so it recovers. *)
+  let recovery_plan engine (interrupted : Run.attempt option) =
+    match interrupted with
+    | None -> Fresh_attempt
+    | Some cut_off -> (
+        match cut_off.Run.on_interrupt with
+        | Skill.Rerun -> Fresh_attempt
+        | Skill.Recover | Skill.Escalate -> (
+            match (engine.config.Config.continue_session, cut_off.Run.session_id)
+            with
+            | _ :: _, Some session_id when ran_on_default_harness engine cut_off
+              ->
+                Continue_session { cut_off; session_id }
+            | _ -> Recovery_prompt cut_off))
+
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
   let run_step_process engine progress ~item (step : Workflow.step) =
@@ -385,18 +503,74 @@ struct
     let environment =
       [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ]
     in
-    let* command, start_process =
-      match (step.Workflow.action, loaded_skill) with
-      | Workflow.Skill_step name, Some skill ->
-          let* command =
+    let probe_before = run_probe engine in
+    let interrupted = Run.unresolved_interrupted_attempt progress.run ~step_key in
+    (* The workspace now is the state the cut-off attempt left behind. *)
+    let progress =
+      match interrupted with
+      | Some cut_off when Option.is_none cut_off.Run.probe_after ->
+          with_interrupted_attempt progress
+            { cut_off with Run.probe_after = probe_before }
+      | Some _ | None -> progress
+    in
+    let recovery = recovery_plan engine interrupted in
+    let on_interrupt =
+      match loaded_skill with
+      | Some skill -> skill.Skill.on_interrupt
+      | None -> Skill.Rerun
+    in
+    let* command, session_id, start_process =
+      match (step.Workflow.action, loaded_skill, recovery) with
+      | Workflow.Skill_step _, Some _, Continue_session { cut_off; session_id }
+        ->
+          let command =
+            engine.config.Config.wrapper
+            @ Attach.substitute_session_id ~session_id
+                engine.config.Config.continue_session
+          in
+          let prompt =
+            continue_session_prompt ~interrupted:cut_off ~probe_now:probe_before
+              ~guidance:progress.guidance
+          in
+          Ok
+            ( command,
+              Some session_id,
+              fun ~on_spawn ->
+                Executor_port.execute ~on_spawn ~environment ~command
+                  ~cwd:engine.workspace ~prompt () )
+      | Workflow.Skill_step name, Some skill, _ ->
+          let* resolved_command =
             Model_provider_port.resolve ~config:engine.config ~skill:name ~tier
+          in
+          let session_id =
+            if
+              List.exists
+                (Attach.mentions_placeholder ~placeholder:"{session_id}")
+                resolved_command
+            then Some (new_session_id ())
+            else None
+          in
+          let command =
+            match session_id with
+            | Some session_id ->
+                Attach.substitute_session_id ~session_id resolved_command
+            | None -> resolved_command
           in
           let inputs =
             List.map (fun (key, value) -> (key, interpolate value))
               step.Workflow.inputs
           in
+          let interruption =
+            match recovery with
+            | Recovery_prompt cut_off ->
+                Some
+                  (interruption_section ~interrupted:cut_off
+                     ~probe_now:probe_before
+                     ~partial_output:(partial_output_of cut_off))
+            | Fresh_attempt | Continue_session _ -> None
+          in
           let prompt =
-            build_prompt ~context:engine.context
+            build_prompt ?interruption ~context:engine.context
               ~field_guide:(Field_guide.load ~workspace:engine.workspace)
               ~task:engine.task
               ~position:
@@ -406,23 +580,25 @@ struct
                    ~skill:label ~item)
               ~inputs ~skill_body:skill.Skill.body
               ~previous_handoff:progress.last_handoff
-              ~guidance:progress.guidance
+              ~guidance:progress.guidance ()
           in
           Ok
             ( command,
+              session_id,
               fun ~on_spawn ->
                 Executor_port.execute ~on_spawn ~environment ~command
                   ~cwd:engine.workspace ~prompt () )
-      | Workflow.Skill_step name, None ->
+      | Workflow.Skill_step name, None, _ ->
           Error
             (Printf.sprintf "run: skill %s failed to load - unreachable" name)
-      | Workflow.Command_step command_template, _ ->
+      | Workflow.Command_step command_template, _, _ ->
           (* A command step is deterministic mechanical work: run the shell
              command, let its exit status be the outcome (0 = pass), record
              it at $0 (no model). *)
           let argv = [ "sh"; "-c"; interpolate command_template ] in
           Ok
             ( argv,
+              None,
               fun ~on_spawn ->
                 Result.map
                   (fun result ->
@@ -445,6 +621,13 @@ struct
         command;
         started_at;
         child_pid = None;
+        child_host = None;
+        child_start_time = None;
+        session_id;
+        on_interrupt;
+        probe_before;
+        probe_after = None;
+        stdout_path = None;
       }
     in
     let* progress, _ =
@@ -454,17 +637,34 @@ struct
     in
     let spawned_attempt = ref attempt in
     let on_spawn ~child_pid ~stdout_path ~stderr_path =
-      spawned_attempt := { attempt with Run.child_pid = Some child_pid };
       (* Best effort: the outcome save that follows reports a failing store. *)
-      ignore
-        (persist engine
-           (with_attempt_in_flight progress !spawned_attempt)
-           ~status:Run.Running ~finished:false);
+      let save_spawned_attempt spawned =
+        spawned_attempt := spawned;
+        ignore
+          (persist engine
+             (with_attempt_in_flight progress spawned)
+             ~status:Run.Running ~finished:false)
+      in
+      let spawned =
+        {
+          attempt with
+          Run.child_pid = Some child_pid;
+          child_host = Some (Unix.gethostname ());
+          stdout_path = Some stdout_path;
+        }
+      in
+      save_spawned_attempt spawned;
       Current.write ~runs_dir:(runs_dir engine)
         ~run_id:progress.run.Run.id
         { Current.skill = label; item_key; tier; stdout_path; stderr_path;
           started_at };
-      engine.on_event (Step_output { stdout_path; stderr_path })
+      engine.on_event (Step_output { stdout_path; stderr_path });
+      (* Last: the ps read must not delay the pid record or the live pointer. *)
+      save_spawned_attempt
+        {
+          spawned with
+          Run.child_start_time = Process_identity.start_time child_pid;
+        }
     in
     let process_result = start_process ~on_spawn in
     Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
@@ -497,6 +697,14 @@ struct
           in
           Error message
     in
+    (* The capture file is gone once the process is reaped. *)
+    let finished_attempt =
+      {
+        !spawned_attempt with
+        Run.probe_after = run_probe engine;
+        stdout_path = None;
+      }
+    in
     let stdout = exec_result.Executor.stdout in
     let stderr = exec_result.Executor.stderr in
     let exit_code = exec_result.Executor.exit_code in
@@ -508,22 +716,17 @@ struct
             handoff,
             handoff_error,
             fst (Metering.parse_cost stdout),
-            Metering.parse_session_id stdout )
+            match Metering.parse_session_id stdout with
+            | Some _ as reported -> reported
+            | None -> finished_attempt.Run.session_id )
       | Workflow.Command_step command_template ->
           let outcome = if exit_code = 0 then Run.Pass else Run.Fail in
           (* On failure, thread the command's output onward so a retry (or
              a following skill) can act on what went wrong. *)
           let handoff =
             if outcome = Run.Fail then
-              let combined = stdout ^ stderr in
               let tail =
-                let length = String.length combined in
-                if length <= degraded_text_limit then combined
-                else
-                  "[earlier output truncated]\n"
-                  ^ String.sub combined
-                      (length - degraded_text_limit)
-                      degraded_text_limit
+                tail_text ~limit:degraded_text_limit (stdout ^ stderr)
               in
               Some
                 {
@@ -551,7 +754,7 @@ struct
         session_id;
         item_index = Option.map (fun context -> context.item_index) item;
         item_key;
-        attempt = Some !spawned_attempt;
+        attempt = Some finished_attempt;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
@@ -571,7 +774,7 @@ struct
     let* () =
       record_attempt_metering engine
         (finished_metering_event ~run_id:progress.run.Run.id step_record
-           !spawned_attempt)
+           finished_attempt)
     in
     engine.on_step step_record;
     engine.on_event (Step_finished step_record);
@@ -1048,6 +1251,32 @@ struct
           position = advance_after_human_pass ~entries run.Run.position;
         } )
 
+  let pause_for_interruption engine progress (attempts : Run.attempt list) =
+    let probe_now = run_probe engine in
+    let progress =
+      List.fold_left
+        (fun progress (attempt : Run.attempt) ->
+          with_interrupted_attempt progress
+            { attempt with Run.probe_after = probe_now })
+        progress attempts
+    in
+    let message =
+      Printf.sprintf
+        "interrupted: %s stopped before it finished and its skill sets \
+         on_interrupt: escalate - check the workspace, then resume, skip, or \
+         attach"
+        (String.concat ", "
+           (List.map
+              (fun (attempt : Run.attempt) ->
+                Printf.sprintf "%s (%s)" attempt.Run.skill attempt.Run.attempt_id)
+              attempts))
+    in
+    let progress =
+      { progress with run = { progress.run with Run.error = Some message } }
+    in
+    let* () = record_missing_metering engine progress.run in
+    finish engine progress Run.Paused
+
   let resume_run ?(on_step = fun _ -> ()) ?(on_event = fun _ -> ())
       ?(skip = false) ~root ~run_id
       ~guidance () =
@@ -1065,6 +1294,7 @@ struct
                run_id
                (Run.string_of_status status))
     in
+    let* () = Process_identity.refuse_while_attempts_run existing in
     let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
@@ -1095,9 +1325,26 @@ struct
     let last_handoff = Run.last_handoff existing in
     let run =
       Run.mark_attempts_interrupted
-        { existing with Run.status = Run.Running; finished_at = None }
+        {
+          existing with
+          Run.status = Run.Running;
+          finished_at = None;
+          error = None;
+        }
     in
-    if skip then
+    let attempts_to_escalate =
+      List.filter
+        (fun (_, (attempt : Run.attempt)) ->
+          attempt.Run.on_interrupt = Skill.Escalate)
+        (Run.Step_key_map.bindings existing.Run.attempts_in_flight)
+    in
+    (* Guidance or a skip is already the human's decision. *)
+    if attempts_to_escalate <> [] && (not skip) && Option.is_none guidance
+    then
+      pause_for_interruption engine
+        { run; last_handoff; guidance = None }
+        (List.map snd attempts_to_escalate)
+    else if skip then
       let* record, run =
         human_skip ~entries:workflow.Workflow.entries ~guidance run
       in
@@ -1126,6 +1373,7 @@ struct
                run_id
                (Run.string_of_status status))
     in
+    let* () = Process_identity.refuse_while_attempts_run existing in
     let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in

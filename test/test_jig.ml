@@ -2247,6 +2247,217 @@ let test_list_runs_empty_when_none () =
   | Ok { Store.runs; _ } ->
       Alcotest.(check int) "no runs" 0 (List.length runs)
 
+(* Durable store: atomic saves and the per-run lock *)
+
+let sample_stored_run ~id ~task =
+  {
+    Run.id;
+    workflow = "hello";
+    task;
+    status = Run.Paused;
+    error = None;
+    position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+    workspace = None;
+    steps = [];
+    started_at = "2026-07-02T12:00:00Z";
+    finished_at = None;
+  }
+
+let pid_of_exited_process () =
+  match Unix.fork () with
+  | 0 -> Unix._exit 0
+  | child ->
+      ignore (Unix.waitpid [] child);
+      child
+
+let write_lock_file ~runs_dir ~id ~pid ~host =
+  write_file
+    (Filename.concat runs_dir (id ^ ".lock"))
+    (Printf.sprintf
+       "{\"pid\": %d, \"host\": %S, \"started_at\": \"2026-07-02T12:00:00Z\"}"
+       pid host)
+
+let test_save_killed_midway_keeps_a_complete_record () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  let id = "killed-writer" in
+  (* Large enough that one save spans many writes, so a kill lands mid-save. *)
+  let large_task = String.make 4_000_000 'x' in
+  (match
+     Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:"first")
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  for attempt = 1 to 15 do
+    match Unix.fork () with
+    | 0 ->
+        let rec save_forever () =
+          ignore
+            (Store.Filesystem.save ~runs_dir
+               (sample_stored_run ~id ~task:large_task));
+          save_forever ()
+        in
+        save_forever ()
+    | writer -> (
+        Unix.sleepf (0.002 *. float_of_int attempt);
+        Unix.kill writer Sys.sigkill;
+        ignore (Unix.waitpid [] writer);
+        match Store.Filesystem.load ~runs_dir ~id with
+        | Ok loaded ->
+            Alcotest.(check bool)
+              "record is one of the complete saves" true
+              (loaded.Run.task = "first" || loaded.Run.task = large_task)
+        | Error message ->
+            Alcotest.fail
+              (Printf.sprintf "kill %d left a torn record: %s" attempt message))
+  done
+
+let test_abandoned_temporary_record_is_ignored_and_cleaned () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  let id = "with-leftover" in
+  (match
+     Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:"kept")
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  let leftover = Filename.concat runs_dir (id ^ ".json.tmp.99999") in
+  write_file leftover "{\"id\": \"with-left";
+  (match Store.Filesystem.list_runs ~runs_dir with
+  | Error message -> Alcotest.fail message
+  | Ok listing ->
+      Alcotest.(check (list string))
+        "only the complete record is listed" [ id ]
+        (List.map (fun run -> run.Run.id) listing.Store.runs);
+      Alcotest.(check int) "the temp file is not a record" 0
+        (List.length listing.Store.unreadable_records));
+  match Store.Filesystem.acquire_run_lock ~runs_dir ~id with
+  | Error message -> Alcotest.fail message
+  | Ok run_lock ->
+      Store.Filesystem.release_run_lock run_lock;
+      Alcotest.(check bool) "the lock holder removes the leftover" false
+        (Sys.file_exists leftover)
+
+let test_list_runs_skips_an_unreadable_record () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  (match
+     Store.Filesystem.save ~runs_dir (sample_stored_run ~id:"good" ~task:"x")
+   with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> ());
+  write_file (Filename.concat runs_dir "broken.json") "{\"id\": 42}";
+  match Store.Filesystem.list_runs ~runs_dir with
+  | Error message ->
+      Alcotest.fail ("one bad record failed the list: " ^ message)
+  | Ok listing ->
+      Alcotest.(check (list string))
+        "the readable run is listed" [ "good" ]
+        (List.map (fun run -> run.Run.id) listing.Store.runs);
+      Alcotest.(check (list string))
+        "the unreadable record is reported" [ "broken" ]
+        (List.map
+           (fun unreadable -> unreadable.Store.id)
+           listing.Store.unreadable_records)
+
+let test_run_lock_refuses_a_second_holder () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"locked" with
+  | Error message -> Alcotest.fail message
+  | Ok run_lock -> (
+      (match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"locked" with
+      | Ok _ -> Alcotest.fail "expected the second acquire to be refused"
+      | Error message ->
+          Alcotest.(check bool) "names the live holder" true
+            (contains
+               ~affix:
+                 (Printf.sprintf "is driven by live pid %d" (Unix.getpid ()))
+               message));
+      Store.Filesystem.release_run_lock run_lock;
+      match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"locked" with
+      | Error message -> Alcotest.fail ("released lock still held: " ^ message)
+      | Ok run_lock -> Store.Filesystem.release_run_lock run_lock)
+
+let test_run_lock_takes_over_a_dead_pid () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  let dead_pid = pid_of_exited_process () in
+  write_lock_file ~runs_dir ~id:"orphaned" ~pid:dead_pid
+    ~host:(Unix.gethostname ());
+  match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"orphaned" with
+  | Error message -> Alcotest.fail ("stale lock not taken over: " ^ message)
+  | Ok run_lock ->
+      let lock_content =
+        In_channel.with_open_text
+          (Filename.concat runs_dir "orphaned.lock")
+          In_channel.input_all
+      in
+      Alcotest.(check bool) "the lock now names this process" true
+        (contains
+           ~affix:(Printf.sprintf "\"pid\":%d" (Unix.getpid ()))
+           lock_content);
+      Store.Filesystem.release_run_lock run_lock
+
+let test_run_lock_refuses_a_lock_from_another_host () =
+  let root = make_temp_root () in
+  let runs_dir = Project.runs_dir ~root in
+  let dead_pid = pid_of_exited_process () in
+  write_lock_file ~runs_dir ~id:"remote" ~pid:dead_pid
+    ~host:"another-host.invalid";
+  match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"remote" with
+  | Ok _ -> Alcotest.fail "expected a lock from another host to be refused"
+  | Error message ->
+      Alcotest.(check bool) "names the other host" true
+        (contains ~affix:"on host another-host.invalid" message)
+
+let test_resume_refuses_a_run_another_process_drives () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset
+    ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
+  match
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
+      ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok (paused, _) -> (
+      let runs_dir = Project.runs_dir ~root in
+      match Store.Filesystem.acquire_run_lock ~runs_dir ~id:paused.Run.id with
+      | Error message -> Alcotest.fail message
+      | Ok run_lock -> (
+          Scripted_executor.reset ~outputs:[];
+          (match
+             Scripted_runner.resume_run ~root ~run_id:paused.Run.id
+               ~guidance:None ()
+           with
+          | Ok _ -> Alcotest.fail "expected the resume to be refused"
+          | Error message ->
+              Alcotest.(check bool) "says another process drives it" true
+                (contains ~affix:"is driven by live pid" message));
+          Alcotest.(check int) "no step executed" 0
+            (List.length (Scripted_executor.prompts ()));
+          (match Store.Filesystem.load ~runs_dir ~id:paused.Run.id with
+          | Error message -> Alcotest.fail message
+          | Ok stored ->
+              Alcotest.(check string) "record untouched" "paused"
+                (Run.string_of_status stored.Run.status));
+          Store.Filesystem.release_run_lock run_lock;
+          Scripted_executor.reset
+            ~outputs:[ handoff_block (); handoff_block () ];
+          match
+            Scripted_runner.resume_run ~root ~run_id:paused.Run.id
+              ~guidance:None ()
+          with
+          | Error message -> Alcotest.fail message
+          | Ok (resumed, _) ->
+              Alcotest.(check string) "resumes once the lock is free"
+                "completed"
+                (Run.string_of_status resumed.Run.status);
+              Alcotest.(check bool) "lock released after the run" false
+                (Sys.file_exists
+                   (Filename.concat runs_dir (paused.Run.id ^ ".lock")))))
+
 (* skill_paths: resolution from external libraries *)
 
 let write_config_with_skill_paths root ~skill_paths =
@@ -4257,6 +4468,23 @@ let () =
             test_list_runs_newest_first;
           Alcotest.test_case "list runs empty when none" `Quick
             test_list_runs_empty_when_none;
+        ] );
+      ( "durable store",
+        [
+          Alcotest.test_case "save killed midway keeps a complete record"
+            `Quick test_save_killed_midway_keeps_a_complete_record;
+          Alcotest.test_case "abandoned temp record ignored and cleaned"
+            `Quick test_abandoned_temporary_record_is_ignored_and_cleaned;
+          Alcotest.test_case "list runs skips an unreadable record" `Quick
+            test_list_runs_skips_an_unreadable_record;
+          Alcotest.test_case "run lock refuses a second holder" `Quick
+            test_run_lock_refuses_a_second_holder;
+          Alcotest.test_case "run lock takes over a dead pid" `Quick
+            test_run_lock_takes_over_a_dead_pid;
+          Alcotest.test_case "run lock refuses another host" `Quick
+            test_run_lock_refuses_a_lock_from_another_host;
+          Alcotest.test_case "resume refuses a run another process drives"
+            `Quick test_resume_refuses_a_run_another_process_drives;
         ] );
       ( "init",
         [

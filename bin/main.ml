@@ -6,9 +6,7 @@ let cost_suffix step =
   | Jig_core.Metering.Unknown_cost -> " (cost unknown)"
 
 let tier_suffix step =
-  match step.Jig_core.Run.tier with
-  | Some tier -> Printf.sprintf " [%s]" tier
-  | None -> ""
+  match step.Jig_core.Run.tier with Some tier -> Printf.sprintf " [%s]" tier | None -> ""
 
 let tier_name = function Some tier -> tier | None -> "default"
 
@@ -21,12 +19,9 @@ let print_tier_breakdown (run : Jig_core.Run.t) =
       (String.concat "; "
          (List.map
             (fun (tier, total, steps, unknown) ->
-              Printf.sprintf "%s $%.4f (%d step%s%s)" (tier_name tier) total
-                steps
+              Printf.sprintf "%s $%.4f (%d step%s%s)" (tier_name tier) total steps
                 (if steps = 1 then "" else "s")
-                (if unknown > 0 then
-                   Printf.sprintf ", %d unknown" unknown
-                 else ""))
+                (if unknown > 0 then Printf.sprintf ", %d unknown" unknown else ""))
             by_tier))
 
 (* The same skill name repeats once per forEach item; the item key keeps
@@ -40,8 +35,7 @@ let item_suffix step =
 let print_steps_with_costs (run : Jig_core.Run.t) =
   List.iter
     (fun step ->
-      Printf.printf "  %s%s%s: %s%s\n" step.Jig_core.Run.skill
-        (item_suffix step) (tier_suffix step)
+      Printf.printf "  %s%s%s: %s%s\n" step.Jig_core.Run.skill (item_suffix step) (tier_suffix step)
         (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
         (cost_suffix step))
     run.Jig_core.Run.steps;
@@ -49,22 +43,17 @@ let print_steps_with_costs (run : Jig_core.Run.t) =
   if total > 0.0 || unknown > 0 then
     Printf.printf "total cost: $%.4f%s\n" total
       (if unknown > 0 then
-         Printf.sprintf " (+%d step%s with unknown cost)" unknown
-           (if unknown = 1 then "" else "s")
+         Printf.sprintf " (+%d step%s with unknown cost)" unknown (if unknown = 1 then "" else "s")
        else "");
   print_tier_breakdown run
 
 (* Every started, unfinished item of a parallel forEach, with its worktree. *)
 let print_items_in_progress (run : Jig_core.Run.t) =
   let position = run.Jig_core.Run.position in
-  match
-    ( Jig_core.Run.parallel_items_in_progress position,
-      position.Jig_core.Run.for_each )
-  with
+  match (Jig_core.Run.parallel_items_in_progress position, position.Jig_core.Run.for_each) with
   | [], _ | _, None -> ()
   | items, Some state ->
-      Printf.printf "items in progress (concurrency %d):\n"
-        state.Jig_core.Run.concurrency;
+      Printf.printf "items in progress (concurrency %d):\n" state.Jig_core.Run.concurrency;
       List.iter
         (fun (item : Jig_core.Run.item_in_progress) ->
           let index = item.Jig_core.Run.started_item_index in
@@ -92,8 +81,7 @@ let report_run (run : Jig_core.Run.t) path =
   | Jig_core.Run.Paused ->
       Option.iter (Printf.printf "%s\n") run.Jig_core.Run.error;
       (match Jig_core.Run.last_handoff run with
-      | Some handoff ->
-          Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
+      | Some handoff -> Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
       | None -> ());
       Printf.printf
         "paused: answer with  jig run --resume %s --guidance \"...\"\n\
@@ -103,8 +91,7 @@ let report_run (run : Jig_core.Run.t) path =
   | _ -> exit 1
 
 let print_step_live step =
-  Printf.printf "  %s%s%s: %s%s\n%!" step.Jig_core.Run.skill (item_suffix step)
-    (tier_suffix step)
+  Printf.printf "  %s%s%s: %s%s\n%!" step.Jig_core.Run.skill (item_suffix step) (tier_suffix step)
     (Jig_core.Run.string_of_outcome step.Jig_core.Run.outcome)
     (cost_suffix step)
 
@@ -118,19 +105,15 @@ let run_workflow workflow resume task guidance skip detach isolated =
            detached (stdout is the log file) fall back to append-only. *)
         if Unix.isatty Unix.stdout then
           Result.bind
-            (Jig_core.Project.resolve_workflow
-               ~jig_dir:(Filename.concat root ".jig") ~name:workflow_name)
+            (Jig_core.Project.resolve_workflow ~jig_dir:(Filename.concat root ".jig")
+               ~name:workflow_name)
             (fun (path, _) ->
               Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
-                  let live =
-                    Live.create ~workflow:workflow_name
-                      parsed.Jig_core.Workflow.entries
-                  in
+                  let live = Live.create ~workflow:workflow_name parsed.Jig_core.Workflow.entries in
                   let result =
                     Jig_core.Runner.Default.execute_run
                       ~on_step:(fun _ -> ())
-                      ~on_event:(Live.on_event live) ?run_id ~root
-                      ~workflow_name ~task ~isolated ()
+                      ~on_event:(Live.on_event live) ?run_id ~root ~workflow_name ~task ~isolated ()
                   in
                   let state =
                     match result with
@@ -144,17 +127,16 @@ let run_workflow workflow resume task guidance skip detach isolated =
                   Live.finalize live ~state;
                   result))
         else
-          Jig_core.Runner.Default.execute_run ~on_step:print_step_live ?run_id
-            ~root ~workflow_name ~task ~isolated ()
+          Jig_core.Runner.Default.execute_run ~on_step:print_step_live ?run_id ~root ~workflow_name
+            ~task ~isolated ()
     | None, Some _, None when isolated ->
         Error "--isolated belongs to the original run; a resume reuses its workspace"
     | None, Some run_id, None ->
-        Jig_core.Runner.Default.resume_run ~on_step:print_step_live ~root
-          ~run_id ~guidance ~skip ()
-    | Some _, Some _, _ ->
-        Error "pass either a workflow or --resume, not both"
+        Jig_core.Runner.Default.resume_run ~on_step:print_step_live ~root ~run_id ~guidance ~skip ()
+    | Some _, Some _, _ -> Error "pass either a workflow or --resume, not both"
     | Some _, None, None -> Error "running a workflow requires --task"
-    | None, Some _, Some _ -> Error "--task belongs to the original run; use --guidance when resuming"
+    | None, Some _, Some _ ->
+        Error "--task belongs to the original run; use --guidance when resuming"
     | None, None, _ -> Error "pass a workflow name or --resume <run-id>"
   in
   if not detach then (
@@ -171,24 +153,20 @@ let run_workflow workflow resume task guidance skip detach isolated =
       match (workflow, resume, task) with
       | Some name, None, Some _ ->
           let jig_dir = Filename.concat root ".jig" in
-          Result.bind
-            (Jig_core.Project.resolve_workflow ~jig_dir ~name)
+          Result.bind (Jig_core.Project.resolve_workflow ~jig_dir ~name)
             (fun (path, workflow_dir) ->
               Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
                   Result.bind (Jig_core.Config.load ~jig_dir) (fun config ->
                       Result.bind
                         (Jig_core.Validate.concurrency_isolation
-                           ~concurrency:config.Jig_core.Config.concurrency
-                           ~isolated parsed)
+                           ~concurrency:config.Jig_core.Config.concurrency ~isolated parsed)
                         (fun () ->
                           Result.map
                             (fun () ->
-                              Jig_core.Run.make_id ~workflow:name
-                                ~time:(Unix.gettimeofday ())
+                              Jig_core.Run.make_id ~workflow:name ~time:(Unix.gettimeofday ())
                                 ~pid:(Unix.getpid ()))
                             (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
-                               ~skill_paths:config.Jig_core.Config.skill_paths
-                               parsed)))))
+                               ~skill_paths:config.Jig_core.Config.skill_paths parsed)))))
       | None, Some run_id, None ->
           let runs_dir = Jig_core.Project.runs_dir ~root in
           (* Refuse a live run here, in the terminal, not in the log. *)
@@ -198,8 +176,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
                 (fun run_lock ->
                   Jig_core.Store.Filesystem.release_run_lock run_lock;
                   run_id)
-                (Jig_core.Store.Filesystem.acquire_run_lock ~runs_dir
-                   ~id:run_id))
+                (Jig_core.Store.Filesystem.acquire_run_lock ~runs_dir ~id:run_id))
       | _ -> Error "--detach needs a workflow with --task, or --resume <run-id>"
     in
     match run_id_result with
@@ -208,11 +185,9 @@ let run_workflow workflow resume task guidance skip detach isolated =
         exit 1
     | Ok run_id ->
         let runs_dir = Jig_core.Project.runs_dir ~root in
-        (try Unix.mkdir runs_dir 0o755
-         with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+        (try Unix.mkdir runs_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
         let log_path = Filename.concat runs_dir (run_id ^ ".log") in
-        Printf.printf "detached: %s\nlog: %s\nwatch: jig watch %s\n%!" run_id
-          log_path run_id;
+        Printf.printf "detached: %s\nlog: %s\nwatch: jig watch %s\n%!" run_id log_path run_id;
         if Unix.fork () > 0 then exit 0
         else (
           ignore (Unix.setsid ());
@@ -220,11 +195,7 @@ let run_workflow workflow resume task guidance skip detach isolated =
           let devnull = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
           Unix.dup2 devnull Unix.stdin;
           Unix.close devnull;
-          let log =
-            Unix.openfile log_path
-              [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ]
-              0o644
-          in
+          let log = Unix.openfile log_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o644 in
           Unix.dup2 log Unix.stdout;
           Unix.dup2 log Unix.stderr;
           Unix.close log;
@@ -238,20 +209,17 @@ let validate_workflow workflow =
   let root = Sys.getcwd () in
   let jig_dir = Filename.concat root ".jig" in
   let result =
-    Result.bind
-      (Jig_core.Project.resolve_workflow ~jig_dir ~name:workflow)
+    Result.bind (Jig_core.Project.resolve_workflow ~jig_dir ~name:workflow)
       (fun (path, workflow_dir) ->
         Result.bind (Jig_core.Workflow.load ~path) (fun parsed ->
-            Result.bind (Jig_core.Config.load_skill_paths ~jig_dir)
-              (fun skill_paths ->
+            Result.bind (Jig_core.Config.load_skill_paths ~jig_dir) (fun skill_paths ->
                 Result.map
                   (fun () ->
                     ( parsed.Jig_core.Workflow.name,
                       Jig_core.Validate.tier_warnings ~jig_dir ~skill_paths
                         ~tiers:(Jig_core.Config.load_tiers ~jig_dir)
                         parsed ))
-                  (Jig_core.Validate.workflow ~workflow_dir ~jig_dir
-                     ~skill_paths parsed))))
+                  (Jig_core.Validate.workflow ~workflow_dir ~jig_dir ~skill_paths parsed))))
   in
   match result with
   | Ok (name, warnings) ->
@@ -264,8 +232,7 @@ let validate_workflow workflow =
 let latest_run_id ~runs_dir =
   match Jig_core.Store.Filesystem.list_runs ~runs_dir with
   | Error message -> Error message
-  | Ok { Jig_core.Store.runs = []; _ } ->
-      Error "no runs yet - nothing under runs/"
+  | Ok { Jig_core.Store.runs = []; _ } -> Error "no runs yet - nothing under runs/"
   | Ok { Jig_core.Store.runs = newest :: _; _ } -> Ok newest.Jig_core.Run.id
 
 let show_status run_id latest json_output =
@@ -278,20 +245,16 @@ let show_status run_id latest json_output =
     | None, true -> latest_run_id ~runs_dir
     | None, false -> Error "pass a run id or --latest"
   in
-  match
-    Result.bind resolved (fun id ->
-        Jig_core.Store.Filesystem.load ~runs_dir ~id)
-  with
+  match Result.bind resolved (fun id -> Jig_core.Store.Filesystem.load ~runs_dir ~id) with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1
   | Ok run when json_output ->
       print_endline (Yojson.Safe.pretty_to_string (Jig_core.Run.to_json run))
-  | Ok run ->
+  | Ok run -> (
       Printf.printf "run %s: %s\n" run.Jig_core.Run.id
         (Jig_core.Run.string_of_status run.Jig_core.Run.status);
-      Printf.printf "workflow: %s\ntask: %s\n" run.Jig_core.Run.workflow
-        run.Jig_core.Run.task;
+      Printf.printf "workflow: %s\ntask: %s\n" run.Jig_core.Run.workflow run.Jig_core.Run.task;
       (match run.Jig_core.Run.error with
       | Some message -> Printf.printf "error: %s\n" message
       | None -> ());
@@ -299,10 +262,9 @@ let show_status run_id latest json_output =
       print_steps_with_costs run;
       print_items_in_progress run;
       (match Jig_core.Run.last_handoff run with
-      | Some handoff ->
-          Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
+      | Some handoff -> Printf.printf "last handoff:\n%s\n" (Jig_core.Handoff.render handoff)
       | None -> ());
-      (match run.Jig_core.Run.status with
+      match run.Jig_core.Run.status with
       | Jig_core.Run.Paused ->
           Printf.printf
             "paused: resume with jig run --resume %s [--guidance \"...\"]\n\
@@ -319,9 +281,7 @@ let attach_run run_id latest step_number =
     | Some session -> Ok session
     | None ->
         Error
-          (Printf.sprintf
-             "step %s recorded no session id (the harness output carried \
-              none)"
+          (Printf.sprintf "step %s recorded no session id (the harness output carried none)"
              step.Jig_core.Run.skill)
   in
   let result =
@@ -333,9 +293,7 @@ let attach_run run_id latest step_number =
       | None, false -> Error "pass a run id or --latest"
     in
     let* run = Jig_core.Store.Filesystem.load ~runs_dir ~id in
-    let* config =
-      Jig_core.Config.load ~jig_dir:(Filename.concat root ".jig")
-    in
+    let* config = Jig_core.Config.load ~jig_dir:(Filename.concat root ".jig") in
     let steps = run.Jig_core.Run.steps in
     let* session_id =
       match step_number with
@@ -343,9 +301,8 @@ let attach_run run_id latest step_number =
           match List.nth_opt steps (number - 1) with
           | Some step -> session_of_step step
           | None ->
-              Error
-                (Printf.sprintf "run %s has %d steps, no step %d" id
-                   (List.length steps) number))
+              Error (Printf.sprintf "run %s has %d steps, no step %d" id (List.length steps) number)
+          )
       | None -> Jig_core.Attach.session_of_run run
     in
     let* () = Jig_core.Process_identity.refuse_while_attempts_run run in
@@ -357,10 +314,7 @@ let attach_run run_id latest step_number =
     let workspace = Option.value run.Jig_core.Run.workspace ~default:root in
     let* () =
       if Sys.file_exists workspace then Ok ()
-      else
-        Error
-          (Printf.sprintf "run %s used workspace %s, which no longer exists"
-             id workspace)
+      else Error (Printf.sprintf "run %s used workspace %s, which no longer exists" id workspace)
     in
     Ok (id, run, config, session_id, workspace)
   in
@@ -370,10 +324,7 @@ let attach_run run_id latest step_number =
       exit 1
   | Ok (id, run, config, session_id, workspace) -> (
       let interactive_command () =
-        match
-          Jig_core.Attach.command ~attach:config.Jig_core.Config.attach
-            ~session_id
-        with
+        match Jig_core.Attach.command ~attach:config.Jig_core.Config.attach ~session_id with
         | Ok command -> command
         | Error message ->
             Printf.eprintf "jig: %s\n" message;
@@ -392,56 +343,50 @@ let attach_run run_id latest step_number =
         Unix.chdir workspace;
         try Unix.execvp (List.hd command) (Array.of_list command)
         with Unix.Unix_error (error, _, _) ->
-          Printf.eprintf "jig: attach: %s: %s\n" (List.hd command)
-            (Unix.error_message error);
+          Printf.eprintf "jig: attach: %s: %s\n" (List.hd command) (Unix.error_message error);
           exit 1)
       else
         match
-          Jig_core.Attach.command
-            ~attach:config.Jig_core.Config.attach_headless ~session_id
+          Jig_core.Attach.command ~attach:config.Jig_core.Config.attach_headless ~session_id
         with
         | Error _ ->
             Printf.eprintf
-              "jig: attach: no attach_headless command configured - add it \
-               to .jig/config.yaml so the chat can hand back to the run\n";
+              "jig: attach: no attach_headless command configured - add it to .jig/config.yaml so \
+               the chat can hand back to the run\n";
             exit 1
         | Ok headless_command -> (
             let command = interactive_command () in
             let collect_handoff () =
-              print_endline
-                "reopening the step's session - exit the chat to hand back \
-                 to the run";
+              print_endline "reopening the step's session - exit the chat to hand back to the run";
               let chat =
-                Unix.create_process (List.hd command)
-                  (Array.of_list command) Unix.stdin Unix.stdout Unix.stderr
+                Unix.create_process (List.hd command) (Array.of_list command) Unix.stdin Unix.stdout
+                  Unix.stderr
               in
               ignore (Unix.waitpid [] chat);
               (* Only after the chat, which owns the terminal and its Ctrl-C. *)
               Jig_core.Process_group.install_signal_forwarding ();
               print_endline "collecting the step's handoff...";
-              Jig_core.Executor.Local.execute ~command:headless_command
-                ~cwd:workspace ~prompt:Jig_core.Runner.elicit_handoff_prompt
-                ()
+              Jig_core.Executor.Local.execute ~command:headless_command ~cwd:workspace
+                ~prompt:Jig_core.Runner.elicit_handoff_prompt ()
             in
             match
-              Jig_core.Runner.Default.continue_attached
-                ~on_step:print_step_live ~root ~run_id:id ~collect_handoff ()
+              Jig_core.Runner.Default.continue_attached ~on_step:print_step_live ~root ~run_id:id
+                ~collect_handoff ()
             with
             | Ok (run, path) -> report_run run path
             | Error message ->
                 Printf.eprintf "jig: %s\n" message;
                 let still_paused =
                   match
-                    Jig_core.Store.Filesystem.load
-                      ~runs_dir:(Jig_core.Project.runs_dir ~root) ~id
+                    Jig_core.Store.Filesystem.load ~runs_dir:(Jig_core.Project.runs_dir ~root) ~id
                   with
                   | Ok stored -> stored.Jig_core.Run.status = Jig_core.Run.Paused
                   | Error _ -> false
                 in
                 if still_paused then
                   Printf.printf
-                    "still paused: jig run --resume %s [--guidance \"...\"] \
-                     [--skip], or jig attach %s\n"
+                    "still paused: jig run --resume %s [--guidance \"...\"] [--skip], or jig \
+                     attach %s\n"
                     id id;
                 exit 2))
 
@@ -471,9 +416,7 @@ let list_runs json_output =
               [
                 ("id", `String run.Jig_core.Run.id);
                 ("workflow", `String run.Jig_core.Run.workflow);
-                ( "status",
-                  `String (Jig_core.Run.string_of_status run.Jig_core.Run.status)
-                );
+                ("status", `String (Jig_core.Run.string_of_status run.Jig_core.Run.status));
                 ("started_at", `String run.Jig_core.Run.started_at);
               ])
           runs
@@ -482,8 +425,7 @@ let list_runs json_output =
   | Ok runs ->
       List.iter
         (fun run ->
-          Printf.printf "%s  %s  %s  %s\n" run.Jig_core.Run.id
-            run.Jig_core.Run.workflow
+          Printf.printf "%s  %s  %s  %s\n" run.Jig_core.Run.id run.Jig_core.Run.workflow
             (Jig_core.Run.string_of_status run.Jig_core.Run.status)
             run.Jig_core.Run.started_at)
         runs
@@ -515,31 +457,28 @@ let list_workflows json_output =
         List.iter
           (function
             | Jig_core.Project.Listed listing ->
-                Printf.printf "%s (%d skills)\n"
-                  listing.Jig_core.Project.workflow_name
+                Printf.printf "%s (%d skills)\n" listing.Jig_core.Project.workflow_name
                   listing.Jig_core.Project.skill_count
             | Jig_core.Project.Unparseable { file; problem } ->
                 Printf.printf "%s: INVALID - %s\n" file problem)
           entries
 
 let init_project preset skill_paths =
-  match
-    Jig_core.Init.scaffold ~root:(Sys.getcwd ()) ~preset ~skill_paths
-  with
+  match Jig_core.Init.scaffold ~root:(Sys.getcwd ()) ~preset ~skill_paths with
   | Error message ->
       Printf.eprintf "jig: %s\n" message;
       exit 1
-  | Ok written ->
+  | Ok written -> (
       List.iter (fun path -> Printf.printf "  %s\n" path) written;
-      (match preset with
+      match preset with
       | Jig_core.Init.Custom ->
           print_endline
-            "scaffolded - edit .jig/config.yaml to point at your harness, \
-             then: jig run bugfix --task \"...\""
+            "scaffolded - edit .jig/config.yaml to point at your harness, then: jig run bugfix \
+             --task \"...\""
       | _ ->
           print_endline
-            "scaffolded with a harness preset - review .jig/config.yaml \
-             (scope the tool allowlist), then: jig run bugfix --task \"...\"")
+            "scaffolded with a harness preset - review .jig/config.yaml (scope the tool \
+             allowlist), then: jig run bugfix --task \"...\"")
 
 let optional_workflow_arg =
   let doc = "Name of the workflow under .jig/workflows/ to execute." in
@@ -558,9 +497,7 @@ let resume_arg =
   Arg.(value & opt (some string) None & info [ "resume" ] ~docv:"RUN-ID" ~doc)
 
 let guidance_arg =
-  let doc =
-    "Human guidance injected into the first step executed after a resume."
-  in
+  let doc = "Human guidance injected into the first step executed after a resume." in
   Arg.(value & opt (some string) None & info [ "guidance" ] ~docv:"TEXT" ~doc)
 
 let isolated_flag =
@@ -569,16 +506,15 @@ let isolated_flag =
 
 let skip_flag =
   let doc =
-    "With --resume: record the paused entry as completed by a human (pair \
-     with --guidance to tell the next step what was done) and continue from \
-     the entry after it."
+    "With --resume: record the paused entry as completed by a human (pair with --guidance to tell \
+     the next step what was done) and continue from the entry after it."
   in
   Arg.(value & flag & info [ "skip" ] ~doc)
 
 let detach_flag =
   let doc =
-    "Return immediately and keep the run alive after this terminal closes; \
-     step output streams to runs/<run-id>.log."
+    "Return immediately and keep the run alive after this terminal closes; step output streams to \
+     runs/<run-id>.log."
   in
   Arg.(value & flag & info [ "detach" ] ~doc)
 
@@ -586,13 +522,12 @@ let run_cmd =
   let doc = "Execute a workflow against a task, or resume a paused run." in
   Cmd.v (Cmd.info "run" ~doc)
     Term.(
-      const run_workflow $ optional_workflow_arg $ resume_arg $ task_arg
-      $ guidance_arg $ skip_flag $ detach_flag $ isolated_flag)
+      const run_workflow $ optional_workflow_arg $ resume_arg $ task_arg $ guidance_arg $ skip_flag
+      $ detach_flag $ isolated_flag)
 
 let validate_cmd =
   let doc = "Lint a workflow against the schema and the project's skills." in
-  Cmd.v (Cmd.info "validate" ~doc)
-    Term.(const validate_workflow $ required_workflow_arg)
+  Cmd.v (Cmd.info "validate" ~doc) Term.(const validate_workflow $ required_workflow_arg)
 
 let json_flag =
   let doc = "Print machine-readable JSON instead of the human summary." in
@@ -608,8 +543,7 @@ let latest_flag =
 
 let status_cmd =
   let doc = "Inspect a run's progress, outcomes, and last handoff." in
-  Cmd.v (Cmd.info "status" ~doc)
-    Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
+  Cmd.v (Cmd.info "status" ~doc) Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
 
 let watch_run run_id latest =
   let root = Sys.getcwd () in
@@ -634,25 +568,22 @@ let watch_run run_id latest =
 
 let watch_cmd =
   let doc =
-    "Attach the live Pipeline + Log view to an existing run - typically one \
-     started with --detach. A pure viewer: quitting (q or Ctrl-C) never \
-     affects the run."
+    "Attach the live Pipeline + Log view to an existing run - typically one started with --detach. \
+     A pure viewer: quitting (q or Ctrl-C) never affects the run."
   in
-  Cmd.v (Cmd.info "watch" ~doc)
-    Term.(const watch_run $ run_id_arg $ latest_flag)
+  Cmd.v (Cmd.info "watch" ~doc) Term.(const watch_run $ run_id_arg $ latest_flag)
 
 let attach_step_arg =
   let doc =
-    "Attach to this step number (1-based). Default: the newest step that \
-     recorded a session id."
+    "Attach to this step number (1-based). Default: the newest step that recorded a session id."
   in
   Arg.(value & opt (some int) None & info [ "step" ] ~docv:"N" ~doc)
 
 let attach_cmd =
   let doc =
-    "Reopen a step's recorded harness session interactively, in the run's \
-     workspace. On a paused run the chat hands back: when it ends, the \
-     session's handoff completes the paused step and the run continues."
+    "Reopen a step's recorded harness session interactively, in the run's workspace. On a paused \
+     run the chat hands back: when it ends, the session's handoff completes the paused step and \
+     the run continues."
   in
   Cmd.v (Cmd.info "attach" ~doc)
     Term.(const attach_run $ run_id_arg $ latest_flag $ attach_step_arg)
@@ -671,15 +602,13 @@ let list_cmd =
   Cmd.v (Cmd.info "list" ~doc)
     Term.(
       const (fun what json ->
-          match what with
-          | Workflows -> list_workflows json
-          | Runs -> list_runs json)
+          match what with Workflows -> list_workflows json | Runs -> list_runs json)
       $ list_what_arg $ json_flag)
 
 let harness_preset_arg =
   let doc =
-    "Write a known-good harness preset into the scaffolded config: claude, \
-     codex, or custom (the commented template, the default)."
+    "Write a known-good harness preset into the scaffolded config: claude, codex, or custom (the \
+     commented template, the default)."
   in
   Arg.(
     value
@@ -694,16 +623,12 @@ let harness_preset_arg =
     & info [ "harness" ] ~docv:"HARNESS" ~doc)
 
 let skill_paths_arg =
-  let doc =
-    "Directory to add to the config's skill_paths (repeatable, kept in \
-     order)."
-  in
+  let doc = "Directory to add to the config's skill_paths (repeatable, kept in order)." in
   Arg.(value & opt_all string [] & info [ "skill-paths" ] ~docv:"DIR" ~doc)
 
 let init_cmd =
   let doc = "Scaffold a starter .jig/ (workflow, skills, config) into this repository." in
-  Cmd.v (Cmd.info "init" ~doc)
-    Term.(const init_project $ harness_preset_arg $ skill_paths_arg)
+  Cmd.v (Cmd.info "init" ~doc) Term.(const init_project $ harness_preset_arg $ skill_paths_arg)
 
 let () =
   let doc = "A minimal, agnostic runner for AI-driven development workflows." in
@@ -711,7 +636,4 @@ let () =
   exit
     (Cmd.eval
        (Cmd.group info
-          [
-            init_cmd; run_cmd; validate_cmd; status_cmd; watch_cmd;
-            attach_cmd; list_cmd;
-          ]))
+          [ init_cmd; run_cmd; validate_cmd; status_cmd; watch_cmd; attach_cmd; list_cmd ]))

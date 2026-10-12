@@ -5,6 +5,7 @@
 ; The starter set jig init scaffolds, embedded at build time so the binary
 ; is self-contained. Adding a template file requires listing it here AND in
 ; the echo/cat sequence below - CI's init check catches a missing entry.
+
 (rule
  (targets template_data.ml)
  (deps
@@ -66,6 +67,7 @@
 ; The harness skill jig init --harness claude installs into the consuming
 ; repo's .claude/skills/jig/. skills/ at the repo root is the single source;
 ; adding a skill file requires listing it here AND in the sequence below.
+
 (rule
  (targets harness_skill_data.ml)
  (deps

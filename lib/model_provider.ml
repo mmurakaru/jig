@@ -1,9 +1,6 @@
 module type S = sig
   val resolve :
-    config:Config.t ->
-    skill:string ->
-    tier:string option ->
-    (string list, string) result
+    config:Config.t -> skill:string -> tier:string option -> (string list, string) result
 end
 
 (* The wrapper (e.g. an OS sandbox like srt) is configuration, prepended to

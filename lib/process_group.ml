@@ -14,6 +14,7 @@ let posix_signal_number signal =
   else abs signal
 
 let termination_grace_seconds = 5.0
+
 let child_poll_interval_seconds = 0.1
 
 (* Step children being waited on, innermost first; a child's pid is its group id. *)
@@ -37,13 +38,11 @@ let exit_after_stop = ref exit
 let signal_process_group process_group_id signal =
   try Unix.kill (-process_group_id) signal
   with Unix.Unix_error (Unix.ESRCH, _, _) -> (
-    try Unix.kill process_group_id signal
-    with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
+    try Unix.kill process_group_id signal with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
 
 (* Only after the leader is reaped: its pid may belong to another process by then. *)
 let signal_process_group_only process_group_id signal =
-  try Unix.kill (-process_group_id) signal
-  with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+  try Unix.kill (-process_group_id) signal with Unix.Unix_error (Unix.ESRCH, _, _) -> ()
 
 let process_group_has_members process_group_id =
   match Unix.kill (-process_group_id) 0 with
@@ -66,8 +65,7 @@ let rec wait_for_child_until child_pid ~stop_waiting =
       wait_for_child_until child_pid ~stop_waiting
 
 let rec wait_for_empty_group process_group_id ~until =
-  if process_group_has_members process_group_id && Unix.gettimeofday () < until
-  then (
+  if process_group_has_members process_group_id && Unix.gettimeofday () < until then (
     Unix.sleepf child_poll_interval_seconds;
     wait_for_empty_group process_group_id ~until)
 
@@ -81,8 +79,7 @@ let terminate_process_group child_pid =
     | Some status -> status
     | None ->
         signal_process_group child_pid Sys.sigkill;
-        Option.get
-          (wait_for_child_until child_pid ~stop_waiting:(fun () -> false))
+        Option.get (wait_for_child_until child_pid ~stop_waiting:(fun () -> false))
   in
   wait_for_empty_group child_pid ~until:grace_ends_at;
   signal_process_group_only child_pid Sys.sigkill;
@@ -90,35 +87,28 @@ let terminate_process_group child_pid =
 
 let terminate_process_group_if_child child_pid =
   try ignore (terminate_process_group child_pid)
-  with Unix.Unix_error (Unix.ECHILD, _, _) ->
-    signal_process_group_only child_pid Sys.sigkill
+  with Unix.Unix_error (Unix.ECHILD, _, _) -> signal_process_group_only child_pid Sys.sigkill
 
 let rec wait_for_worker_exit worker_pid =
   match Unix.waitpid [] worker_pid with
   | _ -> ()
-  | exception Unix.Unix_error (Unix.EINTR, _, _) ->
-      wait_for_worker_exit worker_pid
+  | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait_for_worker_exit worker_pid
   | exception Unix.Unix_error _ -> ()
 
 let stop_all_children_and_exit signal =
-  List.iter
-    (fun group -> signal_process_group group Sys.sigterm)
-    !active_child_process_groups;
+  List.iter (fun group -> signal_process_group group Sys.sigterm) !active_child_process_groups;
   List.iter
     (fun worker ->
-      (try Unix.kill worker.worker_pid Sys.sigterm
-       with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
+      (try Unix.kill worker.worker_pid Sys.sigterm with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
       (* A worker blocked writing to a full pipe gets EPIPE instead of hanging. *)
       try Unix.close worker.pipe_from_worker with Unix.Unix_error _ -> ())
     !worker_processes;
   List.iter terminate_process_group_if_child !active_child_process_groups;
-  List.iter (fun worker -> wait_for_worker_exit worker.worker_pid)
-    !worker_processes;
+  List.iter (fun worker -> wait_for_worker_exit worker.worker_pid) !worker_processes;
   !exit_after_stop (128 + posix_signal_number signal)
 
 (** Exits, after stopping every child and worker, once a forwarded signal arrived. *)
-let exit_if_stop_requested () =
-  Option.iter stop_all_children_and_exit !requested_stop_signal
+let exit_if_stop_requested () = Option.iter stop_all_children_and_exit !requested_stop_signal
 
 let with_process_starting start =
   incr processes_starting;
@@ -127,13 +117,9 @@ let with_process_starting start =
 (** Waits for a step child; past [deadline], [on_deadline] runs and the group is stopped. *)
 let wait_for_child child_pid ~deadline ~on_deadline =
   let deadline_has_passed () =
-    match deadline with
-    | Some deadline -> Unix.gettimeofday () >= deadline
-    | None -> false
+    match deadline with Some deadline -> Unix.gettimeofday () >= deadline | None -> false
   in
-  let stop_waiting () =
-    Option.is_some !requested_stop_signal || deadline_has_passed ()
-  in
+  let stop_waiting () = Option.is_some !requested_stop_signal || deadline_has_passed () in
   match wait_for_child_until child_pid ~stop_waiting with
   | Some status -> status
   | None ->
@@ -149,13 +135,11 @@ let run_tracked_child ~in_child ~wait =
             in_child ();
             Unix._exit 127
         | child_pid ->
-            active_child_process_groups :=
-              child_pid :: !active_child_process_groups;
+            active_child_process_groups := child_pid :: !active_child_process_groups;
             child_pid)
   in
   let untrack () =
-    active_child_process_groups :=
-      List.filter (( <> ) child_pid) !active_child_process_groups
+    active_child_process_groups := List.filter (( <> ) child_pid) !active_child_process_groups
   in
   match wait child_pid with
   | status ->
@@ -182,14 +166,11 @@ let fork_worker_process ~pipe_from_worker =
           Sys.set_signal Sys.sigpipe (Sys.Signal_handle ignore);
           0
       | worker_pid ->
-          worker_processes :=
-            { worker_pid; pipe_from_worker } :: !worker_processes;
+          worker_processes := { worker_pid; pipe_from_worker } :: !worker_processes;
           worker_pid)
 
 let forget_worker_process worker_pid =
-  worker_processes :=
-    List.filter (fun worker -> worker.worker_pid <> worker_pid)
-      !worker_processes
+  worker_processes := List.filter (fun worker -> worker.worker_pid <> worker_pid) !worker_processes
 
 (** On SIGINT, SIGTERM or SIGHUP, stops every step group and worker, then exits 128 + n. *)
 let install_signal_forwarding () =

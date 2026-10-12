@@ -30,8 +30,7 @@ let skip_escape text start =
     | '[' ->
         let position = ref (start + 2) in
         while
-          !position < length
-          && not (text.[!position] >= '\x40' && text.[!position] <= '\x7e')
+          !position < length && not (text.[!position] >= '\x40' && text.[!position] <= '\x7e')
         do
           incr position
         done;
@@ -39,14 +38,11 @@ let skip_escape text start =
     | ']' ->
         let position = ref (start + 2) in
         let finished = ref false in
-        while not !finished && !position < length do
+        while (not !finished) && !position < length do
           if text.[!position] = '\x07' then (
             incr position;
             finished := true)
-          else if
-            text.[!position] = '\x1b'
-            && !position + 1 < length
-            && text.[!position + 1] = '\\'
+          else if text.[!position] = '\x1b' && !position + 1 < length && text.[!position + 1] = '\\'
           then (
             position := !position + 2;
             finished := true)

@@ -13,12 +13,11 @@ let contains ~affix haystack =
 let rec mkdir_p dir =
   if not (Sys.file_exists dir) then (
     mkdir_p (Filename.dirname dir);
-    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()))
+    try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
 let write_file path content =
   mkdir_p (Filename.dirname path);
-  Out_channel.with_open_text path (fun channel ->
-      Out_channel.output_string channel content)
+  Out_channel.with_open_text path (fun channel -> Out_channel.output_string channel content)
 
 let rec make_unique_temp_directory () =
   let root =
@@ -51,8 +50,7 @@ let test_workflow_parses () =
   | Ok workflow ->
       Alcotest.(check string) "name" "hello" workflow.Workflow.name;
       Alcotest.(check (list string))
-        "steps"
-        [ "say-hi"; "say-bye" ]
+        "steps" [ "say-hi"; "say-bye" ]
         (Workflow.referenced_skills workflow)
 
 let full_schema_yaml =
@@ -79,27 +77,23 @@ let test_workflow_parses_full_schema () =
   | Ok workflow -> (
       Alcotest.(check (list string))
         "all skills seen"
-        [
-          "reproduce-issue";
-          "write-failing-test";
-          "implement-fix";
-          "run-tests";
-          "open-pr";
-        ]
+        [ "reproduce-issue"; "write-failing-test"; "implement-fix"; "run-tests"; "open-pr" ]
         (Workflow.referenced_skills workflow);
       match workflow.Workflow.entries with
-      | [ Workflow.Step first; Workflow.Step second; Workflow.Retry retry; _ ]
-        ->
-          Alcotest.(check bool) "on_fail parsed" true
+      | [ Workflow.Step first; Workflow.Step second; Workflow.Retry retry; _ ] ->
+          Alcotest.(check bool)
+            "on_fail parsed" true
             (first.Workflow.on_fail = Some Workflow.Escalate);
           Alcotest.(check (list (pair string string)))
             "with inputs parsed"
             [ ("spec", "docs/specs/login.md") ]
             second.Workflow.inputs;
           Alcotest.(check int) "max_iterations" 3 retry.Workflow.max_iterations;
-          Alcotest.(check bool) "on_exhausted parsed" true
+          Alcotest.(check bool)
+            "on_exhausted parsed" true
             (retry.Workflow.on_exhausted = Workflow.Escalate);
-          Alcotest.(check bool) "until pass on last retry step" true
+          Alcotest.(check bool)
+            "until pass on last retry step" true
             (match List.rev retry.Workflow.retry_steps with
             | last :: _ -> last.Workflow.until_pass
             | [] -> false)
@@ -113,7 +107,6 @@ let expect_workflow_error ~mentions yaml =
         (Printf.sprintf "error mentions %S" mentions)
         true
         (contains ~affix:mentions message)
-
 
 (* forEach items files *)
 
@@ -133,9 +126,7 @@ let expect_items_error ~mentions path =
 
 let test_items_parses_tsv () =
   let root = make_temp_root () in
-  let path =
-    write_items root "ports.tsv" "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b.md\n"
-  in
+  let path = write_items root "ports.tsv" "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b.md\n" in
   match Items.load ~path with
   | Error message -> Alcotest.fail message
   | Ok items ->
@@ -144,8 +135,7 @@ let test_items_parses_tsv () =
         "bindings keyed by header, in order"
         [ ("name", "alpha"); ("spec", "specs/a.md") ]
         (List.hd items);
-      Alcotest.(check string) "first column is the key" "alpha"
-        (Items.key (List.hd items))
+      Alcotest.(check string) "first column is the key" "alpha" (Items.key (List.hd items))
 
 let test_items_parses_json () =
   let root = make_temp_root () in
@@ -157,14 +147,11 @@ let test_items_parses_json () =
   | Error message -> Alcotest.fail message
   | Ok items ->
       Alcotest.(check int) "two items" 2 (List.length items);
-      Alcotest.(check string) "key of the second" "beta"
-        (Items.key (List.nth items 1))
+      Alcotest.(check string) "key of the second" "beta" (Items.key (List.nth items 1))
 
 let test_items_tolerates_crlf_tsv () =
   let root = make_temp_root () in
-  let path =
-    write_items root "ports.tsv" "name\tspec\r\nalpha\tspecs/a.md\r\n"
-  in
+  let path = write_items root "ports.tsv" "name\tspec\r\nalpha\tspecs/a.md\r\n" in
   match Items.load ~path with
   | Error message -> Alcotest.fail message
   | Ok items ->
@@ -175,8 +162,7 @@ let test_items_tolerates_crlf_tsv () =
 
 let test_items_rejects_header_only_tsv () =
   let root = make_temp_root () in
-  expect_items_error ~mentions:"no items"
-    (write_items root "ports.tsv" "name\tspec\n")
+  expect_items_error ~mentions:"no items" (write_items root "ports.tsv" "name\tspec\n")
 
 let test_items_rejects_empty_json_array () =
   let root = make_temp_root () in
@@ -184,8 +170,7 @@ let test_items_rejects_empty_json_array () =
 
 let test_items_rejects_ragged_tsv_row () =
   let root = make_temp_root () in
-  expect_items_error ~mentions:"header has 2"
-    (write_items root "ports.tsv" "name\tspec\nalpha\n")
+  expect_items_error ~mentions:"header has 2" (write_items root "ports.tsv" "name\tspec\nalpha\n")
 
 let test_items_rejects_duplicate_columns () =
   let root = make_temp_root () in
@@ -205,13 +190,11 @@ let test_items_rejects_non_string_json_value () =
 let test_items_rejects_ragged_json_objects () =
   let root = make_temp_root () in
   expect_items_error ~mentions:"same keys"
-    (write_items root "ports.json"
-       {|[{"name": "alpha", "spec": "a"}, {"name": "beta"}]|})
+    (write_items root "ports.json" {|[{"name": "alpha", "spec": "a"}, {"name": "beta"}]|})
 
 let test_items_rejects_unknown_extension () =
   let root = make_temp_root () in
-  expect_items_error ~mentions:".tsv"
-    (write_items root "ports.csv" "name\nalpha\n")
+  expect_items_error ~mentions:".tsv" (write_items root "ports.csv" "name\nalpha\n")
 
 let test_retry_requires_max_iterations () =
   expect_workflow_error ~mentions:"max_iterations"
@@ -222,24 +205,30 @@ let test_retry_requires_on_exhausted () =
     "name: x\nsteps:\n  - retry:\n      max_iterations: 3\n      steps:\n        - skill: a\n"
 
 let test_unknown_top_level_key_rejected () =
-  expect_workflow_error ~mentions:"timeout"
-    "name: x\ntimeout: 5\nsteps:\n  - skill: a\n"
+  expect_workflow_error ~mentions:"timeout" "name: x\ntimeout: 5\nsteps:\n  - skill: a\n"
 
 let test_unknown_step_key_rejected () =
-  expect_workflow_error ~mentions:"model"
-    "name: x\nsteps:\n  - skill: a\n    model: opus\n"
+  expect_workflow_error ~mentions:"model" "name: x\nsteps:\n  - skill: a\n    model: opus\n"
 
 let test_until_outside_retry_rejected () =
-  expect_workflow_error ~mentions:"until"
-    "name: x\nsteps:\n  - skill: a\n    until: pass\n"
+  expect_workflow_error ~mentions:"until" "name: x\nsteps:\n  - skill: a\n    until: pass\n"
 
 let test_nested_retry_rejected () =
   expect_workflow_error ~mentions:"nest"
-    "name: x\nsteps:\n  - retry:\n      max_iterations: 2\n      on_exhausted: abort\n      steps:\n        - retry:\n            max_iterations: 2\n            on_exhausted: abort\n            steps:\n              - skill: a\n"
+    "name: x\n\
+     steps:\n\
+    \  - retry:\n\
+    \      max_iterations: 2\n\
+    \      on_exhausted: abort\n\
+    \      steps:\n\
+    \        - retry:\n\
+    \            max_iterations: 2\n\
+    \            on_exhausted: abort\n\
+    \            steps:\n\
+    \              - skill: a\n"
 
 let test_invalid_on_fail_value_rejected () =
-  expect_workflow_error ~mentions:"give-up"
-    "name: x\nsteps:\n  - skill: a\n    on_fail: give-up\n"
+  expect_workflow_error ~mentions:"give-up" "name: x\nsteps:\n  - skill: a\n    on_fail: give-up\n"
 
 let test_with_inputs_parse_in_file_order () =
   match
@@ -299,20 +288,15 @@ let test_context_parses () =
   | Error message -> Alcotest.fail message
   | Ok workflow ->
       Alcotest.(check (option string))
-        "context parsed"
-        (Some "keep the tokens\nno visual change\n")
-        workflow.Workflow.context
+        "context parsed" (Some "keep the tokens\nno visual change\n") workflow.Workflow.context
 
 let test_context_absent_is_none () =
   match Workflow.of_string "name: x\nsteps:\n  - skill: a\n" with
   | Error message -> Alcotest.fail message
-  | Ok workflow ->
-      Alcotest.(check (option string))
-        "no context" None workflow.Workflow.context
+  | Ok workflow -> Alcotest.(check (option string)) "no context" None workflow.Workflow.context
 
 let test_context_rejects_non_string () =
-  expect_workflow_error ~mentions:"context"
-    "name: x\ncontext:\n  - a\nsteps:\n  - skill: a\n"
+  expect_workflow_error ~mentions:"context" "name: x\ncontext:\n  - a\nsteps:\n  - skill: a\n"
 
 let test_with_rejects_non_string_value () =
   expect_workflow_error ~mentions:"quote"
@@ -354,8 +338,7 @@ let test_for_each_parses () =
         (Workflow.referenced_skills workflow);
       match workflow.Workflow.entries with
       | [ Workflow.For_each for_each; Workflow.Step _ ] ->
-          Alcotest.(check string) "items file" "ports.tsv"
-            for_each.Workflow.items_file;
+          Alcotest.(check string) "items file" "ports.tsv" for_each.Workflow.items_file;
           Alcotest.(check string) "binding name" "port" for_each.Workflow.var;
           Alcotest.(check (list string))
             "referenced columns" [ "spec" ]
@@ -404,11 +387,23 @@ let test_for_each_rejected_inside_retry () =
 
 let test_for_each_rejects_dotted_as () =
   expect_workflow_error ~mentions:"letters"
-    "name: x\nsteps:\n  - forEach:\n      items: p.tsv\n      as: a.b\n      steps:\n        - skill: a\n"
+    "name: x\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: p.tsv\n\
+    \      as: a.b\n\
+    \      steps:\n\
+    \        - skill: a\n"
 
 let test_for_each_rejects_bad_items_extension () =
   expect_workflow_error ~mentions:".tsv"
-    "name: x\nsteps:\n  - forEach:\n      items: p.csv\n      as: port\n      steps:\n        - skill: a\n"
+    "name: x\n\
+     steps:\n\
+    \  - forEach:\n\
+    \      items: p.csv\n\
+    \      as: port\n\
+    \      steps:\n\
+    \        - skill: a\n"
 
 let test_for_each_rejects_empty_steps () =
   expect_workflow_error ~mentions:"empty"
@@ -450,15 +445,21 @@ let test_for_each_rejects_interpolated_skill () =
 
 let test_non_positive_max_iterations_rejected () =
   expect_workflow_error ~mentions:"positive"
-    "name: x\nsteps:\n  - retry:\n      max_iterations: 0\n      on_exhausted: abort\n      steps:\n        - skill: a\n"
+    "name: x\n\
+     steps:\n\
+    \  - retry:\n\
+    \      max_iterations: 0\n\
+    \      on_exhausted: abort\n\
+    \      steps:\n\
+    \        - skill: a\n"
 
 let test_workflow_rejects_missing_name () =
   match Workflow.of_string "steps:\n  - skill: say-hi\n" with
   | Ok _ -> Alcotest.fail "expected an error for missing name"
   | Error message ->
-      Alcotest.(check bool) "mentions name" true
-        (String.length message > 0
-        && contains ~affix:"name" message)
+      Alcotest.(check bool)
+        "mentions name" true
+        (String.length message > 0 && contains ~affix:"name" message)
 
 let test_workflow_rejects_empty_steps () =
   match Workflow.of_string "name: hello\nsteps: []\n" with
@@ -470,9 +471,7 @@ let test_workflow_rejects_empty_steps () =
 let test_config_parses () =
   match Config.of_string "harness:\n  - claude\n  - -p\n" with
   | Error message -> Alcotest.fail message
-  | Ok config ->
-      Alcotest.(check (list string))
-        "harness" [ "claude"; "-p" ] config.Config.harness
+  | Ok config -> Alcotest.(check (list string)) "harness" [ "claude"; "-p" ] config.Config.harness
 
 let test_config_rejects_missing_harness () =
   match Config.of_string "other: true\n" with
@@ -483,9 +482,7 @@ let test_config_rejects_missing_harness () =
 
 let test_run_id_format () =
   let id = Run.make_id ~workflow:"bugfix" ~time:0.0 ~pid:42 in
-  Alcotest.(check bool)
-    "contains workflow name" true
-    (contains ~affix:"-bugfix-" id);
+  Alcotest.(check bool) "contains workflow name" true (contains ~affix:"-bugfix-" id);
   Alcotest.(check bool) "ends with pid" true (contains ~affix:"-42" id)
 
 let test_run_ids_differ_across_processes () =
@@ -502,8 +499,7 @@ let test_store_saves_run () =
       task = "test";
       status = Run.Paused;
       error = None;
-      position =
-        { Run.entry_index = 2; iterations_used = 1; step_index = 1; for_each = None };
+      position = { Run.entry_index = 2; iterations_used = 1; step_index = 1; for_each = None };
       workspace = Some "/somewhere/worktree";
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
@@ -522,18 +518,17 @@ let test_store_saves_run () =
       | Error message -> Alcotest.fail message
       | Ok loaded ->
           Alcotest.(check string) "id roundtrips" run.Run.id loaded.Run.id;
-          Alcotest.(check string) "status roundtrips" "paused"
+          Alcotest.(check string)
+            "status roundtrips" "paused"
             (Run.string_of_status loaded.Run.status);
-          Alcotest.(check int) "entry index roundtrips" 2
-            loaded.Run.position.Run.entry_index;
-          Alcotest.(check int) "iterations roundtrip" 1
-            loaded.Run.position.Run.iterations_used;
-          Alcotest.(check int) "step inside the retry group roundtrips" 1
-            loaded.Run.position.Run.step_index;
-          Alcotest.(check bool) "workspace roundtrips" true
+          Alcotest.(check int) "entry index roundtrips" 2 loaded.Run.position.Run.entry_index;
+          Alcotest.(check int) "iterations roundtrip" 1 loaded.Run.position.Run.iterations_used;
+          Alcotest.(check int)
+            "step inside the retry group roundtrips" 1 loaded.Run.position.Run.step_index;
+          Alcotest.(check bool)
+            "workspace roundtrips" true
             (loaded.Run.workspace = Some "/somewhere/worktree");
-          Alcotest.(check bool) "no finished_at while paused" true
-            (loaded.Run.finished_at = None))
+          Alcotest.(check bool) "no finished_at while paused" true (loaded.Run.finished_at = None))
 
 (* Handoff parsing *)
 
@@ -542,79 +537,65 @@ let handoff_block ?(status = "pass") ?(summary = "") () =
 
 let test_handoff_parses () =
   let output =
-    "some agent chatter\n\n```handoff\nstatus: pass\nartifacts:\n  - \
-     src/foo.ml\nsummary: did the thing\n```\n"
+    "some agent chatter\n\n\
+     ```handoff\n\
+     status: pass\n\
+     artifacts:\n\
+    \  - src/foo.ml\n\
+     summary: did the thing\n\
+     ```\n"
   in
   match Handoff.parse output with
   | Error message -> Alcotest.fail message
   | Ok handoff ->
-      Alcotest.(check string) "status" "pass"
-        (Handoff.string_of_status handoff.Handoff.status);
-      Alcotest.(check (list string))
-        "artifacts" [ "src/foo.ml" ] handoff.Handoff.artifacts;
+      Alcotest.(check string) "status" "pass" (Handoff.string_of_status handoff.Handoff.status);
+      Alcotest.(check (list string)) "artifacts" [ "src/foo.ml" ] handoff.Handoff.artifacts;
       Alcotest.(check string) "summary" "did the thing" handoff.Handoff.summary
 
 let test_handoff_empty_artifacts_key () =
   match
-    Handoff.parse
-      "```handoff\nstatus: escalate\nartifacts:\nsummary: which wording?\n```\n"
+    Handoff.parse "```handoff\nstatus: escalate\nartifacts:\nsummary: which wording?\n```\n"
   with
   | Error message -> Alcotest.fail message
   | Ok handoff ->
-      Alcotest.(check (list string))
-        "bare artifacts key means none" [] handoff.Handoff.artifacts;
-      Alcotest.(check string) "status" "escalate"
-        (Handoff.string_of_status handoff.Handoff.status)
+      Alcotest.(check (list string)) "bare artifacts key means none" [] handoff.Handoff.artifacts;
+      Alcotest.(check string) "status" "escalate" (Handoff.string_of_status handoff.Handoff.status)
 
 let test_handoff_empty_artifact_entries () =
   (match
-     Handoff.parse
-       "```handoff\nstatus: escalate\nartifacts:\n  - []\nsummary: stuck\n```\n"
+     Handoff.parse "```handoff\nstatus: escalate\nartifacts:\n  - []\nsummary: stuck\n```\n"
    with
   | Error message -> Alcotest.fail message
   | Ok handoff ->
-      Alcotest.(check (list string))
-        "an empty-list entry means none" [] handoff.Handoff.artifacts);
-  (match
-     Handoff.parse
-       "```handoff\nstatus: pass\nartifacts:\n  - src/real.ml\n  -\n```\n"
-   with
+      Alcotest.(check (list string)) "an empty-list entry means none" [] handoff.Handoff.artifacts);
+  (match Handoff.parse "```handoff\nstatus: pass\nartifacts:\n  - src/real.ml\n  -\n```\n" with
   | Error message -> Alcotest.fail message
   | Ok handoff ->
       Alcotest.(check (list string))
-        "paths survive next to empty entries" [ "src/real.ml" ]
-        handoff.Handoff.artifacts);
-  match
-    Handoff.parse "```handoff\nstatus: pass\nartifacts:\n  - 3\n```\n"
-  with
+        "paths survive next to empty entries" [ "src/real.ml" ] handoff.Handoff.artifacts);
+  match Handoff.parse "```handoff\nstatus: pass\nartifacts:\n  - 3\n```\n" with
   | Ok _ -> Alcotest.fail "a numeric artifact entry must stay an error"
   | Error message ->
-      Alcotest.(check bool) "names the artifacts rule" true
-        (contains ~affix:"artifacts" message)
+      Alcotest.(check bool) "names the artifacts rule" true (contains ~affix:"artifacts" message)
 
 let test_handoff_last_block_wins () =
-  let output =
-    "```handoff\nstatus: fail\n```\nrevised:\n```handoff\nstatus: pass\n```\n"
-  in
+  let output = "```handoff\nstatus: fail\n```\nrevised:\n```handoff\nstatus: pass\n```\n" in
   match Handoff.parse output with
   | Error message -> Alcotest.fail message
   | Ok handoff ->
-      Alcotest.(check string) "status" "pass"
-        (Handoff.string_of_status handoff.Handoff.status)
+      Alcotest.(check string) "status" "pass" (Handoff.string_of_status handoff.Handoff.status)
 
 let test_handoff_missing_block () =
   match Handoff.parse "just prose, no block" with
   | Ok _ -> Alcotest.fail "expected an error for missing handoff block"
   | Error message ->
-      Alcotest.(check bool) "mentions handoff" true
-        (contains ~affix:"handoff" message)
+      Alcotest.(check bool) "mentions handoff" true (contains ~affix:"handoff" message)
 
 let test_handoff_unknown_status () =
   match Handoff.parse "```handoff\nstatus: maybe\n```\n" with
   | Ok _ -> Alcotest.fail "expected an error for unknown status"
   | Error message ->
-      Alcotest.(check bool) "mentions the status" true
-        (contains ~affix:"maybe" message)
+      Alcotest.(check bool) "mentions the status" true (contains ~affix:"maybe" message)
 
 (* End-to-end through the default (subprocess) executor *)
 
@@ -622,8 +603,7 @@ let setup_project root ~harness =
   write_file
     (Filename.concat root ".jig/config.yaml")
     (Printf.sprintf "harness:\n%s"
-       (String.concat ""
-          (List.map (fun part -> Printf.sprintf "  - %S\n" part) harness)));
+       (String.concat "" (List.map (fun part -> Printf.sprintf "  - %S\n" part) harness)));
   write_file
     (Filename.concat root ".jig/workflows/hello.yaml")
     "name: hello\nsteps:\n  - skill: say-hi\n";
@@ -631,8 +611,7 @@ let setup_project root ~harness =
 
 (* Echoes the prompt, then emits a passing handoff - the shape of a
    well-behaved harness. The prompt arrives as $0 of the sh script. *)
-let passing_harness =
-  [ "sh"; "-c"; "echo \"$0\"; printf '```handoff\\nstatus: pass\\n```\\n'" ]
+let passing_harness = [ "sh"; "-c"; "echo \"$0\"; printf '```handoff\\nstatus: pass\\n```\\n'" ]
 
 let test_end_to_end_pass () =
   let root = make_temp_root () in
@@ -642,8 +621,7 @@ let test_end_to_end_pass () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, path) ->
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check int) "one step" 1 (List.length run.Run.steps);
       Alcotest.(check bool) "record persisted" true (Sys.file_exists path)
 
@@ -655,14 +633,13 @@ let test_missing_handoff_is_distinct () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "status" "failed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "failed" (Run.string_of_status run.Run.status);
       match run.Run.steps with
       | [ step ] ->
-          Alcotest.(check string) "outcome" "invalid-handoff"
+          Alcotest.(check string)
+            "outcome" "invalid-handoff"
             (Run.string_of_outcome step.Run.outcome);
-          Alcotest.(check bool) "reason recorded" true
-            (step.Run.handoff_error <> None)
+          Alcotest.(check bool) "reason recorded" true (step.Run.handoff_error <> None)
       | _ -> Alcotest.fail "expected exactly one step")
 
 let test_end_to_end_fail () =
@@ -672,9 +649,7 @@ let test_end_to_end_fail () =
     Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
-  | Ok (run, _) ->
-      Alcotest.(check string) "status" "failed"
-        (Run.string_of_status run.Run.status)
+  | Ok (run, _) -> Alcotest.(check string) "status" "failed" (Run.string_of_status run.Run.status)
 
 let test_missing_skill_fails_validation () =
   let root = make_temp_root () in
@@ -682,14 +657,12 @@ let test_missing_skill_fails_validation () =
   write_file
     (Filename.concat root ".jig/workflows/broken.yaml")
     "name: broken\nsteps:\n  - skill: does-not-exist\n";
-  match
-    Runner.Default.execute_run ~root ~workflow_name:"broken" ~task:"x" ~isolated:false ()
-  with
+  match Runner.Default.execute_run ~root ~workflow_name:"broken" ~task:"x" ~isolated:false () with
   | Ok _ -> Alcotest.fail "expected an error for a missing skill"
   | Error message ->
-      Alcotest.(check bool) "mentions the skill" true
-        (contains ~affix:"does-not-exist" message);
-      Alcotest.(check bool) "refused before running: no runs dir" false
+      Alcotest.(check bool) "mentions the skill" true (contains ~affix:"does-not-exist" message);
+      Alcotest.(check bool)
+        "refused before running: no runs dir" false
         (Sys.file_exists (Project.runs_dir ~root))
 
 let test_validate_reports_missing_skills () =
@@ -702,21 +675,21 @@ let test_validate_reports_missing_skills () =
   match
     Result.bind
       (Workflow.load ~path:(Filename.concat jig_dir "workflows/broken.yaml"))
-      (fun workflow -> Validate.workflow ~workflow_dir:(Filename.concat jig_dir "workflows") ~jig_dir ~skill_paths:[] workflow)
+      (fun workflow ->
+        Validate.workflow
+          ~workflow_dir:(Filename.concat jig_dir "workflows")
+          ~jig_dir ~skill_paths:[] workflow)
   with
   | Ok () -> Alcotest.fail "expected validation to fail"
   | Error message ->
-      Alcotest.(check bool) "lists first missing skill" true
-        (contains ~affix:"ghost-one" message);
-      Alcotest.(check bool) "lists second missing skill" true
-        (contains ~affix:"ghost-two" message)
+      Alcotest.(check bool) "lists first missing skill" true (contains ~affix:"ghost-one" message);
+      Alcotest.(check bool) "lists second missing skill" true (contains ~affix:"ghost-two" message)
 
 let test_workflow_rejects_name_with_slash () =
   match Workflow.of_string "name: team/deploy\nsteps:\n  - skill: x\n" with
   | Ok _ -> Alcotest.fail "expected an error for a name containing '/'"
   | Error message ->
-      Alcotest.(check bool) "mentions the name" true
-        (contains ~affix:"team/deploy" message)
+      Alcotest.(check bool) "mentions the name" true (contains ~affix:"team/deploy" message)
 
 let test_step_output_is_recorded () =
   let root = make_temp_root () in
@@ -741,9 +714,11 @@ module Scripted_executor : sig
   include Executor.S
 
   val reset : outputs:string list -> unit
+
   val prompts : unit -> string list
 end = struct
   let recorded_prompts : string list ref = ref []
+
   let queued_outputs : string list ref = ref []
 
   let reset ~outputs =
@@ -765,8 +740,7 @@ end = struct
 end
 
 module Scripted_runner =
-  Runner.Make (Scripted_executor) (Model_provider.Default) (Metering.Noop)
-    (Store.Filesystem)
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Metering.Noop) (Store.Filesystem)
 
 let setup_three_step_project root =
   setup_project root ~harness:[ "irrelevant" ];
@@ -784,8 +758,7 @@ let test_executor_is_swappable () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status)
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status)
 
 let test_module_form_workflow_runs () =
   let root = make_temp_root () in
@@ -800,25 +773,18 @@ let test_module_form_workflow_runs () =
     \      as: it\n\
     \      steps:\n\
     \        - skill: say-hi\n";
-  write_file
-    (Filename.concat root ".jig/workflows/mod/items.tsv")
-    "name\nalpha\nbeta\n";
-  write_file
-    (Filename.concat root ".jig/workflows/mod/AGENTS.md")
-    "the constant framing\n";
+  write_file (Filename.concat root ".jig/workflows/mod/items.tsv") "name\nalpha\nbeta\n";
+  write_file (Filename.concat root ".jig/workflows/mod/AGENTS.md") "the constant framing\n";
   Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"mod" ~task:"t"
-      ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"mod" ~task:"t" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check int) "two items ran" 2 (List.length run.Run.steps);
       List.iter
         (fun prompt ->
-          Alcotest.(check bool) "AGENTS.md became the context" true
+          Alcotest.(check bool)
+            "AGENTS.md became the context" true
             (contains ~affix:"Context:\nthe constant framing" prompt))
         (Scripted_executor.prompts ())
 
@@ -839,10 +805,8 @@ let test_list_shows_module_and_flat_forms () =
             | Project.Unparseable _ -> None)
           entries
       in
-      Alcotest.(check bool) "flat hello is listed" true
-        (List.mem "hello" names);
-      Alcotest.(check bool) "module mod is listed" true
-        (List.mem "mod" names)
+      Alcotest.(check bool) "flat hello is listed" true (List.mem "hello" names);
+      Alcotest.(check bool) "module mod is listed" true (List.mem "mod" names)
 
 let test_agents_md_and_inline_context_conflict () =
   let root = make_temp_root () in
@@ -850,22 +814,16 @@ let test_agents_md_and_inline_context_conflict () =
     (Filename.concat root ".jig/workflows/mod/workflow.yaml")
     "name: mod\ncontext: inline\nsteps:\n  - skill: say-hi\n";
   write_file (Filename.concat root ".jig/workflows/mod/AGENTS.md") "file\n";
-  match
-    Workflow.load ~path:(Filename.concat root ".jig/workflows/mod/workflow.yaml")
-  with
+  match Workflow.load ~path:(Filename.concat root ".jig/workflows/mod/workflow.yaml") with
   | Ok _ -> Alcotest.fail "expected a conflict error"
   | Error message ->
-      Alcotest.(check bool) "names the double source" true
-        (contains ~affix:"AGENTS.md" message)
+      Alcotest.(check bool) "names the double source" true (contains ~affix:"AGENTS.md" message)
 
 let read_pid_file path =
-  int_of_string
-    (String.trim (In_channel.with_open_text path In_channel.input_all))
+  int_of_string (String.trim (In_channel.with_open_text path In_channel.input_all))
 
 let process_is_alive pid =
-  match Unix.kill pid 0 with
-  | () -> true
-  | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
+  match Unix.kill pid 0 with () -> true | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
 
 let rec poll_until ~seconds condition =
   if condition () then true
@@ -874,13 +832,11 @@ let rec poll_until ~seconds condition =
     Unix.sleepf 0.05;
     poll_until ~seconds:(seconds -. 0.05) condition)
 
-let process_exits_within ~seconds pid =
-  poll_until ~seconds (fun () -> not (process_is_alive pid))
+let process_exits_within ~seconds pid = poll_until ~seconds (fun () -> not (process_is_alive pid))
 
 let wait_for_pid_file ~seconds path =
   let pid_written () =
-    Sys.file_exists path
-    && String.trim (In_channel.with_open_text path In_channel.input_all) <> ""
+    Sys.file_exists path && String.trim (In_channel.with_open_text path In_channel.input_all) <> ""
   in
   if poll_until ~seconds pid_written then read_pid_file path
   else Alcotest.failf "no pid appeared in %s" path
@@ -888,36 +844,27 @@ let wait_for_pid_file ~seconds path =
 let write_notify_config root ~notify_command =
   write_file
     (Filename.concat root ".jig/config.yaml")
-    (Printf.sprintf
-       "harness:\n  - irrelevant\nnotify:\n  - sh\n  - -c\n  - %S\n"
-       notify_command)
+    (Printf.sprintf "harness:\n  - irrelevant\nnotify:\n  - sh\n  - -c\n  - %S\n" notify_command)
 
 let test_notify_fires_when_run_stops () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
-  write_notify_config root
-    ~notify_command:"printf %s {run_id} > notified-{status}";
+  write_notify_config root ~notify_command:"printf %s {run_id} > notified-{status}";
   Scripted_executor.reset ~outputs:[];
-  (match
-     Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-       ~isolated:false ()
-   with
+  (match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
       let marker = Filename.concat root "notified-completed" in
-      Alcotest.(check bool) "notify fired on completion" true
-        (Sys.file_exists marker);
-      Alcotest.(check string) "run id substituted" run.Run.id
+      Alcotest.(check bool) "notify fired on completion" true (Sys.file_exists marker);
+      Alcotest.(check string)
+        "run id substituted" run.Run.id
         (String.trim (In_channel.with_open_text marker In_channel.input_all)));
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"escalate" ~summary:"need you" () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-      ~isolated:false ()
-  with
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"escalate" ~summary:"need you" () ];
+  match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ ->
-      Alcotest.(check bool) "notify fired on pause" true
+      Alcotest.(check bool)
+        "notify fired on pause" true
         (Sys.file_exists (Filename.concat root "notified-paused"))
 
 let test_notify_failure_is_harmless () =
@@ -925,36 +872,29 @@ let test_notify_failure_is_harmless () =
   setup_project root ~harness:[ "irrelevant" ];
   write_notify_config root ~notify_command:"exit 1";
   Scripted_executor.reset ~outputs:[];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-      ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "run outcome unaffected by failing notify"
-        "completed"
+      Alcotest.(check string)
+        "run outcome unaffected by failing notify" "completed"
         (Run.string_of_status run.Run.status)
 
 let test_hung_notify_does_not_block_finishing () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
-  write_notify_config root
-    ~notify_command:"sleep 300 & echo $! > notify-sleep.pid; wait";
+  write_notify_config root ~notify_command:"sleep 300 & echo $! > notify-sleep.pid; wait";
   Scripted_executor.reset ~outputs:[];
   let started_at = Unix.gettimeofday () in
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-      ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "run completed" "completed"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check bool) "finished within the notify limit plus grace" true
+      Alcotest.(check string) "run completed" "completed" (Run.string_of_status run.Run.status);
+      Alcotest.(check bool)
+        "finished within the notify limit plus grace" true
         (Unix.gettimeofday () -. started_at
-        < Runner.notify_time_limit_seconds
-          +. Process_group.termination_grace_seconds);
-      Alcotest.(check bool) "the hook's background sleep was stopped" true
+        < Runner.notify_time_limit_seconds +. Process_group.termination_grace_seconds);
+      Alcotest.(check bool)
+        "the hook's background sleep was stopped" true
         (process_exits_within ~seconds:3.0
            (read_pid_file (Filename.concat root "notify-sleep.pid")))
 
@@ -963,16 +903,15 @@ let test_execute_run_honors_given_run_id () =
   setup_project root ~harness:[ "irrelevant" ];
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~run_id:"pre-issued-id" ~root
-      ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
+    Scripted_runner.execute_run ~run_id:"pre-issued-id" ~root ~workflow_name:"hello" ~task:"say hi"
+      ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "run carries the pre-issued id" "pre-issued-id"
-        run.Run.id;
-      Alcotest.(check bool) "record lands under the pre-issued id" true
-        (Sys.file_exists
-           (Filename.concat root ".jig/runs/pre-issued-id.json"))
+      Alcotest.(check string) "run carries the pre-issued id" "pre-issued-id" run.Run.id;
+      Alcotest.(check bool)
+        "record lands under the pre-issued id" true
+        (Sys.file_exists (Filename.concat root ".jig/runs/pre-issued-id.json"))
 
 let index_of ~affix text =
   let affix_length = String.length affix in
@@ -988,48 +927,36 @@ let setup_inputs_project root =
   setup_project root ~harness:[ "irrelevant" ];
   write_file
     (Filename.concat root ".jig/workflows/bound.yaml")
-    "name: bound\n\
-     steps:\n\
-    \  - skill: one\n\
-    \  - skill: two\n\
-    \    with:\n\
-    \      spec: docs/spec.md\n";
+    "name: bound\nsteps:\n  - skill: one\n  - skill: two\n    with:\n      spec: docs/spec.md\n";
   List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two" ]
 
 let test_prompt_carries_step_inputs () =
   let root = make_temp_root () in
   setup_inputs_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~summary:"first done" (); handoff_block () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"bound" ~task:"t"
-      ~isolated:false ()
-  with
+  Scripted_executor.reset ~outputs:[ handoff_block ~summary:"first done" (); handoff_block () ];
+  match Scripted_runner.execute_run ~root ~workflow_name:"bound" ~task:"t" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Scripted_executor.prompts () with
       | [ first; second ] -> (
-          Alcotest.(check bool) "unbound step has no inputs section" false
+          Alcotest.(check bool)
+            "unbound step has no inputs section" false
             (contains ~affix:"Step inputs" first);
-          Alcotest.(check bool) "bound step carries the section" true
-            (contains
-               ~affix:
-                 "Step inputs (bound by the workflow; treat each value as a \
-                  literal):"
+          Alcotest.(check bool)
+            "bound step carries the section" true
+            (contains ~affix:"Step inputs (bound by the workflow; treat each value as a literal):"
                second);
-          Alcotest.(check bool) "bound step carries the value" true
+          Alcotest.(check bool)
+            "bound step carries the value" true
             (contains ~affix:"spec: docs/spec.md" second);
           match
-            (index_of ~affix:"Step inputs" second,
-             index_of ~affix:"Previous handoff" second)
+            (index_of ~affix:"Step inputs" second, index_of ~affix:"Previous handoff" second)
           with
           | Some inputs_at, Some handoff_at ->
-              Alcotest.(check bool) "inputs render before the handoff" true
-                (inputs_at < handoff_at)
+              Alcotest.(check bool) "inputs render before the handoff" true (inputs_at < handoff_at)
           | _ -> Alcotest.fail "expected both sections in the second prompt")
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts))
+      )
 
 let test_retry_steps_carry_their_own_inputs () =
   let root = make_temp_root () in
@@ -1051,24 +978,22 @@ let test_retry_steps_carry_their_own_inputs () =
     \            target: beta\n";
   List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two" ];
   Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"looped" ~task:"t"
-      ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"looped" ~task:"t" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Scripted_executor.prompts () with
       | [ first; second ] ->
-          Alcotest.(check bool) "first sees its own value" true
+          Alcotest.(check bool)
+            "first sees its own value" true
             (contains ~affix:"target: alpha" first);
-          Alcotest.(check bool) "first does not see the second's" false
+          Alcotest.(check bool)
+            "first does not see the second's" false
             (contains ~affix:"target: beta" first);
-          Alcotest.(check bool) "second sees its own value" true
+          Alcotest.(check bool)
+            "second sees its own value" true
             (contains ~affix:"target: beta" second)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts)))
-
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 2 prompts, got %d" (List.length prompts))
+      )
 
 (* forEach at runtime *)
 
@@ -1089,12 +1014,9 @@ let setup_fanout_project ?(items = "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/b
   setup_project root ~harness:[ "irrelevant" ];
   write_file (Filename.concat root ".jig/workflows/ports.tsv") items;
   write_file (Filename.concat root ".jig/workflows/fanout.yaml") workflow;
-  List.iter
-    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
-    [ "port-one"; "port-two" ]
+  List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "port-one"; "port-two" ]
 
-let step_item_keys run =
-  List.map (fun step -> step.Run.item_key) run.Run.steps
+let step_item_keys run = List.map (fun step -> step.Run.item_key) run.Run.steps
 
 let test_lifecycle_events_fire_across_step_kinds () =
   let root = make_temp_root () in
@@ -1118,17 +1040,13 @@ let test_lifecycle_events_fire_across_step_kinds () =
     \      as: port\n\
     \      steps:\n\
     \        - skill: three\n";
-  List.iter
-    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
-    [ "one"; "two"; "three" ];
+  List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two"; "three" ];
   Scripted_executor.reset
-    ~outputs:
-      [ handoff_block (); handoff_block (); handoff_block (); handoff_block () ];
+    ~outputs:[ handoff_block (); handoff_block (); handoff_block (); handoff_block () ];
   let events = ref [] in
   let on_event e = events := e :: !events in
   match
-    Scripted_runner.execute_run ~on_event ~root ~workflow_name:"mixed"
-      ~task:"t" ~isolated:false ()
+    Scripted_runner.execute_run ~on_event ~root ~workflow_name:"mixed" ~task:"t" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ ->
@@ -1136,10 +1054,8 @@ let test_lifecycle_events_fire_across_step_kinds () =
         List.rev_map
           (function
             | Runner.Step_started { skill; item_key; _ } ->
-                Printf.sprintf "start:%s:%s" skill
-                  (Option.value item_key ~default:"-")
-            | Runner.Items_resolved { item_keys; _ } ->
-                "items:" ^ String.concat "," item_keys
+                Printf.sprintf "start:%s:%s" skill (Option.value item_key ~default:"-")
+            | Runner.Items_resolved { item_keys; _ } -> "items:" ^ String.concat "," item_keys
             | Runner.Step_output _ -> "output"
             | Runner.Item_finished _ -> "item-finished"
             | Runner.Step_finished record ->
@@ -1148,8 +1064,7 @@ let test_lifecycle_events_fire_across_step_kinds () =
           !events
       in
       Alcotest.(check (list string))
-        "started/finished per step, items before the forEach body, item keys \
-         on forEach steps"
+        "started/finished per step, items before the forEach body, item keys on forEach steps"
         [
           "start:one:-";
           "finish:one:-";
@@ -1167,38 +1082,38 @@ let test_for_each_runs_body_per_item () =
   let root = make_temp_root () in
   setup_fanout_project root;
   Scripted_executor.reset
-    ~outputs:
-      [ handoff_block (); handoff_block (); handoff_block (); handoff_block () ];
+    ~outputs:[ handoff_block (); handoff_block (); handoff_block (); handoff_block () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check (list (option string)))
         "step provenance carries the item keys"
         [ Some "alpha"; Some "alpha"; Some "beta"; Some "beta" ]
         (step_item_keys run);
-      (match Yojson.Safe.Util.member "for_each"
-               (Yojson.Safe.Util.member "position" (Run.to_json run))
+      (match
+         Yojson.Safe.Util.member "for_each" (Yojson.Safe.Util.member "position" (Run.to_json run))
        with
       | `Null -> ()
       | _ -> Alcotest.fail "completed run must carry no snapshot");
       match Scripted_executor.prompts () with
       | [ first; _; third; _ ] ->
-          Alcotest.(check bool) "first prompt binds item 1's value" true
+          Alcotest.(check bool)
+            "first prompt binds item 1's value" true
             (contains ~affix:"spec: specs/a.md" first);
-          Alcotest.(check bool) "first prompt states the item position" true
+          Alcotest.(check bool)
+            "first prompt states the item position" true
             (contains ~affix:"item 1 of 2 (alpha)" first);
-          Alcotest.(check bool) "third prompt binds item 2's value" true
+          Alcotest.(check bool)
+            "third prompt binds item 2's value" true
             (contains ~affix:"spec: specs/b.md" third);
-          Alcotest.(check bool) "third prompt states the item position" true
+          Alcotest.(check bool)
+            "third prompt states the item position" true
             (contains ~affix:"item 2 of 2 (beta)" third)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 4 prompts, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 4 prompts, got %d" (List.length prompts))
+      )
 
 let retry_fanout_workflow_yaml =
   "name: fanout\n\
@@ -1229,8 +1144,7 @@ let test_for_each_isolates_handoffs_between_items () =
         handoff_block ~summary:"beta-two done" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
@@ -1245,9 +1159,8 @@ let test_for_each_isolates_handoffs_between_items () =
           Alcotest.(check bool)
             "item 2's first step has no previous handoff" false
             (contains ~affix:"Previous handoff" beta_one)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 4 prompts, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 4 prompts, got %d" (List.length prompts))
+      )
 
 let test_for_each_retry_loops_within_one_item () =
   let root = make_temp_root () in
@@ -1266,23 +1179,14 @@ let test_for_each_retry_loops_within_one_item () =
         handoff_block ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check (list (option string)))
         "the retry looped within item 1 before item 2 ran"
-        [
-          Some "alpha";
-          Some "alpha";
-          Some "alpha";
-          Some "alpha";
-          Some "beta";
-          Some "beta";
-        ]
+        [ Some "alpha"; Some "alpha"; Some "alpha"; Some "alpha"; Some "beta"; Some "beta" ]
         (step_item_keys run)
 
 let pause_fanout_at_item_two root =
@@ -1295,8 +1199,7 @@ let pause_fanout_at_item_two root =
         handoff_block ~status:"escalate" ~summary:"stuck on beta" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> run
@@ -1304,13 +1207,14 @@ let pause_fanout_at_item_two root =
 let test_for_each_escalate_pauses_at_the_item () =
   let root = make_temp_root () in
   let run = pause_fanout_at_item_two root in
-  Alcotest.(check string) "status" "paused"
-    (Run.string_of_status run.Run.status);
+  Alcotest.(check string) "status" "paused" (Run.string_of_status run.Run.status);
   let position = Yojson.Safe.Util.member "position" (Run.to_json run) in
   let state = Yojson.Safe.Util.member "for_each" position in
-  Alcotest.(check int) "paused at item 2" 1
+  Alcotest.(check int)
+    "paused at item 2" 1
     (Yojson.Safe.Util.to_int (Yojson.Safe.Util.member "item_index" state));
-  Alcotest.(check int) "paused at the first body step" 0
+  Alcotest.(check int)
+    "paused at the first body step" 0
     (Yojson.Safe.Util.to_int (Yojson.Safe.Util.member "body_index" state))
 
 let test_for_each_resume_uses_the_snapshot () =
@@ -1321,64 +1225,51 @@ let test_for_each_resume_uses_the_snapshot () =
     (Filename.concat root ".jig/workflows/ports.tsv")
     "name\tspec\nalpha\tspecs/a.md\nbeta\tspecs/CHANGED.md\n";
   Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
-  match
-    Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None ()
-  with
+  match Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       match Scripted_executor.prompts () with
       | first :: _ ->
-          Alcotest.(check bool) "resumed at item 2" true
+          Alcotest.(check bool)
+            "resumed at item 2" true
             (contains ~affix:"item 2 of 2 (beta)" first);
-          Alcotest.(check bool) "snapshot value survives the file edit" true
+          Alcotest.(check bool)
+            "snapshot value survives the file edit" true
             (contains ~affix:"spec: specs/b.md" first);
-          Alcotest.(check bool) "edited value is not seen" false
-            (contains ~affix:"CHANGED" first)
+          Alcotest.(check bool) "edited value is not seen" false (contains ~affix:"CHANGED" first)
       | [] -> Alcotest.fail "expected the resume to execute steps")
 
 let test_for_each_skip_completes_the_item_step_only () =
   let root = make_temp_root () in
   let paused = pause_fanout_at_item_two root in
   Scripted_executor.reset ~outputs:[ handoff_block () ];
-  match
-    Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None
-      ~skip:true ()
-  with
+  match Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None ~skip:true () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       let skipped = List.nth run.Run.steps 3 in
-      Alcotest.(check string) "synthetic pass names the paused skill"
-        "port-one" skipped.Run.skill;
+      Alcotest.(check string) "synthetic pass names the paused skill" "port-one" skipped.Run.skill;
       Alcotest.(check (option string))
-        "synthetic pass carries the item key" (Some "beta")
-        skipped.Run.item_key;
+        "synthetic pass carries the item key" (Some "beta") skipped.Run.item_key;
       match Scripted_executor.prompts () with
       | [ only ] ->
           Alcotest.(check bool)
             "automation continued with the item's next step" true
             (contains ~affix:"item 2 of 2 (beta)" only)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
 
 let test_for_each_missing_column_fails_before_any_step () =
   let root = make_temp_root () in
   setup_fanout_project ~items:"name\nalpha\nbeta\n" root;
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
   with
   | Ok _ -> Alcotest.fail "expected validation to fail"
   | Error message ->
-      Alcotest.(check bool) "names the missing column" true
-        (contains ~affix:"spec" message);
-      Alcotest.(check int) "no step executed" 0
-        (List.length (Scripted_executor.prompts ()))
+      Alcotest.(check bool) "names the missing column" true (contains ~affix:"spec" message);
+      Alcotest.(check int) "no step executed" 0 (List.length (Scripted_executor.prompts ()))
 
 let test_for_each_missing_items_file_fails_at_entry () =
   let root = make_temp_root () in
@@ -1386,15 +1277,12 @@ let test_for_each_missing_items_file_fails_at_entry () =
   Sys.remove (Filename.concat root ".jig/workflows/ports.tsv");
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
   with
   | Ok _ -> Alcotest.fail "expected the run to fail"
   | Error message ->
-      Alcotest.(check bool) "names the items file" true
-        (contains ~affix:"ports.tsv" message);
-      Alcotest.(check int) "no body step ran" 0
-        (List.length (Scripted_executor.prompts ()))
+      Alcotest.(check bool) "names the items file" true (contains ~affix:"ports.tsv" message);
+      Alcotest.(check int) "no body step ran" 0 (List.length (Scripted_executor.prompts ()))
 
 (* An absent items file is not an up-front validation error: a producing
    step may create it before the forEach entry. *)
@@ -1409,13 +1297,9 @@ let test_validate_defers_absent_items () =
       match Workflow.load ~path with
       | Error message -> Alcotest.fail message
       | Ok workflow -> (
-          match
-            Validate.workflow ~workflow_dir ~jig_dir ~skill_paths:[] workflow
-          with
+          match Validate.workflow ~workflow_dir ~jig_dir ~skill_paths:[] workflow with
           | Ok () -> ()
-          | Error message ->
-              Alcotest.fail
-                (Printf.sprintf "expected deferral, got: %s" message)))
+          | Error message -> Alcotest.fail (Printf.sprintf "expected deferral, got: %s" message)))
 
 let test_run_json_roundtrips_for_each_position () =
   let bindings = [ ("name", "alpha"); ("spec", "specs/a.md") ] in
@@ -1471,19 +1355,16 @@ let test_run_json_roundtrips_for_each_position () =
   in
   match Run.of_json (Run.to_json run) with
   | Error message -> Alcotest.fail message
-  | Ok loaded -> (
+  | Ok loaded ->
       (match loaded.Run.position.Run.for_each with
       | Some state ->
           Alcotest.(check int) "item cursor" 1 state.Run.item_index;
           Alcotest.(check int) "body cursor" 0 state.Run.body_index;
-          Alcotest.(check bool) "snapshot round-trips" true
-            (state.Run.items = [ bindings ])
+          Alcotest.(check bool) "snapshot round-trips" true (state.Run.items = [ bindings ])
       | None -> Alcotest.fail "expected the for_each state to survive");
       let step = List.hd loaded.Run.steps in
-      Alcotest.(check (option int)) "step item_index" (Some 1)
-        step.Run.item_index;
-      Alcotest.(check (option string))
-        "step item_key" (Some "alpha") step.Run.item_key)
+      Alcotest.(check (option int)) "step item_index" (Some 1) step.Run.item_index;
+      Alcotest.(check (option string)) "step item_key" (Some "alpha") step.Run.item_key
 
 let test_old_run_json_still_loads () =
   let json =
@@ -1498,19 +1379,16 @@ let test_old_run_json_still_loads () =
   match Run.of_json json with
   | Error message -> Alcotest.fail message
   | Ok run ->
-      Alcotest.(check bool) "no for_each state" true
-        (run.Run.position.Run.for_each = None);
-      Alcotest.(check int) "a group restarts at its first step" 0
-        run.Run.position.Run.step_index;
+      Alcotest.(check bool) "no for_each state" true (run.Run.position.Run.for_each = None);
+      Alcotest.(check int) "a group restarts at its first step" 0 run.Run.position.Run.step_index;
       let step = List.hd run.Run.steps in
       Alcotest.(check (option int)) "no item_index" None step.Run.item_index;
       Alcotest.(check (option string)) "no item_key" None step.Run.item_key;
-      Alcotest.(check bool) "no attempt on the step" true
-        (step.Run.attempt = None);
-      Alcotest.(check bool) "no attempts in flight" true
+      Alcotest.(check bool) "no attempt on the step" true (step.Run.attempt = None);
+      Alcotest.(check bool)
+        "no attempts in flight" true
         (Run.Step_key_map.is_empty run.Run.attempts_in_flight);
-      Alcotest.(check int) "no interrupted attempts" 0
-        (List.length run.Run.interrupted_attempts)
+      Alcotest.(check int) "no interrupted attempts" 0 (List.length run.Run.interrupted_attempts)
 
 let test_context_renders_into_every_prompt () =
   let root = make_temp_root () in
@@ -1531,21 +1409,16 @@ let test_context_renders_into_every_prompt () =
     \      steps:\n\
     \        - skill: two\n";
   List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "one"; "two" ];
-  Scripted_executor.reset
-    ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"framed" ~task:"t"
-      ~isolated:false ()
-  with
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
+  match Scripted_runner.execute_run ~root ~workflow_name:"framed" ~task:"t" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ ->
       let prompts = Scripted_executor.prompts () in
-      Alcotest.(check int) "one plain step plus two items" 3
-        (List.length prompts);
+      Alcotest.(check int) "one plain step plus two items" 3 (List.length prompts);
       List.iter
         (fun prompt ->
-          Alcotest.(check bool) "every prompt carries the context preamble"
-            true
+          Alcotest.(check bool)
+            "every prompt carries the context preamble" true
             (contains ~affix:"Context:\ninvariant framing here" prompt))
         prompts
 
@@ -1564,47 +1437,47 @@ let test_handoffs_thread_between_steps () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check int) "three steps ran" 3 (List.length run.Run.steps);
       match Scripted_executor.prompts () with
       | [ first; second; third ] ->
-          Alcotest.(check bool) "first step has no previous handoff" false
+          Alcotest.(check bool)
+            "first step has no previous handoff" false
             (contains ~affix:"Previous handoff" first);
-          Alcotest.(check bool) "second step sees first handoff" true
+          Alcotest.(check bool)
+            "second step sees first handoff" true
             (contains ~affix:"first step done" second);
-          Alcotest.(check bool) "third step sees second handoff" true
+          Alcotest.(check bool)
+            "third step sees second handoff" true
             (contains ~affix:"second step done" third);
-          Alcotest.(check bool) "third step does not see first handoff" false
+          Alcotest.(check bool)
+            "third step does not see first handoff" false
             (contains ~affix:"first step done" third)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts))
+      )
 
 let test_prompt_states_workflow_position () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Scripted_executor.prompts () with
       | [ first; second; third ] ->
-          Alcotest.(check bool) "first step knows its position" true
-            (contains ~affix:"Workflow: pipeline - step 1 of 3 (one); next: two."
-               first);
-          Alcotest.(check bool) "second step names its successor" true
+          Alcotest.(check bool)
+            "first step knows its position" true
+            (contains ~affix:"Workflow: pipeline - step 1 of 3 (one); next: two." first);
+          Alcotest.(check bool)
+            "second step names its successor" true
             (contains ~affix:"step 2 of 3 (two); next: three." second);
-          Alcotest.(check bool) "final step knows it is last" true
-            (contains ~affix:"step 3 of 3 (three); this is the final step."
-               third)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+          Alcotest.(check bool)
+            "final step knows it is last" true
+            (contains ~affix:"step 3 of 3 (three); this is the final step." third)
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts))
+      )
 
 let test_retry_prompt_states_group_position () =
   let root = make_temp_root () in
@@ -1624,127 +1497,103 @@ let test_retry_prompt_states_group_position () =
   List.iter
     (fun name -> add_skill root name ("# " ^ name ^ "\n"))
     [ "implement-fix"; "run-tests"; "open-pr" ];
-  Scripted_executor.reset
-    ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"gated" ~task:"go"
-      ~isolated:false ()
-  with
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block (); handoff_block () ];
+  match Scripted_runner.execute_run ~root ~workflow_name:"gated" ~task:"go" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Scripted_executor.prompts () with
       | [ group_first; group_gate; last ] ->
-          Alcotest.(check bool) "group step carries the entry position" true
-            (contains ~affix:"step 1 of 2 (implement-fix); next: open-pr."
-               group_first);
-          Alcotest.(check bool) "gate step shares the entry position" true
-            (contains ~affix:"step 1 of 2 (run-tests); next: open-pr."
-               group_gate);
-          Alcotest.(check bool) "entry after the group is final" true
-            (contains ~affix:"step 2 of 2 (open-pr); this is the final step."
-               last)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+          Alcotest.(check bool)
+            "group step carries the entry position" true
+            (contains ~affix:"step 1 of 2 (implement-fix); next: open-pr." group_first);
+          Alcotest.(check bool)
+            "gate step shares the entry position" true
+            (contains ~affix:"step 1 of 2 (run-tests); next: open-pr." group_gate);
+          Alcotest.(check bool)
+            "entry after the group is final" true
+            (contains ~affix:"step 2 of 2 (open-pr); this is the final step." last)
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts))
+      )
 
 let test_prompt_carries_handoff_protocol () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   Scripted_executor.reset ~outputs:[];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-      ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Scripted_executor.prompts () with
       | [ prompt ] ->
-          Alcotest.(check bool) "protocol present" true
-            (contains ~affix:"end your reply with a fenced handoff block"
-               prompt);
+          Alcotest.(check bool)
+            "protocol present" true
+            (contains ~affix:"end your reply with a fenced handoff block" prompt);
           Alcotest.(check bool)
             "example status cannot parse as a real handoff" true
             (contains ~affix:"status: <pass | fail | escalate>" prompt);
-          Alcotest.(check bool) "workspace ownership stated" true
+          Alcotest.(check bool)
+            "workspace ownership stated" true
             (contains ~affix:"the runner owns isolation" prompt)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
 
 let test_fail_handoff_short_circuits () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot reproduce" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot reproduce" () ];
   match
     Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "failed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "failed" (Run.string_of_status run.Run.status);
       Alcotest.(check int) "only one step ran" 1 (List.length run.Run.steps);
-      Alcotest.(check int) "no further harness calls" 1
-        (List.length (Scripted_executor.prompts ()))
+      Alcotest.(check int) "no further harness calls" 1 (List.length (Scripted_executor.prompts ()))
 
 let test_escalate_handoff_pauses_run () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"escalate" ~summary:"need a human" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"escalate" ~summary:"need a human" () ];
   match
     Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "paused"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "run stopped at the escalating step" 1
-        (List.length run.Run.steps);
-      Alcotest.(check bool) "paused runs have no finished_at" true
-        (run.Run.finished_at = None)
+      Alcotest.(check string) "status" "paused" (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "run stopped at the escalating step" 1 (List.length run.Run.steps);
+      Alcotest.(check bool) "paused runs have no finished_at" true (run.Run.finished_at = None)
 
 let test_skip_marks_paused_entry_done () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"escalate" ~summary:"stuck on one" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"escalate" ~summary:"stuck on one" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (paused_run, _) -> (
       Scripted_executor.reset
-        ~outputs:
-          [
-            handoff_block ~summary:"two done" ();
-            handoff_block ~summary:"three done" ();
-          ];
+        ~outputs:[ handoff_block ~summary:"two done" (); handoff_block ~summary:"three done" () ];
       match
         Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id
           ~guidance:(Some "wired it up by hand") ~skip:true ()
       with
       | Error message -> Alcotest.fail message
       | Ok (run, _) -> (
-          Alcotest.(check string) "completed" "completed"
-            (Run.string_of_status run.Run.status);
+          Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
           Alcotest.(check int)
-            "escalated, human-skipped, then two agent steps" 4
-            (List.length run.Run.steps);
+            "escalated, human-skipped, then two agent steps" 4 (List.length run.Run.steps);
           let skipped = List.nth run.Run.steps 1 in
-          Alcotest.(check string) "skipped record names the paused skill"
-            "one" skipped.Run.skill;
-          Alcotest.(check bool) "no cost on the human pass" true
+          Alcotest.(check string) "skipped record names the paused skill" "one" skipped.Run.skill;
+          Alcotest.(check bool)
+            "no cost on the human pass" true
             (skipped.Run.cost = Metering.Unknown_cost);
-          Alcotest.(check string) "skipped record is empty of output" ""
-            skipped.Run.stdout;
+          Alcotest.(check string) "skipped record is empty of output" "" skipped.Run.stdout;
           match Scripted_executor.prompts () with
           | first_after_skip :: _ ->
-              Alcotest.(check bool) "human handoff threads onward" true
-                (contains ~affix:"A human completed this step manually."
-                   first_after_skip);
-              Alcotest.(check bool) "guidance text rides in the summary" true
+              Alcotest.(check bool)
+                "human handoff threads onward" true
+                (contains ~affix:"A human completed this step manually." first_after_skip);
+              Alcotest.(check bool)
+                "guidance text rides in the summary" true
                 (contains ~affix:"wired it up by hand" first_after_skip)
           | [] -> Alcotest.fail "expected prompts after the skip"))
 
@@ -1763,9 +1612,7 @@ let setup_retry_project root ~max_iterations ~on_exhausted =
        \        - skill: run-tests\n\
        \          until: pass\n"
        max_iterations on_exhausted);
-  List.iter
-    (fun name -> add_skill root name ("# " ^ name ^ "\n"))
-    [ "implement-fix"; "run-tests" ]
+  List.iter (fun name -> add_skill root name ("# " ^ name ^ "\n")) [ "implement-fix"; "run-tests" ]
 
 let test_retry_until_pass () =
   let root = make_temp_root () in
@@ -1783,10 +1630,8 @@ let test_retry_until_pass () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "two iterations, four steps" 4
-        (List.length run.Run.steps);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "two iterations, four steps" 4 (List.length run.Run.steps);
       let third_prompt = List.nth (Scripted_executor.prompts ()) 2 in
       Alcotest.(check bool)
         "second iteration sees the failing handoff" true
@@ -1804,26 +1649,25 @@ let test_skip_advances_past_retry_group () =
         handoff_block ~status:"fail" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (paused_run, _) -> (
       Scripted_executor.reset ~outputs:[];
       match
-        Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id
-          ~guidance:None ~skip:true ()
+        Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id ~guidance:None ~skip:true ()
       with
       | Error message -> Alcotest.fail message
       | Ok (run, _) ->
-          Alcotest.(check string) "whole group marked done" "completed"
+          Alcotest.(check string)
+            "whole group marked done" "completed"
             (Run.string_of_status run.Run.status);
-          Alcotest.(check int) "no further harness calls" 0
+          Alcotest.(check int)
+            "no further harness calls" 0
             (List.length (Scripted_executor.prompts ()));
           let skipped = List.nth run.Run.steps 4 in
           Alcotest.(check string)
-            "skipped record names the group's gate skill" "run-tests"
-            skipped.Run.skill)
+            "skipped record names the group's gate skill" "run-tests" skipped.Run.skill)
 
 let test_invalid_handoff_text_threads_into_retry () =
   let root = make_temp_root () in
@@ -1836,26 +1680,27 @@ let test_invalid_handoff_text_threads_into_retry () =
         handoff_block ~summary:"tests green" ();
       ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "status" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "status" "completed" (Run.string_of_status run.Run.status);
       match Scripted_executor.prompts () with
       | [ _; retried; after_valid ] ->
-          Alcotest.(check bool) "retry is told the block was missing" true
+          Alcotest.(check bool)
+            "retry is told the block was missing" true
             (contains ~affix:"without a handoff block" retried);
-          Alcotest.(check bool) "retry sees the invalid attempt's text" true
+          Alcotest.(check bool)
+            "retry sees the invalid attempt's text" true
             (contains ~affix:"still wiring the component test" retried);
-          Alcotest.(check bool) "valid handoff supersedes degraded text" false
+          Alcotest.(check bool)
+            "valid handoff supersedes degraded text" false
             (contains ~affix:"still wiring the component test" after_valid);
-          Alcotest.(check bool) "valid handoff threads normally" true
+          Alcotest.(check bool)
+            "valid handoff threads normally" true
             (contains ~affix:"resumed from partial work" after_valid)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 3 prompts, got %d" (List.length prompts))
+      )
 
 let test_retry_exhausted_escalates () =
   let root = make_temp_root () in
@@ -1873,58 +1718,42 @@ let test_retry_exhausted_escalates () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "status" "paused"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "both iterations recorded" 4
-        (List.length run.Run.steps);
-      Alcotest.(check int) "iterations used persisted" 2
-        run.Run.position.Run.iterations_used
+      Alcotest.(check string) "status" "paused" (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "both iterations recorded" 4 (List.length run.Run.steps);
+      Alcotest.(check int) "iterations used persisted" 2 run.Run.position.Run.iterations_used
 
 let test_retry_exhausted_aborts () =
   let root = make_temp_root () in
   setup_retry_project root ~max_iterations:1 ~on_exhausted:"abort";
-  Scripted_executor.reset
-    ~outputs:[ handoff_block (); handoff_block ~status:"fail" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block ~status:"fail" () ];
   match
     Scripted_runner.execute_run ~root ~workflow_name:"fixloop" ~task:"fix it" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
-  | Ok (run, _) ->
-      Alcotest.(check string) "status" "aborted"
-        (Run.string_of_status run.Run.status)
+  | Ok (run, _) -> Alcotest.(check string) "status" "aborted" (Run.string_of_status run.Run.status)
 
 let setup_on_fail_project root ~on_fail =
   setup_project root ~harness:[ "irrelevant" ];
   write_file
     (Filename.concat root ".jig/workflows/guarded.yaml")
-    (Printf.sprintf
-       "name: guarded\nsteps:\n  - skill: fragile\n    on_fail: %s\n" on_fail);
+    (Printf.sprintf "name: guarded\nsteps:\n  - skill: fragile\n    on_fail: %s\n" on_fail);
   add_skill root "fragile" "# fragile\n"
 
 let test_on_fail_escalate_pauses () =
   let root = make_temp_root () in
   setup_on_fail_project root ~on_fail:"escalate";
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot proceed" () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x" ~isolated:false ()
-  with
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"fail" ~summary:"cannot proceed" () ];
+  match Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
-  | Ok (run, _) ->
-      Alcotest.(check string) "status" "paused"
-        (Run.string_of_status run.Run.status)
+  | Ok (run, _) -> Alcotest.(check string) "status" "paused" (Run.string_of_status run.Run.status)
 
 let test_on_fail_abort_aborts () =
   let root = make_temp_root () in
   setup_on_fail_project root ~on_fail:"abort";
   Scripted_executor.reset ~outputs:[ handoff_block ~status:"fail" () ];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x" ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"guarded" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
-  | Ok (run, _) ->
-      Alcotest.(check string) "status" "aborted"
-        (Run.string_of_status run.Run.status)
+  | Ok (run, _) -> Alcotest.(check string) "status" "aborted" (Run.string_of_status run.Run.status)
 
 let test_resume_continues_from_paused_step () =
   let root = make_temp_root () in
@@ -1940,13 +1769,11 @@ let test_resume_continues_from_paused_step () =
   with
   | Error message -> Alcotest.fail message
   | Ok (paused_run, _) -> (
-      Alcotest.(check string) "paused" "paused"
-        (Run.string_of_status paused_run.Run.status);
+      Alcotest.(check string) "paused" "paused" (Run.string_of_status paused_run.Run.status);
       Scripted_executor.reset
         ~outputs:
           [
-            handoff_block ~summary:"two done after help" ();
-            handoff_block ~summary:"three done" ();
+            handoff_block ~summary:"two done after help" (); handoff_block ~summary:"three done" ();
           ];
       match
         Scripted_runner.resume_run ~root ~run_id:paused_run.Run.id
@@ -1954,45 +1781,41 @@ let test_resume_continues_from_paused_step () =
       with
       | Error message -> Alcotest.fail message
       | Ok (run, _) -> (
-          Alcotest.(check string) "completed after resume" "completed"
+          Alcotest.(check string)
+            "completed after resume" "completed"
             (Run.string_of_status run.Run.status);
-          Alcotest.(check int) "four steps total" 4
-            (List.length run.Run.steps);
+          Alcotest.(check int) "four steps total" 4 (List.length run.Run.steps);
           match Scripted_executor.prompts () with
           | first_resumed :: second_resumed :: _ ->
-              Alcotest.(check bool) "guidance in first resumed prompt" true
+              Alcotest.(check bool)
+                "guidance in first resumed prompt" true
                 (contains ~affix:"focus on the flaky assertion" first_resumed);
-              Alcotest.(check bool) "escalating handoff threaded" true
+              Alcotest.(check bool)
+                "escalating handoff threaded" true
                 (contains ~affix:"stuck on two" first_resumed);
-              Alcotest.(check bool) "guidance consumed after one step" false
+              Alcotest.(check bool)
+                "guidance consumed after one step" false
                 (contains ~affix:"focus on the flaky assertion" second_resumed)
           | prompts ->
               Alcotest.fail
-                (Printf.sprintf "expected 2 resumed prompts, got %d"
-                   (List.length prompts))))
+                (Printf.sprintf "expected 2 resumed prompts, got %d" (List.length prompts))))
 
 let test_resume_refuses_completed_runs () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   Scripted_executor.reset ~outputs:[];
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      match
-        Scripted_runner.resume_run ~root ~run_id:run.Run.id ~guidance:None ()
-      with
+      match Scripted_runner.resume_run ~root ~run_id:run.Run.id ~guidance:None () with
       | Ok _ -> Alcotest.fail "expected resume of a completed run to fail"
       | Error message ->
-          Alcotest.(check bool) "names the status" true
-            (contains ~affix:"completed" message))
+          Alcotest.(check bool) "names the status" true (contains ~affix:"completed" message))
 
 let test_record_persisted_incrementally () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
   match
     Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
@@ -2002,10 +1825,10 @@ let test_record_persisted_incrementally () =
       match Store.Filesystem.load ~runs_dir ~id:run.Run.id with
       | Error message -> Alcotest.fail message
       | Ok loaded ->
-          Alcotest.(check string) "paused state persisted" "paused"
+          Alcotest.(check string)
+            "paused state persisted" "paused"
             (Run.string_of_status loaded.Run.status);
-          Alcotest.(check int) "position persisted" 0
-            loaded.Run.position.Run.entry_index)
+          Alcotest.(check int) "position persisted" 0 loaded.Run.position.Run.entry_index)
 
 let test_list_workflows_reports_valid_and_invalid () =
   let root = make_temp_root () in
@@ -2029,9 +1852,7 @@ let test_list_workflows_reports_valid_and_invalid () =
       Alcotest.(check (list string)) "valid workflows" [ "hello"; "two" ] names;
       let invalid =
         List.filter_map
-          (function
-            | Project.Unparseable { file; _ } -> Some file
-            | Project.Listed _ -> None)
+          (function Project.Unparseable { file; _ } -> Some file | Project.Listed _ -> None)
           entries
       in
       Alcotest.(check (list string)) "invalid reported" [ "broken.yaml" ] invalid
@@ -2044,13 +1865,12 @@ let test_store_load_hints_version_on_garbage () =
   match Store.Filesystem.load ~runs_dir ~id:"old-record" with
   | Ok _ -> Alcotest.fail "expected a parse failure"
   | Error message ->
-      Alcotest.(check bool) "mentions version" true
+      Alcotest.(check bool)
+        "mentions version" true
         (contains ~affix:"different jig version" message)
 
 let test_last_handoff_picks_latest () =
-  let handoff summary =
-    Some { Handoff.status = Handoff.Pass; artifacts = []; summary }
-  in
+  let handoff summary = Some { Handoff.status = Handoff.Pass; artifacts = []; summary } in
   let step name h =
     {
       Run.skill = name;
@@ -2077,11 +1897,9 @@ let test_last_handoff_picks_latest () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position =
-        { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = None;
-      steps =
-        [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
+      steps = [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
       paused_on_attempt = None;
@@ -2102,8 +1920,8 @@ let run_shell root command =
 let setup_git_project root ~harness =
   setup_project root ~harness;
   run_shell root
-    "git init -q && git config user.email jig@test && git config user.name \
-     jig && git add -A && git commit -qm fixture"
+    "git init -q && git config user.email jig@test && git config user.name jig && git add -A && \
+     git commit -qm fixture"
 
 let escalate_then_touch_harness =
   (* Touches a marker in its cwd, then escalates - proves where steps run
@@ -2111,80 +1929,63 @@ let escalate_then_touch_harness =
   [
     "sh";
     "-c";
-    "touch marker-from-step; printf '```handoff\\nstatus: escalate\\nsummary: \
-     checkpoint\\n```\\n'";
+    "touch marker-from-step; printf '```handoff\\nstatus: escalate\\nsummary: checkpoint\\n```\\n'";
   ]
 
 let test_config_wrapper_prepends () =
-  match
-    Config.of_string "harness:\n  - claude\n  - -p\nwrapper:\n  - srt\n"
-  with
+  match Config.of_string "harness:\n  - claude\n  - -p\nwrapper:\n  - srt\n" with
   | Error message -> Alcotest.fail message
   | Ok config -> (
       match Model_provider.Default.resolve ~config ~skill:"any" ~tier:None with
       | Error message -> Alcotest.fail message
       | Ok command ->
-          Alcotest.(check (list string))
-            "wrapper prepended"
-            [ "srt"; "claude"; "-p" ]
-            command)
+          Alcotest.(check (list string)) "wrapper prepended" [ "srt"; "claude"; "-p" ] command)
 
 let test_isolated_run_uses_worktree_and_resume_reuses_it () =
   let root = make_temp_root () in
   setup_git_project root ~harness:escalate_then_touch_harness;
-  match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"iso"
-      ~isolated:true ()
-  with
+  match Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"iso" ~isolated:true () with
   | Error message -> Alcotest.fail message
   | Ok (paused_run, _) -> (
-      Alcotest.(check string) "paused" "paused"
-        (Run.string_of_status paused_run.Run.status);
+      Alcotest.(check string) "paused" "paused" (Run.string_of_status paused_run.Run.status);
       let workspace =
         match paused_run.Run.workspace with
         | Some path -> path
         | None -> Alcotest.fail "expected an isolated workspace"
       in
-      Alcotest.(check bool) "workspace path has no git-internal segment" false
+      Alcotest.(check bool)
+        "workspace path has no git-internal segment" false
         (contains ~affix:"/.git/" workspace);
       (let sibling =
-         Filename.concat (Filename.dirname root)
-           (Filename.basename root ^ "-worktrees")
+         Filename.concat (Filename.dirname root) (Filename.basename root ^ "-worktrees")
        in
-       Alcotest.(check bool) "workspace lives in the sibling worktrees dir"
-         true
+       Alcotest.(check bool)
+         "workspace lives in the sibling worktrees dir" true
          (String.length workspace > String.length sibling
          && String.sub workspace 0 (String.length sibling) = sibling));
-      Alcotest.(check bool) "worktree survives the pause" true
-        (Sys.file_exists workspace);
-      Alcotest.(check bool) "marker written in the worktree" true
+      Alcotest.(check bool) "worktree survives the pause" true (Sys.file_exists workspace);
+      Alcotest.(check bool)
+        "marker written in the worktree" true
         (Sys.file_exists (Filename.concat workspace "marker-from-step"));
-      Alcotest.(check bool) "original checkout untouched" false
+      Alcotest.(check bool)
+        "original checkout untouched" false
         (Sys.file_exists (Filename.concat root "marker-from-step"));
       (* Make the harness pass now, then resume: same worktree, then cleanup. *)
       write_file
         (Filename.concat root ".jig/config.yaml")
-        "harness:\n  - sh\n  - -c\n  - \"printf \
-         '```handoff\\\\nstatus: pass\\\\n```\\\\n'\"\n";
-      match
-        Runner.Default.resume_run ~root ~run_id:paused_run.Run.id
-          ~guidance:None ()
-      with
+        "harness:\n  - sh\n  - -c\n  - \"printf '```handoff\\\\nstatus: pass\\\\n```\\\\n'\"\n";
+      match Runner.Default.resume_run ~root ~run_id:paused_run.Run.id ~guidance:None () with
       | Error message -> Alcotest.fail message
       | Ok (finished, _) ->
-          Alcotest.(check string) "completed" "completed"
-            (Run.string_of_status finished.Run.status);
-          Alcotest.(check bool) "worktree cleaned up after completion" false
-            (Sys.file_exists workspace))
+          Alcotest.(check string) "completed" "completed" (Run.string_of_status finished.Run.status);
+          Alcotest.(check bool)
+            "worktree cleaned up after completion" false (Sys.file_exists workspace))
 
 let test_concurrent_isolated_runs_do_not_interfere () =
   let root = make_temp_root () in
   setup_git_project root ~harness:escalate_then_touch_harness;
   let start () =
-    match
-      Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"iso"
-        ~isolated:true ()
-    with
+    match Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"iso" ~isolated:true () with
     | Error message -> Alcotest.fail message
     | Ok (run, _) -> run
   in
@@ -2192,25 +1993,19 @@ let test_concurrent_isolated_runs_do_not_interfere () =
   let second = start () in
   Alcotest.(check bool) "distinct run ids" true (first.Run.id <> second.Run.id);
   let workspace run =
-    match run.Run.workspace with
-    | Some path -> path
-    | None -> Alcotest.fail "expected a workspace"
+    match run.Run.workspace with Some path -> path | None -> Alcotest.fail "expected a workspace"
   in
-  Alcotest.(check bool) "distinct worktrees" true
-    (workspace first <> workspace second);
-  Alcotest.(check bool) "both worktrees alive while paused" true
+  Alcotest.(check bool) "distinct worktrees" true (workspace first <> workspace second);
+  Alcotest.(check bool)
+    "both worktrees alive while paused" true
     (Sys.file_exists (workspace first) && Sys.file_exists (workspace second))
 
 let test_resume_honors_recorded_workspace_location () =
   let root = make_temp_root () in
-  setup_git_project root
-    ~harness:[ "sh"; "-c"; "printf '```handoff\\nstatus: pass\\n```\\n'" ];
+  setup_git_project root ~harness:[ "sh"; "-c"; "printf '```handoff\\nstatus: pass\\n```\\n'" ];
   (* A workspace recorded under the pre-relocation layout: still resumable. *)
-  let old_workspace =
-    Filename.concat root ".git/jig-worktrees/legacy-run"
-  in
-  run_shell root
-    ("git worktree add --detach " ^ Filename.quote old_workspace);
+  let old_workspace = Filename.concat root ".git/jig-worktrees/legacy-run" in
+  run_shell root ("git worktree add --detach " ^ Filename.quote old_workspace);
   let legacy_run =
     {
       Run.id = "legacy-run";
@@ -2218,8 +2013,7 @@ let test_resume_honors_recorded_workspace_location () =
       task = "iso";
       status = Run.Paused;
       error = None;
-      position =
-        { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = Some old_workspace;
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
@@ -2229,26 +2023,21 @@ let test_resume_honors_recorded_workspace_location () =
       finished_at = None;
     }
   in
-  (match
-     Store.Filesystem.save ~runs_dir:(Project.runs_dir ~root) legacy_run
-   with
+  (match Store.Filesystem.save ~runs_dir:(Project.runs_dir ~root) legacy_run with
   | Error message -> Alcotest.fail message
   | Ok _ -> ());
-  match
-    Runner.Default.resume_run ~root ~run_id:"legacy-run" ~guidance:None ()
-  with
+  match Runner.Default.resume_run ~root ~run_id:"legacy-run" ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (finished, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status finished.Run.status);
-      Alcotest.(check bool) "legacy worktree cleaned up" false
-        (Sys.file_exists old_workspace)
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status finished.Run.status);
+      Alcotest.(check bool) "legacy worktree cleaned up" false (Sys.file_exists old_workspace)
 
 (* Run visibility *)
 
 (* Snapshots the store from inside the harness call: whatever the executor
    sees is what `jig status` would report while the step is executing. *)
 let probe_runs_dir = ref ""
+
 let probe_seen : Run.t list ref = ref []
 
 module Probe_executor : Executor.S = struct
@@ -2260,31 +2049,23 @@ module Probe_executor : Executor.S = struct
 end
 
 module Probe_runner =
-  Runner.Make (Probe_executor) (Model_provider.Default) (Metering.Noop)
-    (Store.Filesystem)
+  Runner.Make (Probe_executor) (Model_provider.Default) (Metering.Noop) (Store.Filesystem)
 
 let test_run_record_visible_during_first_step () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   probe_runs_dir := Project.runs_dir ~root;
   probe_seen := [];
-  match
-    Probe_runner.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
-      ~isolated:false ()
-  with
+  match Probe_runner.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match !probe_seen with
       | [ run ] ->
-          Alcotest.(check string) "in-flight status" "running"
-            (Run.string_of_status run.Run.status);
-          Alcotest.(check int) "no steps completed yet" 0
-            (List.length run.Run.steps)
+          Alcotest.(check string) "in-flight status" "running" (Run.string_of_status run.Run.status);
+          Alcotest.(check int) "no steps completed yet" 0 (List.length run.Run.steps)
       | runs ->
           Alcotest.fail
-            (Printf.sprintf
-               "expected the in-flight run in the store during step 1, found \
-                %d runs"
+            (Printf.sprintf "expected the in-flight run in the store during step 1, found %d runs"
                (List.length runs)))
 
 let test_on_step_fires_per_step_in_order () =
@@ -2293,9 +2074,7 @@ let test_on_step_fires_per_step_in_order () =
   Scripted_executor.reset
     ~outputs:
       [
-        handoff_block ~summary:"a" ();
-        handoff_block ~summary:"b" ();
-        handoff_block ~summary:"c" ();
+        handoff_block ~summary:"a" (); handoff_block ~summary:"b" (); handoff_block ~summary:"c" ();
       ];
   let seen = ref [] in
   match
@@ -2306,19 +2085,14 @@ let test_on_step_fires_per_step_in_order () =
   | Error message -> Alcotest.fail message
   | Ok _ ->
       Alcotest.(check (list string))
-        "one callback per step, in order"
-        [ "one"; "two"; "three" ]
-        (List.rev !seen)
+        "one callback per step, in order" [ "one"; "two"; "three" ] (List.rev !seen)
 
 let test_list_runs_newest_first () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   Scripted_executor.reset ~outputs:[];
   let run () =
-    match
-      Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-        ~isolated:false ()
-    with
+    match Scripted_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
     | Error message -> Alcotest.fail message
     | Ok (run, _) -> run.Run.id
   in
@@ -2335,8 +2109,7 @@ let test_list_runs_empty_when_none () =
   let root = make_temp_root () in
   match Store.Filesystem.list_runs ~runs_dir:(Project.runs_dir ~root) with
   | Error message -> Alcotest.fail message
-  | Ok { Store.runs; _ } ->
-      Alcotest.(check int) "no runs" 0 (List.length runs)
+  | Ok { Store.runs; _ } -> Alcotest.(check int) "no runs" 0 (List.length runs)
 
 (* Durable store: atomic saves and the per-run lock *)
 
@@ -2347,8 +2120,7 @@ let sample_stored_run ~id ~task =
     task;
     status = Run.Paused;
     error = None;
-    position =
-      { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+    position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
     workspace = None;
     steps = [];
     attempts_in_flight = Run.Step_key_map.empty;
@@ -2368,9 +2140,7 @@ let pid_of_exited_process () =
 let write_lock_file ~runs_dir ~id ~pid ~host =
   write_file
     (Filename.concat runs_dir (id ^ ".lock"))
-    (Printf.sprintf
-       "{\"pid\": %d, \"host\": %S, \"started_at\": \"2026-07-02T12:00:00Z\"}"
-       pid host)
+    (Printf.sprintf "{\"pid\": %d, \"host\": %S, \"started_at\": \"2026-07-02T12:00:00Z\"}" pid host)
 
 let test_save_killed_midway_keeps_a_complete_record () =
   let root = make_temp_root () in
@@ -2378,18 +2148,14 @@ let test_save_killed_midway_keeps_a_complete_record () =
   let id = "killed-writer" in
   (* Large enough that one save spans many writes, so a kill lands mid-save. *)
   let large_task = String.make 4_000_000 'x' in
-  (match
-     Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:"first")
-   with
+  (match Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:"first") with
   | Error message -> Alcotest.fail message
   | Ok _ -> ());
   for attempt = 1 to 15 do
     match Unix.fork () with
     | 0 ->
         let rec save_forever () =
-          ignore
-            (Store.Filesystem.save ~runs_dir
-               (sample_stored_run ~id ~task:large_task));
+          ignore (Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:large_task));
           save_forever ()
         in
         save_forever ()
@@ -2403,17 +2169,14 @@ let test_save_killed_midway_keeps_a_complete_record () =
               "record is one of the complete saves" true
               (loaded.Run.task = "first" || loaded.Run.task = large_task)
         | Error message ->
-            Alcotest.fail
-              (Printf.sprintf "kill %d left a torn record: %s" attempt message))
+            Alcotest.fail (Printf.sprintf "kill %d left a torn record: %s" attempt message))
   done
 
 let test_abandoned_temporary_record_is_ignored_and_cleaned () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
   let id = "with-leftover" in
-  (match
-     Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:"kept")
-   with
+  (match Store.Filesystem.save ~runs_dir (sample_stored_run ~id ~task:"kept") with
   | Error message -> Alcotest.fail message
   | Ok _ -> ());
   let leftover = Filename.concat runs_dir (id ^ ".json.tmp.99999") in
@@ -2424,36 +2187,31 @@ let test_abandoned_temporary_record_is_ignored_and_cleaned () =
       Alcotest.(check (list string))
         "only the complete record is listed" [ id ]
         (List.map (fun run -> run.Run.id) listing.Store.runs);
-      Alcotest.(check int) "the temp file is not a record" 0
+      Alcotest.(check int)
+        "the temp file is not a record" 0
         (List.length listing.Store.unreadable_records));
   match Store.Filesystem.acquire_run_lock ~runs_dir ~id with
   | Error message -> Alcotest.fail message
   | Ok run_lock ->
       Store.Filesystem.release_run_lock run_lock;
-      Alcotest.(check bool) "the lock holder removes the leftover" false
-        (Sys.file_exists leftover)
+      Alcotest.(check bool) "the lock holder removes the leftover" false (Sys.file_exists leftover)
 
 let test_list_runs_skips_an_unreadable_record () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
-  (match
-     Store.Filesystem.save ~runs_dir (sample_stored_run ~id:"good" ~task:"x")
-   with
+  (match Store.Filesystem.save ~runs_dir (sample_stored_run ~id:"good" ~task:"x") with
   | Error message -> Alcotest.fail message
   | Ok _ -> ());
   write_file (Filename.concat runs_dir "broken.json") "{\"id\": 42}";
   match Store.Filesystem.list_runs ~runs_dir with
-  | Error message ->
-      Alcotest.fail ("one bad record failed the list: " ^ message)
+  | Error message -> Alcotest.fail ("one bad record failed the list: " ^ message)
   | Ok listing ->
       Alcotest.(check (list string))
         "the readable run is listed" [ "good" ]
         (List.map (fun run -> run.Run.id) listing.Store.runs);
       Alcotest.(check (list string))
         "the unreadable record is reported" [ "broken" ]
-        (List.map
-           (fun unreadable -> unreadable.Store.id)
-           listing.Store.unreadable_records)
+        (List.map (fun unreadable -> unreadable.Store.id) listing.Store.unreadable_records)
 
 let test_run_lock_refuses_a_second_holder () =
   let root = make_temp_root () in
@@ -2464,11 +2222,9 @@ let test_run_lock_refuses_a_second_holder () =
       (match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"locked" with
       | Ok _ -> Alcotest.fail "expected the second acquire to be refused"
       | Error message ->
-          Alcotest.(check bool) "names the live holder" true
-            (contains
-               ~affix:
-                 (Printf.sprintf "is driven by live pid %d" (Unix.getpid ()))
-               message));
+          Alcotest.(check bool)
+            "names the live holder" true
+            (contains ~affix:(Printf.sprintf "is driven by live pid %d" (Unix.getpid ())) message));
       Store.Filesystem.release_run_lock run_lock;
       match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"locked" with
       | Error message -> Alcotest.fail ("released lock still held: " ^ message)
@@ -2478,32 +2234,28 @@ let test_run_lock_takes_over_a_dead_pid () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
   let dead_pid = pid_of_exited_process () in
-  write_lock_file ~runs_dir ~id:"orphaned" ~pid:dead_pid
-    ~host:(Unix.gethostname ());
+  write_lock_file ~runs_dir ~id:"orphaned" ~pid:dead_pid ~host:(Unix.gethostname ());
   match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"orphaned" with
   | Error message -> Alcotest.fail ("stale lock not taken over: " ^ message)
   | Ok run_lock ->
       let lock_content =
-        In_channel.with_open_text
-          (Filename.concat runs_dir "orphaned.lock")
-          In_channel.input_all
+        In_channel.with_open_text (Filename.concat runs_dir "orphaned.lock") In_channel.input_all
       in
-      Alcotest.(check bool) "the lock now names this process" true
-        (contains
-           ~affix:(Printf.sprintf "\"pid\":%d" (Unix.getpid ()))
-           lock_content);
+      Alcotest.(check bool)
+        "the lock now names this process" true
+        (contains ~affix:(Printf.sprintf "\"pid\":%d" (Unix.getpid ())) lock_content);
       Store.Filesystem.release_run_lock run_lock
 
 let test_run_lock_refuses_a_lock_from_another_host () =
   let root = make_temp_root () in
   let runs_dir = Project.runs_dir ~root in
   let dead_pid = pid_of_exited_process () in
-  write_lock_file ~runs_dir ~id:"remote" ~pid:dead_pid
-    ~host:"another-host.invalid";
+  write_lock_file ~runs_dir ~id:"remote" ~pid:dead_pid ~host:"another-host.invalid";
   match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"remote" with
   | Ok _ -> Alcotest.fail "expected a lock from another host to be refused"
   | Error message ->
-      Alcotest.(check bool) "names the other host" true
+      Alcotest.(check bool)
+        "names the other host" true
         (contains ~affix:"on host another-host.invalid" message)
 
 let test_run_lock_reports_a_malformed_lock_as_an_error () =
@@ -2513,21 +2265,20 @@ let test_run_lock_reports_a_malformed_lock_as_an_error () =
   match Store.Filesystem.acquire_run_lock ~runs_dir ~id:"malformed" with
   | Ok _ -> Alcotest.fail "expected a malformed lock to be refused"
   | Error message ->
-      Alcotest.(check bool) "names the unreadable lock" true
+      Alcotest.(check bool)
+        "names the unreadable lock" true
         (contains ~affix:"has an unreadable lock" message);
-      Alcotest.(check bool) "leaves no candidate file behind" false
+      Alcotest.(check bool)
+        "leaves no candidate file behind" false
         (Sys.file_exists
-           (Filename.concat runs_dir
-              (Printf.sprintf "malformed.lock.%d" (Unix.getpid ()))))
+           (Filename.concat runs_dir (Printf.sprintf "malformed.lock.%d" (Unix.getpid ()))))
 
 let test_resume_refuses_a_run_another_process_drives () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"escalate" ~summary:"early stop" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (paused, _) -> (
@@ -2536,36 +2287,30 @@ let test_resume_refuses_a_run_another_process_drives () =
       | Error message -> Alcotest.fail message
       | Ok run_lock -> (
           Scripted_executor.reset ~outputs:[];
-          (match
-             Scripted_runner.resume_run ~root ~run_id:paused.Run.id
-               ~guidance:None ()
-           with
+          (match Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None () with
           | Ok _ -> Alcotest.fail "expected the resume to be refused"
           | Error message ->
-              Alcotest.(check bool) "says another process drives it" true
+              Alcotest.(check bool)
+                "says another process drives it" true
                 (contains ~affix:"is driven by live pid" message));
-          Alcotest.(check int) "no step executed" 0
-            (List.length (Scripted_executor.prompts ()));
+          Alcotest.(check int) "no step executed" 0 (List.length (Scripted_executor.prompts ()));
           (match Store.Filesystem.load ~runs_dir ~id:paused.Run.id with
           | Error message -> Alcotest.fail message
           | Ok stored ->
-              Alcotest.(check string) "record untouched" "paused"
+              Alcotest.(check string)
+                "record untouched" "paused"
                 (Run.string_of_status stored.Run.status));
           Store.Filesystem.release_run_lock run_lock;
-          Scripted_executor.reset
-            ~outputs:[ handoff_block (); handoff_block () ];
-          match
-            Scripted_runner.resume_run ~root ~run_id:paused.Run.id
-              ~guidance:None ()
-          with
+          Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block () ];
+          match Scripted_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:None () with
           | Error message -> Alcotest.fail message
           | Ok (resumed, _) ->
-              Alcotest.(check string) "resumes once the lock is free"
-                "completed"
+              Alcotest.(check string)
+                "resumes once the lock is free" "completed"
                 (Run.string_of_status resumed.Run.status);
-              Alcotest.(check bool) "lock released after the run" false
-                (Sys.file_exists
-                   (Filename.concat runs_dir (paused.Run.id ^ ".lock")))))
+              Alcotest.(check bool)
+                "lock released after the run" false
+                (Sys.file_exists (Filename.concat runs_dir (paused.Run.id ^ ".lock")))))
 
 (* skill_paths: resolution from external libraries *)
 
@@ -2573,20 +2318,17 @@ let write_config_with_skill_paths root ~skill_paths =
   write_file
     (Filename.concat root ".jig/config.yaml")
     (Printf.sprintf "harness:\n  - irrelevant\nskill_paths:\n%s"
-       (String.concat ""
-          (List.map (fun path -> Printf.sprintf "  - %S\n" path) skill_paths)))
+       (String.concat "" (List.map (fun path -> Printf.sprintf "  - %S\n" path) skill_paths)))
 
 let make_external_library () =
   let library =
     Filename.concat (Filename.get_temp_dir_name ())
-      (Printf.sprintf "jig-library-%d-%d" (Unix.getpid ())
-         (Random.int 1_000_000))
+      (Printf.sprintf "jig-library-%d-%d" (Unix.getpid ()) (Random.int 1_000_000))
   in
   Unix.mkdir library 0o755;
   let dir = Filename.concat library "external-skill" in
   Unix.mkdir dir 0o755;
-  write_file (Filename.concat dir "SKILL.md")
-    "# External skill\n\nThe library version.\n";
+  write_file (Filename.concat dir "SKILL.md") "# External skill\n\nThe library version.\n";
   library
 
 let test_external_skill_resolves_and_runs () =
@@ -2599,16 +2341,15 @@ let test_external_skill_resolves_and_runs () =
     "name: uses-external\nsteps:\n  - skill: external-skill\n";
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"uses-external"
-      ~task:"x" ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"uses-external" ~task:"x" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       match Scripted_executor.prompts () with
       | [ prompt ] ->
-          Alcotest.(check bool) "external skill body used verbatim" true
+          Alcotest.(check bool)
+            "external skill body used verbatim" true
             (contains ~affix:"The library version." prompt)
       | _ -> Alcotest.fail "expected one prompt")
 
@@ -2623,16 +2364,17 @@ let test_repo_skill_shadows_external () =
     "name: uses-external\nsteps:\n  - skill: external-skill\n";
   Scripted_executor.reset ~outputs:[];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"uses-external"
-      ~task:"x" ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"uses-external" ~task:"x" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Scripted_executor.prompts () with
       | [ prompt ] ->
-          Alcotest.(check bool) "repo version wins" true
+          Alcotest.(check bool)
+            "repo version wins" true
             (contains ~affix:"The repo version." prompt);
-          Alcotest.(check bool) "library version shadowed" false
+          Alcotest.(check bool)
+            "library version shadowed" false
             (contains ~affix:"The library version." prompt)
       | _ -> Alcotest.fail "expected one prompt")
 
@@ -2644,16 +2386,11 @@ let test_missing_skill_error_lists_searched_paths () =
   write_file
     (Filename.concat root ".jig/workflows/ghost.yaml")
     "name: ghost\nsteps:\n  - skill: nowhere-to-be-found\n";
-  match
-    Scripted_runner.execute_run ~root ~workflow_name:"ghost" ~task:"x"
-      ~isolated:false ()
-  with
+  match Scripted_runner.execute_run ~root ~workflow_name:"ghost" ~task:"x" ~isolated:false () with
   | Ok _ -> Alcotest.fail "expected a resolution error"
   | Error message ->
-      Alcotest.(check bool) "lists the repo skills dir" true
-        (contains ~affix:".jig/skills" message);
-      Alcotest.(check bool) "lists the external library" true
-        (contains ~affix:library message)
+      Alcotest.(check bool) "lists the repo skills dir" true (contains ~affix:".jig/skills" message);
+      Alcotest.(check bool) "lists the external library" true (contains ~affix:library message)
 
 let test_skill_paths_expand_home () =
   let fake_home = make_temp_root () in
@@ -2661,13 +2398,9 @@ let test_skill_paths_expand_home () =
   Unix.putenv "HOME" fake_home;
   Fun.protect
     ~finally:(fun () ->
-      match original_home with
-      | Some home -> Unix.putenv "HOME" home
-      | None -> ())
+      match original_home with Some home -> Unix.putenv "HOME" home | None -> ())
     (fun () ->
-      match
-        Config.of_string "harness:\n  - x\nskill_paths:\n  - ~/my-skills\n"
-      with
+      match Config.of_string "harness:\n  - x\nskill_paths:\n  - ~/my-skills\n" with
       | Error message -> Alcotest.fail message
       | Ok config ->
           Alcotest.(check (list string))
@@ -2690,14 +2423,15 @@ let test_init_scaffolds_valid_project () =
   match Init.scaffold ~root ~preset:Init.Custom ~skill_paths:[] with
   | Error message -> Alcotest.fail message
   | Ok written -> (
-      Alcotest.(check bool) "several files written" true
-        (List.length written >= 7);
+      Alcotest.(check bool) "several files written" true (List.length written >= 7);
       let jig_dir = Filename.concat root ".jig" in
       match
         Result.bind
-          (Workflow.load
-             ~path:(Filename.concat jig_dir "workflows/bugfix.yaml"))
-          (fun workflow -> Validate.workflow ~workflow_dir:(Filename.concat jig_dir "workflows") ~jig_dir ~skill_paths:[] workflow)
+          (Workflow.load ~path:(Filename.concat jig_dir "workflows/bugfix.yaml"))
+          (fun workflow ->
+            Validate.workflow
+              ~workflow_dir:(Filename.concat jig_dir "workflows")
+              ~jig_dir ~skill_paths:[] workflow)
       with
       | Error message -> Alcotest.fail message
       | Ok () -> ())
@@ -2708,39 +2442,33 @@ let test_init_refuses_existing_jig_dir () =
   match Init.scaffold ~root ~preset:Init.Custom ~skill_paths:[] with
   | Ok _ -> Alcotest.fail "expected init to refuse an existing .jig"
   | Error message ->
-      Alcotest.(check bool) "names the conflict" true
-        (contains ~affix:".jig" message)
+      Alcotest.(check bool) "names the conflict" true (contains ~affix:".jig" message)
 
 let scaffolded_config root =
-  In_channel.with_open_text
-    (Filename.concat root ".jig/config.yaml")
-    In_channel.input_all
+  In_channel.with_open_text (Filename.concat root ".jig/config.yaml") In_channel.input_all
 
 let test_init_claude_preset_is_well_formed () =
   let root = make_bare_temp_dir () in
   match
-    Init.scaffold ~root ~preset:Init.Claude
-      ~skill_paths:[ "/some/library"; "/another/library" ]
+    Init.scaffold ~root ~preset:Init.Claude ~skill_paths:[ "/some/library"; "/another/library" ]
   with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       match Config.of_string (scaffolded_config root) with
       | Error message -> Alcotest.fail message
       | Ok config ->
-          Alcotest.(check string) "harness head" "claude"
-            (List.hd config.Config.harness);
+          Alcotest.(check string) "harness head" "claude" (List.hd config.Config.harness);
           Alcotest.(check string)
             "last element is single-valued (prompt-safe)" "json"
-            (List.nth config.Config.harness
-               (List.length config.Config.harness - 1));
+            (List.nth config.Config.harness (List.length config.Config.harness - 1));
           (let rec denies_worktree_tools = function
              | "--disallowedTools" :: tools :: _ ->
-                 contains ~affix:"EnterWorktree" tools
-                 && contains ~affix:"ExitWorktree" tools
+                 contains ~affix:"EnterWorktree" tools && contains ~affix:"ExitWorktree" tools
              | _ :: rest -> denies_worktree_tools rest
              | [] -> false
            in
-           Alcotest.(check bool) "harness worktree tools denied" true
+           Alcotest.(check bool)
+             "harness worktree tools denied" true
              (denies_worktree_tools config.Config.harness));
           Alcotest.(check (list string))
             "attach reopens the step's session"
@@ -2748,10 +2476,7 @@ let test_init_claude_preset_is_well_formed () =
             config.Config.attach;
           Alcotest.(check (list string))
             "attach_headless collects the handoff"
-            [
-              "claude"; "-p"; "--resume"; "{session_id}"; "--output-format";
-              "json";
-            ]
+            [ "claude"; "-p"; "--resume"; "{session_id}"; "--output-format"; "json" ]
             config.Config.attach_headless;
           Alcotest.(check (list string))
             "skill_paths kept in order"
@@ -2778,12 +2503,8 @@ let test_init_claude_installs_harness_skill () =
   | Ok written ->
       List.iter
         (fun relative_path ->
-          let path =
-            Filename.concat root
-              (Filename.concat ".claude/skills/jig" relative_path)
-          in
-          Alcotest.(check bool)
-            (relative_path ^ " installed") true (Sys.file_exists path);
+          let path = Filename.concat root (Filename.concat ".claude/skills/jig" relative_path) in
+          Alcotest.(check bool) (relative_path ^ " installed") true (Sys.file_exists path);
           Alcotest.(check string)
             (relative_path ^ " matches the embedded source")
             (List.assoc relative_path Harness_skill_data.files)
@@ -2791,9 +2512,7 @@ let test_init_claude_installs_harness_skill () =
         [ "SKILL.md"; "references/scaffolding.md"; "references/authoring.md" ];
       Alcotest.(check bool)
         "written paths report the skill install" true
-        (List.mem
-           (Filename.concat ".claude/skills/jig" "SKILL.md")
-           written)
+        (List.mem (Filename.concat ".claude/skills/jig" "SKILL.md") written)
 
 let test_init_refuses_existing_harness_skill () =
   let root = make_bare_temp_dir () in
@@ -2807,10 +2526,8 @@ let test_init_refuses_existing_harness_skill () =
   match Init.scaffold ~root ~preset:Init.Claude ~skill_paths:[] with
   | Ok _ -> Alcotest.fail "expected init to refuse an existing harness skill"
   | Error message ->
-      Alcotest.(check bool) "names the conflict" true
-        (contains ~affix:".claude" message);
-      Alcotest.(check bool) "wrote nothing" false
-        (Sys.file_exists (Filename.concat root ".jig"))
+      Alcotest.(check bool) "names the conflict" true (contains ~affix:".claude" message);
+      Alcotest.(check bool) "wrote nothing" false (Sys.file_exists (Filename.concat root ".jig"))
 
 let test_init_non_claude_presets_skip_harness_skill () =
   List.iter
@@ -2819,7 +2536,8 @@ let test_init_non_claude_presets_skip_harness_skill () =
       match Init.scaffold ~root ~preset ~skill_paths:[] with
       | Error message -> Alcotest.fail message
       | Ok _ ->
-          Alcotest.(check bool) "no .claude tree" false
+          Alcotest.(check bool)
+            "no .claude tree" false
             (Sys.file_exists (Filename.concat root ".claude")))
     [ Init.Codex; Init.Custom ]
 
@@ -2835,48 +2553,36 @@ let test_init_custom_matches_template () =
 
 (* Metering *)
 
-let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) ?session
-    () =
-  let session_field =
-    match session with
-    | Some id -> [ ("session_id", `String id) ]
-    | None -> []
-  in
+let claude_style_output ?(cost = 0.05) ?(handoff = handoff_block ()) ?session () =
+  let session_field = match session with Some id -> [ ("session_id", `String id) ] | None -> [] in
   Yojson.Safe.to_string
     (`Assoc
        ([
           ("type", `String "result");
           ("result", `String ("all done\n\n" ^ handoff));
           ("total_cost_usd", `Float cost);
-          ( "usage",
-            `Assoc [ ("input_tokens", `Int 900); ("output_tokens", `Int 120) ]
-          );
+          ("usage", `Assoc [ ("input_tokens", `Int 900); ("output_tokens", `Int 120) ]);
         ]
        @ session_field))
 
 let pause_pipeline_at_step_one root =
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ handoff_block ~status:"escalate" ~summary:"stuck on one" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block ~status:"escalate" ~summary:"stuck on one" () ];
   match
-    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
-      ~isolated:false ()
+    Scripted_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> run
 
 let elicited_result stdout = { Executor.exit_code = 0; stdout; stderr = "" }
+
 let attached_reply stdout () = Ok (elicited_result stdout)
 
 let test_continue_attached_pass_drives_the_run () =
   let root = make_temp_root () in
   let paused = pause_pipeline_at_step_one root in
   Scripted_executor.reset
-    ~outputs:
-      [
-        handoff_block ~summary:"two done" ();
-        handoff_block ~summary:"three done" ();
-      ];
+    ~outputs:[ handoff_block ~summary:"two done" (); handoff_block ~summary:"three done" () ];
   match
     Scripted_runner.continue_attached ~root ~run_id:paused.Run.id
       ~collect_handoff:
@@ -2888,22 +2594,20 @@ let test_continue_attached_pass_drives_the_run () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "run drove to completion" "completed"
+      Alcotest.(check string)
+        "run drove to completion" "completed"
         (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "escalated, elicited, then two agent steps" 4
-        (List.length run.Run.steps);
+      Alcotest.(check int) "escalated, elicited, then two agent steps" 4 (List.length run.Run.steps);
       let elicited_step = List.nth run.Run.steps 1 in
-      Alcotest.(check string) "elicited record names the paused skill" "one"
-        elicited_step.Run.skill;
+      Alcotest.(check string) "elicited record names the paused skill" "one" elicited_step.Run.skill;
       Alcotest.(check (option string))
-        "elicited record keeps the session id" (Some "sess-att")
-        elicited_step.Run.session_id;
+        "elicited record keeps the session id" (Some "sess-att") elicited_step.Run.session_id;
       match Scripted_executor.prompts () with
       | first_after :: _ ->
-          Alcotest.(check bool) "elicited handoff threads onward" true
+          Alcotest.(check bool)
+            "elicited handoff threads onward" true
             (contains ~affix:"resolved with the human" first_after)
       | [] -> Alcotest.fail "expected the run to keep driving")
-
 
 let test_continue_attached_pass_advances_the_item_cursor () =
   let root = make_temp_root () in
@@ -2920,22 +2624,20 @@ let test_continue_attached_pass_advances_the_item_cursor () =
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "run drove to completion" "completed"
+      Alcotest.(check string)
+        "run drove to completion" "completed"
         (Run.string_of_status run.Run.status);
       let elicited_step = List.nth run.Run.steps 3 in
-      Alcotest.(check string) "elicited record names the paused skill"
-        "port-one" elicited_step.Run.skill;
+      Alcotest.(check string)
+        "elicited record names the paused skill" "port-one" elicited_step.Run.skill;
       Alcotest.(check (option string))
-        "elicited record carries the item key" (Some "beta")
-        elicited_step.Run.item_key;
+        "elicited record carries the item key" (Some "beta") elicited_step.Run.item_key;
       match Scripted_executor.prompts () with
       | [ only ] ->
           Alcotest.(check bool)
             "automation continued with the item's next step" true
             (contains ~affix:"item 2 of 2 (beta)" only)
-      | prompts ->
-          Alcotest.fail
-            (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
+      | prompts -> Alcotest.fail (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts)))
 
 let test_continue_attached_escalate_stays_paused () =
   let root = make_temp_root () in
@@ -2946,19 +2648,15 @@ let test_continue_attached_escalate_stays_paused () =
       ~collect_handoff:
         (attached_reply
            (claude_style_output
-              ~handoff:
-                (handoff_block ~status:"escalate" ~summary:"still blocked" ())
+              ~handoff:(handoff_block ~status:"escalate" ~summary:"still blocked" ())
               ()))
       ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "run stays paused" "paused"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "the elicited attempt is recorded" 2
-        (List.length run.Run.steps);
-      Alcotest.(check int) "no further harness calls" 0
-        (List.length (Scripted_executor.prompts ()))
+      Alcotest.(check string) "run stays paused" "paused" (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "the elicited attempt is recorded" 2 (List.length run.Run.steps);
+      Alcotest.(check int) "no further harness calls" 0 (List.length (Scripted_executor.prompts ()))
 
 let test_continue_attached_invalid_leaves_run_untouched () =
   let root = make_temp_root () in
@@ -2970,19 +2668,14 @@ let test_continue_attached_invalid_leaves_run_untouched () =
   with
   | Ok _ -> Alcotest.fail "an unparseable elicitation must be an error"
   | Error message -> (
-      Alcotest.(check bool) "error mentions the handoff" true
-        (contains ~affix:"handoff" message);
-      match
-        Store.Filesystem.load
-          ~runs_dir:(Project.runs_dir ~root)
-          ~id:paused.Run.id
-      with
+      Alcotest.(check bool) "error mentions the handoff" true (contains ~affix:"handoff" message);
+      match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:paused.Run.id with
       | Error message -> Alcotest.fail message
       | Ok reloaded ->
-          Alcotest.(check string) "run on disk still paused" "paused"
+          Alcotest.(check string)
+            "run on disk still paused" "paused"
             (Run.string_of_status reloaded.Run.status);
-          Alcotest.(check int) "no record was added" 1
-            (List.length reloaded.Run.steps))
+          Alcotest.(check int) "no record was added" 1 (List.length reloaded.Run.steps))
 
 let test_attach_refuses_before_the_chat_when_another_process_drives () =
   let root = make_temp_root () in
@@ -3003,7 +2696,8 @@ let test_attach_refuses_before_the_chat_when_another_process_drives () =
       (match result with
       | Ok _ -> Alcotest.fail "expected the attach to be refused"
       | Error message ->
-          Alcotest.(check bool) "says another process drives it" true
+          Alcotest.(check bool)
+            "says another process drives it" true
             (contains ~affix:"is driven by live pid" message));
       Alcotest.(check bool) "the chat never opened" false !chat_opened
 
@@ -3012,20 +2706,17 @@ let test_parse_cost_known_and_unknown () =
   Alcotest.(check bool) "cost extracted" true (known = Metering.Cost_usd 0.05);
   Alcotest.(check bool) "usage extracted" true (usage <> None);
   let unknown, no_usage = Metering.parse_cost "plain text with no json" in
-  Alcotest.(check bool) "plain text is unknown" true
-    (unknown = Metering.Unknown_cost);
+  Alcotest.(check bool) "plain text is unknown" true (unknown = Metering.Unknown_cost);
   Alcotest.(check bool) "no usage" true (no_usage = None)
 
 let test_handoff_inside_json_envelope () =
   match Handoff.parse (claude_style_output ()) with
   | Error message -> Alcotest.fail message
   | Ok handoff ->
-      Alcotest.(check string) "status" "pass"
-        (Handoff.string_of_status handoff.Handoff.status)
+      Alcotest.(check string) "status" "pass" (Handoff.string_of_status handoff.Handoff.status)
 
 module Metered_runner =
-  Runner.Make (Scripted_executor) (Model_provider.Default) (Metering.Jsonl)
-    (Store.Filesystem)
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Metering.Jsonl) (Store.Filesystem)
 
 let test_metering_end_to_end () =
   let root = make_temp_root () in
@@ -3038,20 +2729,17 @@ let test_metering_end_to_end () =
         claude_style_output ~cost:0.02 ();
       ];
   match
-    Metered_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build"
-      ~isolated:false ()
+    Metered_runner.execute_run ~root ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       let costs = List.map (fun step -> step.Run.cost) run.Run.steps in
-      Alcotest.(check bool) "per-step costs recorded" true
-        (costs
-        = [ Metering.Cost_usd 0.05; Metering.Unknown_cost; Metering.Cost_usd 0.02 ]);
+      Alcotest.(check bool)
+        "per-step costs recorded" true
+        (costs = [ Metering.Cost_usd 0.05; Metering.Unknown_cost; Metering.Cost_usd 0.02 ]);
       let total, unknown = Run.cost_summary run in
-      Alcotest.(check bool) "total sums known costs" true
-        (abs_float (total -. 0.07) < 1e-9);
+      Alcotest.(check bool) "total sums known costs" true (abs_float (total -. 0.07) < 1e-9);
       Alcotest.(check int) "one step unknown" 1 unknown;
       let metering_lines =
         In_channel.with_open_text
@@ -3060,31 +2748,26 @@ let test_metering_end_to_end () =
         |> String.split_on_char '\n'
         |> List.filter (fun line -> String.trim line <> "")
       in
-      Alcotest.(check int) "one jsonl record per step" 3
-        (List.length metering_lines);
+      Alcotest.(check int) "one jsonl record per step" 3 (List.length metering_lines);
       let second = Yojson.Safe.from_string (List.nth metering_lines 1) in
-      Alcotest.(check string) "unknown is explicit in the log" "unknown"
+      Alcotest.(check string)
+        "unknown is explicit in the log" "unknown"
         Yojson.Safe.Util.(second |> member "cost_usd" |> to_string)
 
 let test_cost_roundtrips_through_store () =
   let root = make_temp_root () in
   setup_three_step_project root;
   Scripted_executor.reset ~outputs:[ claude_style_output ~cost:0.31 () ];
-  match
-    Metered_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-      ~isolated:false ()
-  with
+  match Metered_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      match
-        Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root)
-          ~id:run.Run.id
-      with
+      match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run.Run.id with
       | Error message -> Alcotest.fail message
       | Ok loaded -> (
           match loaded.Run.steps with
           | [ step ] ->
-              Alcotest.(check bool) "cost survives the roundtrip" true
+              Alcotest.(check bool)
+                "cost survives the roundtrip" true
                 (step.Run.cost = Metering.Cost_usd 0.31)
           | _ -> Alcotest.fail "expected one step"))
 
@@ -3102,33 +2785,24 @@ let test_parse_session_id () =
 let test_session_id_roundtrips_through_store () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  Scripted_executor.reset
-    ~outputs:[ claude_style_output ~session:"sess-42" () ];
-  match
-    Metered_runner.execute_run ~root ~workflow_name:"hello" ~task:"x"
-      ~isolated:false ()
-  with
+  Scripted_executor.reset ~outputs:[ claude_style_output ~session:"sess-42" () ];
+  match Metered_runner.execute_run ~root ~workflow_name:"hello" ~task:"x" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      match
-        Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root)
-          ~id:run.Run.id
-      with
+      match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run.Run.id with
       | Error message -> Alcotest.fail message
       | Ok loaded -> (
           match loaded.Run.steps with
           | [ step ] ->
               Alcotest.(check (option string))
-                "session id survives the roundtrip" (Some "sess-42")
-                step.Run.session_id
+                "session id survives the roundtrip" (Some "sess-42") step.Run.session_id
           | _ -> Alcotest.fail "expected one step"))
 
 let test_attach_command_substitution () =
   (match Attach.command ~attach:[] ~session_id:"abc" with
   | Ok _ -> Alcotest.fail "empty attach config must be an error"
   | Error message ->
-      Alcotest.(check bool) "error names the config key" true
-        (contains ~affix:"attach" message));
+      Alcotest.(check bool) "error names the config key" true (contains ~affix:"attach" message));
   match
     Attach.command
       ~attach:[ "claude"; "--resume"; "{session_id}"; "pre-{session_id}-post" ]
@@ -3159,13 +2833,10 @@ let test_run_record_contains_handoffs_in_order () =
       let summaries =
         List.map
           (fun step ->
-            match step.Run.handoff with
-            | Some handoff -> handoff.Handoff.summary
-            | None -> "<none>")
+            match step.Run.handoff with Some handoff -> handoff.Handoff.summary | None -> "<none>")
           run.Run.steps
       in
-      Alcotest.(check (list string))
-        "handoffs in order" [ "alpha"; "beta"; "gamma" ] summaries
+      Alcotest.(check (list string)) "handoffs in order" [ "alpha"; "beta"; "gamma" ] summaries
 
 (* ---- progress renderer (pure) ---- *)
 
@@ -3194,10 +2865,10 @@ let plan_entries () =
 
 let progress_plan () = Progress.init (plan_entries ())
 
-let pos ?for_each entry_index =
-  { Run.entry_index; iterations_used = 0; step_index = 0; for_each }
+let pos ?for_each entry_index = { Run.entry_index; iterations_used = 0; step_index = 0; for_each }
 
 let started ?item_key ?tier skill position = Runner.Step_started { skill; position; item_key; tier }
+
 let finished skill outcome =
   Runner.Step_finished
     {
@@ -3218,7 +2889,11 @@ let finished skill outcome =
       finished_at = "";
     }
 
-let loop_pos ~item_index = pos ~for_each:{ Run.item_index; body_index = 0; items = []; concurrency = 1; items_in_progress = [] } 2
+let loop_pos ~item_index =
+  pos
+    ~for_each:
+      { Run.item_index; body_index = 0; items = []; concurrency = 1; items_in_progress = [] }
+    2
 
 let test_progress_renders_mid_run () =
   let t = progress_plan () in
@@ -3227,7 +2902,8 @@ let test_progress_renders_mid_run () =
   apply (finished "read-issue" Run.Pass);
   apply (started "prepare" (pos 1));
   apply (finished "prepare" Run.Pass);
-  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
+  apply
+    (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
   apply (started ~item_key:"alpha" "a" (loop_pos ~item_index:0));
   apply (finished "a" Run.Pass);
   apply (started ~item_key:"alpha" "b" (loop_pos ~item_index:0));
@@ -3252,7 +2928,8 @@ let test_progress_renders_completed () =
   apply (finished "read-issue" Run.Pass);
   apply (started "prepare" (pos 1));
   apply (finished "prepare" Run.Pass);
-  apply (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
+  apply
+    (Runner.Items_resolved { entry_index = 2; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
   apply (started ~item_key:"alpha" "a" (loop_pos ~item_index:0));
   apply (finished "a" Run.Pass);
   apply (started ~item_key:"alpha" "b" (loop_pos ~item_index:0));
@@ -3266,21 +2943,13 @@ let test_progress_renders_completed () =
   Progress.finalize t;
   Alcotest.(check (list string))
     "all done, items collapsed, no body expansion"
-    [
-      "✓ read-issue";
-      "✓ prepare";
-      "✓ forEach (2/2)";
-      "  ✓ alpha";
-      "  ✓ beta";
-      "✓ report";
-    ]
+    [ "✓ read-issue"; "✓ prepare"; "✓ forEach (2/2)"; "  ✓ alpha"; "  ✓ beta"; "✓ report" ]
     (Progress.render ~working:"@" t)
 
 let test_progress_spinner_cycles () =
   Alcotest.(check string) "first frame" "⠋" (Progress.spinner_frame 0);
   Alcotest.(check string) "mid frame" "⠸" (Progress.spinner_frame 3);
-  Alcotest.(check string) "wraps at length" (Progress.spinner_frame 0)
-    (Progress.spinner_frame 10)
+  Alcotest.(check string) "wraps at length" (Progress.spinner_frame 0) (Progress.spinner_frame 10)
 
 let test_progress_marks_failure () =
   let t = progress_plan () in
@@ -3304,12 +2973,10 @@ let test_command_step_parses () =
       | _ -> Alcotest.fail "expected a single command step")
 
 let test_step_rejects_skill_and_command () =
-  expect_workflow_error ~mentions:"not both"
-    "name: x\nsteps:\n  - skill: a\n    command: b\n"
+  expect_workflow_error ~mentions:"not both" "name: x\nsteps:\n  - skill: a\n    command: b\n"
 
 let test_step_rejects_neither () =
-  expect_workflow_error ~mentions:"skill or command"
-    "name: x\nsteps:\n  - on_fail: escalate\n"
+  expect_workflow_error ~mentions:"skill or command" "name: x\nsteps:\n  - on_fail: escalate\n"
 
 let test_command_step_rejects_with () =
   expect_workflow_error ~mentions:"with belongs"
@@ -3321,8 +2988,7 @@ let setup_command_project root ~yaml =
 
 let run_cmd root =
   Scripted_executor.reset ~outputs:[];
-  Scripted_runner.execute_run ~root ~workflow_name:"cmd" ~task:"t"
-    ~isolated:false ()
+  Scripted_runner.execute_run ~root ~workflow_name:"cmd" ~task:"t" ~isolated:false ()
 
 let test_command_step_passes_and_costs_nothing () =
   let root = make_temp_root () in
@@ -3330,26 +2996,20 @@ let test_command_step_passes_and_costs_nothing () =
   match run_cmd root with
   | Error m -> Alcotest.fail m
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       let step = List.hd run.Run.steps in
       Alcotest.(check int) "exit 0" 0 step.Run.exit_code;
-      Alcotest.(check bool) "metered at $0" true
-        (step.Run.cost = Metering.Cost_usd 0.0);
-      Alcotest.(check int) "no agent was invoked" 0
-        (List.length (Scripted_executor.prompts ()))
+      Alcotest.(check bool) "metered at $0" true (step.Run.cost = Metering.Cost_usd 0.0);
+      Alcotest.(check int) "no agent was invoked" 0 (List.length (Scripted_executor.prompts ()))
 
 let test_command_step_fails_on_nonzero () =
   let root = make_temp_root () in
-  setup_command_project root
-    ~yaml:"name: cmd\nsteps:\n  - command: \"exit 3\"\n";
+  setup_command_project root ~yaml:"name: cmd\nsteps:\n  - command: \"exit 3\"\n";
   match run_cmd root with
   | Error m -> Alcotest.fail m
   | Ok (run, _) ->
-      Alcotest.(check string) "failed" "failed"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "exit code recorded" 3
-        (List.hd run.Run.steps).Run.exit_code
+      Alcotest.(check string) "failed" "failed" (Run.string_of_status run.Run.status);
+      Alcotest.(check int) "exit code recorded" 3 (List.hd run.Run.steps).Run.exit_code
 
 let test_command_step_until_pass_in_retry () =
   let root = make_temp_root () in
@@ -3367,15 +3027,14 @@ let test_command_step_until_pass_in_retry () =
   match run_cmd root with
   | Error m -> Alcotest.fail m
   | Ok (run, _) ->
-      Alcotest.(check string) "completed after the retry" "completed"
+      Alcotest.(check string)
+        "completed after the retry" "completed"
         (Run.string_of_status run.Run.status);
-      Alcotest.(check int) "two attempts recorded" 2
-        (List.length run.Run.steps)
+      Alcotest.(check int) "two attempts recorded" 2 (List.length run.Run.steps)
 
 let test_command_step_interpolates_foreach_item () =
   let root = make_temp_root () in
-  write_file (Filename.concat root ".jig/workflows/items.tsv")
-    "name\nalpha\nbeta\n";
+  write_file (Filename.concat root ".jig/workflows/items.tsv") "name\nalpha\nbeta\n";
   setup_command_project root
     ~yaml:
       "name: cmd\n\
@@ -3388,17 +3047,17 @@ let test_command_step_interpolates_foreach_item () =
   match run_cmd root with
   | Error m -> Alcotest.fail m
   | Ok _ ->
-      Alcotest.(check bool) "alpha command ran with its interpolated name" true
+      Alcotest.(check bool)
+        "alpha command ran with its interpolated name" true
         (Sys.file_exists (Filename.concat root "done-alpha"));
-      Alcotest.(check bool) "beta command ran with its interpolated name" true
+      Alcotest.(check bool)
+        "beta command ran with its interpolated name" true
         (Sys.file_exists (Filename.concat root "done-beta"))
 
 (* ---- tail reader ---- *)
 
 let append_file path text =
-  let channel =
-    open_out_gen [ Open_append; Open_creat ] 0o644 path
-  in
+  let channel = open_out_gen [ Open_append; Open_creat ] 0o644 path in
   output_string channel text;
   close_out channel
 
@@ -3409,8 +3068,7 @@ let test_tail_reads_and_stitches () =
   let tail = Tail.create ~capacity:8 [ path ] in
   Tail.poll tail;
   Alcotest.(check (list string))
-    "complete lines plus the in-progress partial"
-    [ "one"; "two"; "part" ] (Tail.lines tail);
+    "complete lines plus the in-progress partial" [ "one"; "two"; "part" ] (Tail.lines tail);
   append_file path "ial\nthree\n";
   Tail.poll tail;
   Alcotest.(check (list string))
@@ -3424,8 +3082,7 @@ let test_tail_keeps_only_capacity () =
   append_file path "a\nb\nc\nd\n";
   let tail = Tail.create ~capacity:2 [ path ] in
   Tail.poll tail;
-  Alcotest.(check (list string)) "newest lines win" [ "c"; "d" ]
-    (Tail.lines tail)
+  Alcotest.(check (list string)) "newest lines win" [ "c"; "d" ] (Tail.lines tail)
 
 let test_tail_tolerates_missing_file () =
   let tail = Tail.create ~capacity:4 [ "/nonexistent/jig-tail-test" ] in
@@ -3441,52 +3098,41 @@ let test_tail_resets_on_truncation () =
   Sys.remove path;
   append_file path "new\n";
   Tail.poll tail;
-  Alcotest.(check (list string)) "shrunk file re-read from the start"
-    [ "old-line"; "new" ] (Tail.lines tail)
+  Alcotest.(check (list string))
+    "shrunk file re-read from the start" [ "old-line"; "new" ] (Tail.lines tail)
 
 (* ---- sanitize (pure) ---- *)
 
 let test_sanitize_strips_ansi () =
-  Alcotest.(check string) "CSI stripped" "ared"
-    (Sanitize.line "a\027[31mred\027[0m");
-  Alcotest.(check string) "OSC stripped (BEL-terminated)" "x"
-    (Sanitize.line "\027]2;title\007x");
-  Alcotest.(check string) "OSC stripped (ST-terminated)" "x"
-    (Sanitize.line "\027]8;;link\027\\x");
-  Alcotest.(check string) "dangling escape at end of chunk" "a"
-    (Sanitize.line "a\027[3")
+  Alcotest.(check string) "CSI stripped" "ared" (Sanitize.line "a\027[31mred\027[0m");
+  Alcotest.(check string) "OSC stripped (BEL-terminated)" "x" (Sanitize.line "\027]2;title\007x");
+  Alcotest.(check string) "OSC stripped (ST-terminated)" "x" (Sanitize.line "\027]8;;link\027\\x");
+  Alcotest.(check string) "dangling escape at end of chunk" "a" (Sanitize.line "a\027[3")
 
 let test_sanitize_expands_tabs () =
-  Alcotest.(check string) "tab to the next 8-column stop" "a       b"
-    (Sanitize.line "a\tb");
-  Alcotest.(check string) "tab at a stop advances a full stop"
-    "12345678        x"
-    (Sanitize.line "12345678\tx")
+  Alcotest.(check string) "tab to the next 8-column stop" "a       b" (Sanitize.line "a\tb");
+  Alcotest.(check string)
+    "tab at a stop advances a full stop" "12345678        x" (Sanitize.line "12345678\tx")
 
 let test_sanitize_drops_control_chars () =
   Alcotest.(check string) "CR and BEL dropped" "ab" (Sanitize.line "a\rb\007")
 
 let test_sanitize_replaces_wide_and_invalid () =
-  Alcotest.(check string) "CJK becomes placeholders" "??"
-    (Sanitize.line "日本");
-  Alcotest.(check string) "emoji becomes a placeholder" "?"
-    (Sanitize.line "🎉");
-  Alcotest.(check string) "invalid utf-8 becomes a placeholder" "?!"
-    (Sanitize.line "\xff!");
-  Alcotest.(check string) "accented text passes through" "café"
-    (Sanitize.line "café")
+  Alcotest.(check string) "CJK becomes placeholders" "??" (Sanitize.line "日本");
+  Alcotest.(check string) "emoji becomes a placeholder" "?" (Sanitize.line "🎉");
+  Alcotest.(check string) "invalid utf-8 becomes a placeholder" "?!" (Sanitize.line "\xff!");
+  Alcotest.(check string) "accented text passes through" "café" (Sanitize.line "café")
 
 let test_sanitize_width_and_truncate () =
   Alcotest.(check int) "width counts scalars" 3 (Sanitize.width "✓ a");
-  Alcotest.(check string) "truncate by scalars" "abc"
-    (Sanitize.truncate 3 "abcdef");
-  Alcotest.(check string) "truncate respects multibyte boundaries" "✓✓"
-    (Sanitize.truncate 2 "✓✓✓")
+  Alcotest.(check string) "truncate by scalars" "abc" (Sanitize.truncate 3 "abcdef");
+  Alcotest.(check string) "truncate respects multibyte boundaries" "✓✓" (Sanitize.truncate 2 "✓✓✓")
 
 (* ---- run timestamps ---- *)
 
 let test_epoch_of_iso8601 () =
-  Alcotest.(check (option (float 0.001))) "epoch zero" (Some 0.0)
+  Alcotest.(check (option (float 0.001)))
+    "epoch zero" (Some 0.0)
     (Run.epoch_of_iso8601 "1970-01-01T00:00:00Z");
   let diff later earlier =
     match (Run.epoch_of_iso8601 later, Run.epoch_of_iso8601 earlier) with
@@ -3499,7 +3145,8 @@ let test_epoch_of_iso8601 () =
   Alcotest.(check (float 0.001))
     "leap-year february" 172800.0
     (diff "2024-03-01T00:00:00Z" "2024-02-28T00:00:00Z");
-  Alcotest.(check (option (float 0.001))) "garbage is none" None
+  Alcotest.(check (option (float 0.001)))
+    "garbage is none" None
     (Run.epoch_of_iso8601 "not-a-timestamp")
 
 (* ---- progress details (duration + cost) ---- *)
@@ -3529,13 +3176,12 @@ let test_progress_detail_records_duration_and_cost () =
   let apply = Progress.apply t in
   apply (started "read-issue" (pos 0));
   apply
-    (finished_with ~started_at:"2026-01-01T00:00:00Z"
-       ~finished_at:"2026-01-01T00:00:12Z" ~cost:(Metering.Cost_usd 0.08)
-       "read-issue" Run.Pass);
+    (finished_with ~started_at:"2026-01-01T00:00:00Z" ~finished_at:"2026-01-01T00:00:12Z"
+       ~cost:(Metering.Cost_usd 0.08) "read-issue" Run.Pass);
   match Progress.rows t with
   | first :: _ ->
-      Alcotest.(check (option string)) "duration and cost annotated"
-        (Some "12.0s  $0.08") first.Progress.detail
+      Alcotest.(check (option string))
+        "duration and cost annotated" (Some "12.0s  $0.08") first.Progress.detail
   | [] -> Alcotest.fail "expected rows"
 
 let test_progress_detail_survives_item_collapse () =
@@ -3554,23 +3200,39 @@ let test_progress_detail_survives_item_collapse () =
     | Error m -> Alcotest.fail m
   in
   let apply = Progress.apply plan in
-  apply (Runner.Items_resolved { entry_index = 0; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
+  apply
+    (Runner.Items_resolved { entry_index = 0; item_keys = [ "alpha"; "beta" ]; concurrency = 1 });
   apply
     (started ~item_key:"alpha" "work"
-       (pos ~for_each:{ Run.item_index = 0; body_index = 0; items = []; concurrency = 1; items_in_progress = [] } 0));
+       (pos
+          ~for_each:
+            {
+              Run.item_index = 0;
+              body_index = 0;
+              items = [];
+              concurrency = 1;
+              items_in_progress = [];
+            }
+          0));
   apply
-    (finished_with ~started_at:"2026-01-01T00:01:00Z"
-       ~finished_at:"2026-01-01T00:02:02Z" ~cost:Metering.Unknown_cost "work"
-       Run.Pass);
+    (finished_with ~started_at:"2026-01-01T00:01:00Z" ~finished_at:"2026-01-01T00:02:02Z"
+       ~cost:Metering.Unknown_cost "work" Run.Pass);
   apply
     (started ~item_key:"beta" "work"
-       (pos ~for_each:{ Run.item_index = 1; body_index = 0; items = []; concurrency = 1; items_in_progress = [] } 0));
-  let alpha_row =
-    List.find (fun r -> r.Progress.label = "alpha") (Progress.rows plan)
-  in
+       (pos
+          ~for_each:
+            {
+              Run.item_index = 1;
+              body_index = 0;
+              items = [];
+              concurrency = 1;
+              items_in_progress = [];
+            }
+          0));
+  let alpha_row = List.find (fun r -> r.Progress.label = "alpha") (Progress.rows plan) in
   Alcotest.(check (option string))
-    "single-step body's duration carried onto the collapsed item"
-    (Some "1m02s") alpha_row.Progress.detail
+    "single-step body's duration carried onto the collapsed item" (Some "1m02s")
+    alpha_row.Progress.detail
 
 (* ---- restoring progress from a persisted record (jig watch) ---- *)
 
@@ -3631,22 +3293,13 @@ let test_progress_restore_mid_run () =
   in
   Alcotest.(check (list string))
     "finished steps done, resolved items pending"
-    [
-      "✓ read-issue";
-      "✓ prepare";
-      "○ forEach (0/2)";
-      "  ○ alpha";
-      "  ○ beta";
-      "○ report";
-    ]
+    [ "✓ read-issue"; "✓ prepare"; "○ forEach (0/2)"; "  ○ alpha"; "  ○ beta"; "○ report" ]
     (Progress.render ~working:"@" (Progress.restore ~entries:(plan_entries ()) run))
 
 let test_progress_restore_completed_loop_from_records () =
   (* A finished run carries no forEach snapshot; the item keys come back
      from the step records themselves. *)
-  let loop_step skill index key =
-    recorded ~item_index:index ~item_key:key skill
-  in
+  let loop_step skill index key = recorded ~item_index:index ~item_key:key skill in
   let run =
     persisted_run
       ~steps:
@@ -3665,21 +3318,13 @@ let test_progress_restore_completed_loop_from_records () =
   Progress.finalize model;
   Alcotest.(check (list string))
     "everything done, items recovered from records"
-    [
-      "✓ read-issue";
-      "✓ prepare";
-      "✓ forEach (2/2)";
-      "  ✓ alpha";
-      "  ✓ beta";
-      "✓ report";
-    ]
+    [ "✓ read-issue"; "✓ prepare"; "✓ forEach (2/2)"; "  ✓ alpha"; "  ✓ beta"; "✓ report" ]
     (Progress.render ~working:"@" model)
 
 let test_progress_restore_paused_leaf () =
   let run =
     persisted_run
-      ~steps:
-        [ recorded "read-issue"; recorded ~outcome:Run.Escalate "prepare" ]
+      ~steps:[ recorded "read-issue"; recorded ~outcome:Run.Escalate "prepare" ]
       ~status:Run.Paused ~position:(pos 1)
   in
   Alcotest.(check (list string))
@@ -3691,12 +3336,7 @@ let test_progress_restore_retry_repeats_stay_on_entry () =
   (* A retry records the same skills repeatedly; the last outcome wins. *)
   let run =
     persisted_run
-      ~steps:
-        [
-          recorded "read-issue";
-          recorded ~outcome:Run.Fail "prepare";
-          recorded "prepare";
-        ]
+      ~steps:[ recorded "read-issue"; recorded ~outcome:Run.Fail "prepare"; recorded "prepare" ]
       ~status:Run.Running ~position:(pos 2)
   in
   Alcotest.(check (list string))
@@ -3727,56 +3367,45 @@ let test_current_round_trip () =
       Alcotest.(check string) "skill" pointer.Current.skill read_back.Current.skill;
       Alcotest.(check (option string))
         "item key" pointer.Current.item_key read_back.Current.item_key;
-      Alcotest.(check (option string))
-        "tier" pointer.Current.tier read_back.Current.tier;
+      Alcotest.(check (option string)) "tier" pointer.Current.tier read_back.Current.tier;
       Alcotest.(check string)
         "stdout path" pointer.Current.stdout_path read_back.Current.stdout_path;
-      Alcotest.(check string)
-        "started at" pointer.Current.started_at read_back.Current.started_at
+      Alcotest.(check string) "started at" pointer.Current.started_at read_back.Current.started_at
   | _ -> Alcotest.fail "pointer did not read back");
   Current.remove ~runs_dir ~run_id:"r1";
-  Alcotest.(check bool) "gone after remove" true
-    (Current.read ~runs_dir ~run_id:"r1" = [])
+  Alcotest.(check bool) "gone after remove" true (Current.read ~runs_dir ~run_id:"r1" = [])
 
 let test_current_tolerates_absence_and_garbage () =
   let runs_dir = make_temp_root () in
-  Alcotest.(check bool) "absent reads as none" true
-    (Current.read ~runs_dir ~run_id:"missing" = []);
+  Alcotest.(check bool) "absent reads as none" true (Current.read ~runs_dir ~run_id:"missing" = []);
   write_file (Filename.concat runs_dir "broken.current") "{not json";
-  Alcotest.(check bool) "garbage reads as none" true
-    (Current.read ~runs_dir ~run_id:"broken" = []);
+  Alcotest.(check bool) "garbage reads as none" true (Current.read ~runs_dir ~run_id:"broken" = []);
   (* removing what does not exist is a no-op, not a crash *)
   Current.remove ~runs_dir ~run_id:"missing"
 
 let test_current_written_during_step_removed_after () =
   let root = make_temp_root () in
   setup_command_project root
-    ~yaml:
-      "name: cmd\n\
-       steps:\n\
-      \  - command: \"ls .jig/runs | grep -c 'current$' > seen-current\"\n";
+    ~yaml:"name: cmd\nsteps:\n  - command: \"ls .jig/runs | grep -c 'current$' > seen-current\"\n";
   match run_cmd root with
   | Error m -> Alcotest.fail m
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check string)
         "the pointer existed while the step ran" "1"
         (String.trim
-           (In_channel.with_open_text
-              (Filename.concat root "seen-current")
-              In_channel.input_all));
-      Alcotest.(check bool) "and is gone once the run finished" true
-        (Current.read ~runs_dir:(Project.runs_dir ~root) ~run_id:run.Run.id
-        = [])
+           (In_channel.with_open_text (Filename.concat root "seen-current") In_channel.input_all));
+      Alcotest.(check bool)
+        "and is gone once the run finished" true
+        (Current.read ~runs_dir:(Project.runs_dir ~root) ~run_id:run.Run.id = [])
 
 (* ---- box layout (pure) ---- *)
 
 let dashes count = String.concat "" (List.init count (fun _ -> "─"))
+
 let spaces count = String.make count ' '
 
-let box_row indent status label detail : Progress.row =
-  { Progress.indent; status; label; detail }
+let box_row indent status label detail : Progress.row = { Progress.indent; status; label; detail }
 
 let demo_rows =
   [
@@ -3787,8 +3416,8 @@ let demo_rows =
 
 let view_plain ~columns ~height ~state ~log_lines rows =
   List.map Boxes.plain
-    (Boxes.view ~columns ~height ~workflow:"demo.yaml" ~state ~spinner:"@"
-       ~elapsed:(Some "3s") ~log_title:(Some "build") ~log_lines rows)
+    (Boxes.view ~columns ~height ~workflow:"demo.yaml" ~state ~spinner:"@" ~elapsed:(Some "3s")
+       ~log_title:(Some "build") ~log_lines rows)
 
 let test_boxes_render_mid_run_exactly () =
   Alcotest.(check (list string))
@@ -3809,11 +3438,10 @@ let test_boxes_render_mid_run_exactly () =
       "│ PASS ok" ^ spaces 35 ^ " │";
       "╰──── tail of step output " ^ dashes 19 ^ "╯";
     ]
-    (view_plain ~columns:46 ~height:100 ~state:Boxes.Running
-       ~log_lines:[ "hello"; "PASS ok" ] demo_rows)
+    (view_plain ~columns:46 ~height:100 ~state:Boxes.Running ~log_lines:[ "hello"; "PASS ok" ]
+       demo_rows)
 
-let eight_log_lines =
-  List.init 8 (fun index -> Printf.sprintf "line-%d" (index + 1))
+let eight_log_lines = List.init 8 (fun index -> Printf.sprintf "line-%d" (index + 1))
 
 let line_has needle line =
   let rec scan from =
@@ -3825,56 +3453,42 @@ let line_has needle line =
 let test_boxes_degrade_with_height () =
   let contains needle lines = List.exists (line_has needle) lines in
   let tall =
-    view_plain ~columns:46 ~height:25 ~state:Boxes.Running
-      ~log_lines:eight_log_lines demo_rows
+    view_plain ~columns:46 ~height:25 ~state:Boxes.Running ~log_lines:eight_log_lines demo_rows
   in
-  Alcotest.(check bool) "tall terminal keeps connectors" true
-    (contains "│ │" tall);
+  Alcotest.(check bool) "tall terminal keeps connectors" true (contains "│ │" tall);
   let medium =
-    view_plain ~columns:46 ~height:17 ~state:Boxes.Running
-      ~log_lines:eight_log_lines demo_rows
+    view_plain ~columns:46 ~height:17 ~state:Boxes.Running ~log_lines:eight_log_lines demo_rows
   in
-  Alcotest.(check bool) "medium drops connectors" false
-    (contains "│ │" medium);
-  Alcotest.(check bool) "medium still shows the log" true
-    (contains "line-8" medium);
+  Alcotest.(check bool) "medium drops connectors" false (contains "│ │" medium);
+  Alcotest.(check bool) "medium still shows the log" true (contains "line-8" medium);
   let short =
-    view_plain ~columns:46 ~height:14 ~state:Boxes.Running
-      ~log_lines:eight_log_lines demo_rows
+    view_plain ~columns:46 ~height:14 ~state:Boxes.Running ~log_lines:eight_log_lines demo_rows
   in
-  Alcotest.(check bool) "short shrinks the log to the newest lines" true
-    (contains "line-8" short);
-  Alcotest.(check bool) "short drops older log lines" false
-    (contains "line-5" short);
+  Alcotest.(check bool) "short shrinks the log to the newest lines" true (contains "line-8" short);
+  Alcotest.(check bool) "short drops older log lines" false (contains "line-5" short);
   let tiny =
-    view_plain ~columns:46 ~height:10 ~state:Boxes.Running
-      ~log_lines:eight_log_lines demo_rows
+    view_plain ~columns:46 ~height:10 ~state:Boxes.Running ~log_lines:eight_log_lines demo_rows
   in
   Alcotest.(check bool) "tiny hides the log box" false (contains "Log" tiny)
 
 let test_boxes_final_frame_drops_log () =
   let final =
-    view_plain ~columns:46 ~height:100 ~state:Boxes.Passed
-      ~log_lines:eight_log_lines demo_rows
+    view_plain ~columns:46 ~height:100 ~state:Boxes.Passed ~log_lines:eight_log_lines demo_rows
   in
   let starts_with prefix line =
-    String.length line >= String.length prefix
-    && String.sub line 0 (String.length prefix) = prefix
+    String.length line >= String.length prefix && String.sub line 0 (String.length prefix) = prefix
   in
-  Alcotest.(check int) "only the pipeline box remains" 1
+  Alcotest.(check int)
+    "only the pipeline box remains" 1
     (List.length (List.filter (starts_with "╭") final));
-  Alcotest.(check bool) "banner flips to passed" true
-    (List.exists (line_has "passed") final)
+  Alcotest.(check bool) "banner flips to passed" true (List.exists (line_has "passed") final)
 
 let test_boxes_sanitize_hostile_labels () =
-  let rows =
-    [ box_row 0 Progress.Done "printf 'ok\n' && \ttest" None ]
-  in
+  let rows = [ box_row 0 Progress.Done "printf 'ok\n' && \ttest" None ] in
   List.iter
     (fun line ->
       if line <> "" then
-        Alcotest.(check int) "newline/tab in a label cannot break the row" 46
-          (Sanitize.width line))
+        Alcotest.(check int) "newline/tab in a label cannot break the row" 46 (Sanitize.width line))
     (view_plain ~columns:46 ~height:100 ~state:Boxes.Running ~log_lines:[] rows)
 
 let test_boxes_every_line_is_box_width () =
@@ -3886,25 +3500,18 @@ let test_boxes_every_line_is_box_width () =
             Alcotest.(check int)
               (Printf.sprintf "line width at height %d" height)
               46 (Sanitize.width line))
-        (view_plain ~columns:46 ~height ~state:Boxes.Running
-           ~log_lines:eight_log_lines demo_rows))
+        (view_plain ~columns:46 ~height ~state:Boxes.Running ~log_lines:eight_log_lines demo_rows))
     [ 100; 17; 14; 10 ]
 
 let test_boxes_elapsed_lands_on_deepest_working_row () =
   let rows =
-    [
-      box_row 0 Progress.Working "forEach (0/2)" None;
-      box_row 2 Progress.Working "alpha" None;
-    ]
+    [ box_row 0 Progress.Working "forEach (0/2)" None; box_row 2 Progress.Working "alpha" None ]
   in
-  let lines =
-    view_plain ~columns:46 ~height:100 ~state:Boxes.Running ~log_lines:[] rows
-  in
+  let lines = view_plain ~columns:46 ~height:100 ~state:Boxes.Running ~log_lines:[] rows in
   let has_elapsed label =
     List.exists (fun line -> line_has label line && line_has "3s" line) lines
   in
-  Alcotest.(check bool) "item row carries the live elapsed" true
-    (has_elapsed "alpha");
+  Alcotest.(check bool) "item row carries the live elapsed" true (has_elapsed "alpha");
   Alcotest.(check bool) "loop head does not" false (has_elapsed "forEach")
 
 (* Tiers: the map from an abstract step tier to a concrete harness command. *)
@@ -3935,13 +3542,10 @@ let test_config_rejects_non_list_tier () =
   match Config.of_string "harness:\n  - claude\ntiers:\n  mechanical: fast\n" with
   | Ok _ -> Alcotest.fail "a scalar tier command must be rejected"
   | Error message ->
-      Alcotest.(check bool) "names the tier" true
-        (contains ~affix:"mechanical" message)
+      Alcotest.(check bool) "names the tier" true (contains ~affix:"mechanical" message)
 
 let test_workflow_step_tier_parses () =
-  let yaml =
-    "name: hello\nsteps:\n  - skill: say-hi\n    tier: mechanical\n"
-  in
+  let yaml = "name: hello\nsteps:\n  - skill: say-hi\n    tier: mechanical\n" in
   match Workflow.of_string yaml with
   | Error message -> Alcotest.fail message
   | Ok workflow ->
@@ -3950,23 +3554,17 @@ let test_workflow_step_tier_parses () =
         (Workflow.referenced_tiers workflow)
 
 let test_workflow_rejects_tier_on_command_step () =
-  let yaml =
-    "name: hello\nsteps:\n  - command: \"make lint\"\n    tier: mechanical\n"
-  in
+  let yaml = "name: hello\nsteps:\n  - command: \"make lint\"\n    tier: mechanical\n" in
   match Workflow.of_string yaml with
   | Ok _ -> Alcotest.fail "tier on a command step must be rejected"
   | Error message ->
-      Alcotest.(check bool) "explains the restriction" true
-        (contains ~affix:"skill step" message)
+      Alcotest.(check bool) "explains the restriction" true (contains ~affix:"skill step" message)
 
 let test_resolve_tier_selects_mapped_command () =
   match Config.of_string tiered_config_yaml with
   | Error message -> Alcotest.fail message
   | Ok config -> (
-      match
-        Model_provider.Default.resolve ~config ~skill:"any"
-          ~tier:(Some "mechanical")
-      with
+      match Model_provider.Default.resolve ~config ~skill:"any" ~tier:(Some "mechanical") with
       | Error message -> Alcotest.fail message
       | Ok command ->
           Alcotest.(check (list string))
@@ -3978,39 +3576,31 @@ let test_resolve_unmapped_tier_falls_back_to_harness () =
   match Config.of_string tiered_config_yaml with
   | Error message -> Alcotest.fail message
   | Ok config -> (
-      match
-        Model_provider.Default.resolve ~config ~skill:"any"
-          ~tier:(Some "no-such-tier")
-      with
+      match Model_provider.Default.resolve ~config ~skill:"any" ~tier:(Some "no-such-tier") with
       | Error message -> Alcotest.fail message
       | Ok command ->
           Alcotest.(check (list string))
-            "default harness, wrapper intact"
-            [ "srt"; "claude"; "-p" ]
-            command)
+            "default harness, wrapper intact" [ "srt"; "claude"; "-p" ] command)
 
 let parse_skill content =
-  match Skill.parse content with
-  | Ok skill -> skill
-  | Error message -> Alcotest.fail message
+  match Skill.parse content with Ok skill -> skill | Error message -> Alcotest.fail message
 
 let test_skill_frontmatter_tier_and_body () =
   let skill =
-    parse_skill
-      "---\nname: run-tests\ntier: mechanical\non_interrupt: rerun\n---\n# Run tests\n"
+    parse_skill "---\nname: run-tests\ntier: mechanical\non_interrupt: rerun\n---\n# Run tests\n"
   in
-  Alcotest.(check (option string))
-    "tier read from frontmatter" (Some "mechanical") skill.Skill.tier;
-  Alcotest.(check bool) "on_interrupt read from frontmatter" true
+  Alcotest.(check (option string)) "tier read from frontmatter" (Some "mechanical") skill.Skill.tier;
+  Alcotest.(check bool)
+    "on_interrupt read from frontmatter" true
     (skill.Skill.on_interrupt = Skill.Rerun);
-  Alcotest.(check string)
-    "frontmatter stripped from the body" "# Run tests\n" skill.Skill.body
+  Alcotest.(check string) "frontmatter stripped from the body" "# Run tests\n" skill.Skill.body
 
 let test_skill_without_frontmatter_is_untouched () =
   let content = "# Say hi\n\nGreet the user.\n" in
   let skill = parse_skill content in
   Alcotest.(check (option string)) "no tier" None skill.Skill.tier;
-  Alcotest.(check bool) "on_interrupt defaults to recover" true
+  Alcotest.(check bool)
+    "on_interrupt defaults to recover" true
     (skill.Skill.on_interrupt = Skill.Recover);
   Alcotest.(check string) "body byte-for-byte" content skill.Skill.body
 
@@ -4024,8 +3614,7 @@ module Capturing_executor : Executor.S = struct
 end
 
 module Capturing_runner =
-  Runner.Make (Capturing_executor) (Model_provider.Default) (Metering.Noop)
-    (Store.Filesystem)
+  Runner.Make (Capturing_executor) (Model_provider.Default) (Metering.Noop) (Store.Filesystem)
 
 (* Step tier wins over the skill's own; a skill's frontmatter tier applies
    when the step is silent; no tier anywhere means the default harness. *)
@@ -4051,10 +3640,7 @@ let test_tier_precedence_step_over_skill_over_default () =
   add_skill root "judge" "# Judge\n";
   add_skill root "check" "---\ntier: mechanical\n---\n# Check\n";
   capture_commands := [];
-  match
-    Capturing_runner.execute_run ~root ~workflow_name:"tiered" ~task:"t"
-      ~isolated:false ()
-  with
+  match Capturing_runner.execute_run ~root ~workflow_name:"tiered" ~task:"t" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
       Alcotest.(check (list (list string)))
@@ -4089,9 +3675,7 @@ let test_step_record_json_round_trips_tier () =
   in
   match Run.step_of_json json with
   | Error message -> Alcotest.fail message
-  | Ok step ->
-      Alcotest.(check (option string))
-        "tier survives" (Some "mechanical") step.Run.tier
+  | Ok step -> Alcotest.(check (option string)) "tier survives" (Some "mechanical") step.Run.tier
 
 let tiered_step ~skill ~tier ~cost =
   {
@@ -4120,18 +3704,14 @@ let test_cost_by_tier_groups_in_first_seen_order () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position =
-        { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = None;
       steps =
         [
-          tiered_step ~skill:"diagnose" ~tier:None
-            ~cost:(Metering.Cost_usd 1.20);
-          tiered_step ~skill:"run-tests" ~tier:(Some "mechanical")
-            ~cost:(Metering.Cost_usd 0.03);
+          tiered_step ~skill:"diagnose" ~tier:None ~cost:(Metering.Cost_usd 1.20);
+          tiered_step ~skill:"run-tests" ~tier:(Some "mechanical") ~cost:(Metering.Cost_usd 0.03);
           tiered_step ~skill:"fix" ~tier:None ~cost:Metering.Unknown_cost;
-          tiered_step ~skill:"open-pr" ~tier:(Some "mechanical")
-            ~cost:(Metering.Cost_usd 0.02);
+          tiered_step ~skill:"open-pr" ~tier:(Some "mechanical") ~cost:(Metering.Cost_usd 0.02);
         ];
       attempts_in_flight = Run.Step_key_map.empty;
       interrupted_attempts = [];
@@ -4144,18 +3724,14 @@ let test_cost_by_tier_groups_in_first_seen_order () =
   | [ (None, default_total, 2, 1); (Some "mechanical", cheap_total, 2, 0) ] ->
       Alcotest.(check (float 0.0001)) "default tier total" 1.20 default_total;
       Alcotest.(check (float 0.0001)) "mechanical total" 0.05 cheap_total
-  | other ->
-      Alcotest.fail
-        (Printf.sprintf "unexpected grouping of %d tiers" (List.length other))
+  | other -> Alcotest.fail (Printf.sprintf "unexpected grouping of %d tiers" (List.length other))
 
 let test_step_detail_includes_tier () =
   let detail =
     Progress.detail_of_record
-      (tiered_step ~skill:"run-tests" ~tier:(Some "mechanical")
-         ~cost:(Metering.Cost_usd 0.31))
+      (tiered_step ~skill:"run-tests" ~tier:(Some "mechanical") ~cost:(Metering.Cost_usd 0.31))
   in
-  Alcotest.(check (option string))
-    "duration, cost, tier" (Some "1m30s  $0.31  mechanical") detail
+  Alcotest.(check (option string)) "duration, cost, tier" (Some "1m30s  $0.31  mechanical") detail
 
 let test_validate_warns_on_unmapped_tier () =
   let root = make_temp_root () in
@@ -4165,65 +3741,52 @@ let test_validate_warns_on_unmapped_tier () =
     "name: tiered\nsteps:\n  - skill: check\n    tier: mechnical\n";
   add_skill root "check" "---\ntier: budget\n---\n# Check\n";
   let workflow =
-    match
-      Workflow.load ~path:(Filename.concat root ".jig/workflows/tiered.yaml")
-    with
+    match Workflow.load ~path:(Filename.concat root ".jig/workflows/tiered.yaml") with
     | Ok workflow -> workflow
     | Error message -> Alcotest.fail message
   in
-  let warnings ~tiers =
-    Validate.tier_warnings ~jig_dir ~skill_paths:[] ~tiers workflow
-  in
+  let warnings ~tiers = Validate.tier_warnings ~jig_dir ~skill_paths:[] ~tiers workflow in
   Alcotest.(check int)
     "both the typo'd step tier and the skill tier warn" 2
     (List.length (warnings ~tiers:(Some [ ("mechanical", [ "cheap" ]) ])));
   Alcotest.(check int)
     "mapped tiers stay quiet" 0
-    (List.length
-       (warnings
-          ~tiers:(Some [ ("mechnical", [ "cheap" ]); ("budget", [ "cheap" ]) ])));
-  Alcotest.(check int)
-    "no config, nothing to check" 0
-    (List.length (warnings ~tiers:None))
+    (List.length (warnings ~tiers:(Some [ ("mechnical", [ "cheap" ]); ("budget", [ "cheap" ]) ])));
+  Alcotest.(check int) "no config, nothing to check" 0 (List.length (warnings ~tiers:None))
 
 (* Field guide: .jig/FIELDGUIDE.md read from the workspace per step,
    injected into the prompt; the file's existence is the opt-in. *)
 
-let step_stdout (run : Run.t) index =
-  (List.nth run.Run.steps index).Run.stdout
+let step_stdout (run : Run.t) index = (List.nth run.Run.steps index).Run.stdout
 
 let test_field_guide_injected_when_present () =
   let root = make_temp_root () in
   setup_project root ~harness:passing_harness;
-  write_file
-    (Filename.concat root ".jig/FIELDGUIDE.md")
-    "- the test suite needs REDIS_URL set\n";
+  write_file (Filename.concat root ".jig/FIELDGUIDE.md") "- the test suite needs REDIS_URL set\n";
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
-      ~isolated:false ()
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
       let prompt = step_stdout run 0 in
-      Alcotest.(check bool) "guide content is in the prompt" true
+      Alcotest.(check bool)
+        "guide content is in the prompt" true
         (contains ~affix:"the test suite needs REDIS_URL set" prompt);
-      Alcotest.(check bool) "the append instruction is in the prompt" true
+      Alcotest.(check bool)
+        "the append instruction is in the prompt" true
         (contains ~affix:"append it to .jig/FIELDGUIDE.md" prompt)
 
 let test_field_guide_absent_means_silent () =
   let root = make_temp_root () in
   setup_project root ~harness:passing_harness;
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
-      ~isolated:false ()
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
       let prompt = step_stdout run 0 in
-      Alcotest.(check bool) "no guide section" false
-        (contains ~affix:"Field guide" prompt);
-      Alcotest.(check bool) "no append instruction" false
-        (contains ~affix:"FIELDGUIDE.md" prompt)
+      Alcotest.(check bool) "no guide section" false (contains ~affix:"Field guide" prompt);
+      Alcotest.(check bool) "no append instruction" false (contains ~affix:"FIELDGUIDE.md" prompt)
 
 (* An empty guide file still opts in: the agent is invited to write the
    first entry, but no empty section pads the prompt. *)
@@ -4232,15 +3795,16 @@ let test_field_guide_empty_file_enables_instruction_only () =
   setup_project root ~harness:passing_harness;
   write_file (Filename.concat root ".jig/FIELDGUIDE.md") "";
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
-      ~isolated:false ()
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
       let prompt = step_stdout run 0 in
-      Alcotest.(check bool) "no guide section" false
+      Alcotest.(check bool)
+        "no guide section" false
         (contains ~affix:"Field guide (repo knowledge" prompt);
-      Alcotest.(check bool) "append instruction present" true
+      Alcotest.(check bool)
+        "append instruction present" true
         (contains ~affix:"append it to .jig/FIELDGUIDE.md" prompt)
 
 (* Stigmergy within one run: step one writes the guide, step two reads it. *)
@@ -4251,22 +3815,23 @@ let test_field_guide_append_reaches_next_step () =
       [
         "sh";
         "-c";
-        "echo \"$0\"; echo '- learned by step one' >> .jig/FIELDGUIDE.md; \
-         printf '```handoff\\nstatus: pass\\n```\\n'";
+        "echo \"$0\"; echo '- learned by step one' >> .jig/FIELDGUIDE.md; printf \
+         '```handoff\\nstatus: pass\\n```\\n'";
       ];
   write_file (Filename.concat root ".jig/FIELDGUIDE.md") "";
   write_file
     (Filename.concat root ".jig/workflows/hello.yaml")
     "name: hello\nsteps:\n  - skill: say-hi\n  - skill: say-hi\n";
   match
-    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi"
-      ~isolated:false ()
+    Runner.Default.execute_run ~root ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check bool) "step one did not see the entry" false
+      Alcotest.(check bool)
+        "step one did not see the entry" false
         (contains ~affix:"learned by step one" (step_stdout run 0));
-      Alcotest.(check bool) "step two did" true
+      Alcotest.(check bool)
+        "step two did" true
         (contains ~affix:"learned by step one" (step_stdout run 1))
 
 (* Telemetry *)
@@ -4275,20 +3840,17 @@ let test_subprocess_environment_reaches_only_the_child () =
   Unix.putenv "JIG_TEST_OVERRIDDEN" "parent";
   match
     Subprocess.run
-      ~environment:
-        [ ("JIG_TEST_OVERRIDDEN", "child"); ("JIG_TEST_ADDED", "added") ]
-      ~argv:
-        [ "sh"; "-c"; "printf '%s %s' \"$JIG_TEST_OVERRIDDEN\" \"$JIG_TEST_ADDED\"" ]
+      ~environment:[ ("JIG_TEST_OVERRIDDEN", "child"); ("JIG_TEST_ADDED", "added") ]
+      ~argv:[ "sh"; "-c"; "printf '%s %s' \"$JIG_TEST_OVERRIDDEN\" \"$JIG_TEST_ADDED\"" ]
       ()
   with
   | Error message -> Alcotest.fail message
   | Ok outcome ->
-      Alcotest.(check string) "child sees the overrides" "child added"
-        outcome.Subprocess.stdout;
-      Alcotest.(check (option string)) "parent keeps its value" (Some "parent")
+      Alcotest.(check string) "child sees the overrides" "child added" outcome.Subprocess.stdout;
+      Alcotest.(check (option string))
+        "parent keeps its value" (Some "parent")
         (Sys.getenv_opt "JIG_TEST_OVERRIDDEN");
-      Alcotest.(check (option string)) "parent gains nothing" None
-        (Sys.getenv_opt "JIG_TEST_ADDED")
+      Alcotest.(check (option string)) "parent gains nothing" None (Sys.getenv_opt "JIG_TEST_ADDED")
 
 (* Attempts *)
 
@@ -4321,8 +3883,7 @@ let write_harness_config root harness =
   write_file
     (Filename.concat root ".jig/config.yaml")
     (Printf.sprintf "harness:\n%s"
-       (String.concat ""
-          (List.map (fun part -> Printf.sprintf "  - %S\n" part) harness)))
+       (String.concat "" (List.map (fun part -> Printf.sprintf "  - %S\n" part) harness)))
 
 (* The child must never return into the test runner. *)
 let in_child_process action =
@@ -4359,106 +3920,90 @@ let test_killed_step_leaves_its_attempt_in_flight () =
   let first_environment = Filename.concat root "first-environment" in
   (* $PPID of the harness is the jig process driving the step. *)
   setup_project root
-    ~harness:
-      (environment_reporting_harness ~path:first_environment
-         ~then_run:"kill -9 $PPID");
+    ~harness:(environment_reporting_harness ~path:first_environment ~then_run:"kill -9 $PPID");
   let status =
     in_child_process (fun () ->
         ignore
-          (Runner.Default.execute_run ~run_id:"killed-run" ~root
-             ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()))
+          (Runner.Default.execute_run ~run_id:"killed-run" ~root ~workflow_name:"hello"
+             ~task:"say hi" ~isolated:false ()))
   in
-  Alcotest.(check bool) "the jig process was killed" true
-    (status = Unix.WSIGNALED Sys.sigkill);
+  Alcotest.(check bool) "the jig process was killed" true (status = Unix.WSIGNALED Sys.sigkill);
   match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"killed-run" with
   | Error message -> Alcotest.fail message
   | Ok run -> (
       Alcotest.(check int) "no step finished" 0 (List.length run.Run.steps);
       match Run.Step_key_map.bindings run.Run.attempts_in_flight with
       | [ (step_key, attempt) ] ->
-          Alcotest.(check string) "the key names the step's place"
-            "killed-run/e0/r0/s0" step_key;
-          Alcotest.(check string) "first attempt of the key"
-            "killed-run/e0/r0/s0#1" attempt.Run.attempt_id;
-          Alcotest.(check string) "the attempt names its skill" "say-hi"
-            attempt.Run.skill;
-          Alcotest.(check bool) "the child pid is recorded" true
-            (attempt.Run.child_pid <> None);
-          Alcotest.(check string) "the harness saw the same key and id"
-            "killed-run/e0/r0/s0 killed-run/e0/r0/s0#1"
+          Alcotest.(check string) "the key names the step's place" "killed-run/e0/r0/s0" step_key;
+          Alcotest.(check string)
+            "first attempt of the key" "killed-run/e0/r0/s0#1" attempt.Run.attempt_id;
+          Alcotest.(check string) "the attempt names its skill" "say-hi" attempt.Run.skill;
+          Alcotest.(check bool) "the child pid is recorded" true (attempt.Run.child_pid <> None);
+          Alcotest.(check string)
+            "the harness saw the same key and id" "killed-run/e0/r0/s0 killed-run/e0/r0/s0#1"
             (read_text first_environment)
       | bindings ->
           Alcotest.fail
-            (Printf.sprintf "expected one attempt in flight, found %d"
-               (List.length bindings)))
+            (Printf.sprintf "expected one attempt in flight, found %d" (List.length bindings)))
 
 let test_resume_records_the_interrupted_attempt_and_meters_each_once () =
   let root = make_temp_root () in
   setup_project root
     ~harness:
-      (environment_reporting_harness
-         ~path:(Filename.concat root "unused")
-         ~then_run:"kill -9 $PPID");
+      (environment_reporting_harness ~path:(Filename.concat root "unused") ~then_run:"kill -9 $PPID");
   ignore
     (in_child_process (fun () ->
          ignore
-           (Runner.Default.execute_run ~run_id:"resumed-run" ~root
-              ~workflow_name:"hello" ~task:"say hi" ~isolated:false ())));
+           (Runner.Default.execute_run ~run_id:"resumed-run" ~root ~workflow_name:"hello"
+              ~task:"say hi" ~isolated:false ())));
   wait_for_in_flight_children root ~run_id:"resumed-run";
   let resume_with ~then_run =
     let environment_path = Filename.concat root "resume-environment" in
-    write_harness_config root
-      (environment_reporting_harness ~path:environment_path ~then_run);
-    let result =
-      Runner.Default.resume_run ~root ~run_id:"resumed-run" ~guidance:None ()
-    in
+    write_harness_config root (environment_reporting_harness ~path:environment_path ~then_run);
+    let result = Runner.Default.resume_run ~root ~run_id:"resumed-run" ~guidance:None () in
     (result, read_text environment_path)
   in
   (* The first resume pauses, so a second resume replays the reconciliation. *)
   (match resume_with ~then_run:"printf '```handoff\\nstatus: escalate\\n```\\n'" with
   | Error message, _ -> Alcotest.fail message
   | Ok (run, _), environment ->
-      Alcotest.(check string) "paused" "paused"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check string) "the re-run keeps the key, with a new attempt"
-        "resumed-run/e0/r0/s0 resumed-run/e0/r0/s0#2" environment);
+      Alcotest.(check string) "paused" "paused" (Run.string_of_status run.Run.status);
+      Alcotest.(check string)
+        "the re-run keeps the key, with a new attempt" "resumed-run/e0/r0/s0 resumed-run/e0/r0/s0#2"
+        environment);
   match resume_with ~then_run:pass_handoff_command with
   | Error message, _ -> Alcotest.fail message
   | Ok (run, _), environment ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check string) "third attempt of the same key"
-        "resumed-run/e0/r0/s0 resumed-run/e0/r0/s0#3" environment;
-      Alcotest.(check (list string)) "the interrupted attempt is recorded"
-        [ "resumed-run/e0/r0/s0#1" ]
-        (List.map
-           (fun attempt -> attempt.Run.attempt_id)
-           run.Run.interrupted_attempts);
-      Alcotest.(check bool) "nothing is left in flight" true
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+      Alcotest.(check string)
+        "third attempt of the same key" "resumed-run/e0/r0/s0 resumed-run/e0/r0/s0#3" environment;
+      Alcotest.(check (list string))
+        "the interrupted attempt is recorded" [ "resumed-run/e0/r0/s0#1" ]
+        (List.map (fun attempt -> attempt.Run.attempt_id) run.Run.interrupted_attempts);
+      Alcotest.(check bool)
+        "nothing is left in flight" true
         (Run.Step_key_map.is_empty run.Run.attempts_in_flight);
-      Alcotest.(check (list string)) "exactly one event per attempt"
-        [
-          "resumed-run/e0/r0/s0#1";
-          "resumed-run/e0/r0/s0#2";
-          "resumed-run/e0/r0/s0#3";
-        ]
+      Alcotest.(check (list string))
+        "exactly one event per attempt"
+        [ "resumed-run/e0/r0/s0#1"; "resumed-run/e0/r0/s0#2"; "resumed-run/e0/r0/s0#3" ]
         (metered_attempt_ids root);
       let interrupted_event = List.hd (metering_lines root) in
-      Alcotest.(check string) "an interrupted attempt costs unknown, not zero"
-        "unknown"
+      Alcotest.(check string)
+        "an interrupted attempt costs unknown, not zero" "unknown"
         Yojson.Safe.Util.(interrupted_event |> member "cost_usd" |> to_string);
-      Alcotest.(check bool) "the event says it was interrupted" true
+      Alcotest.(check bool)
+        "the event says it was interrupted" true
         Yojson.Safe.Util.(interrupted_event |> member "interrupted" |> to_bool)
 
 (* Dies exactly between the step save and the metering append. *)
 module Crashing_metering : Metering.S = struct
   let record ~runs_dir:_ ~event:_ = Unix._exit 3
+
   let recorded_attempt_ids ~runs_dir:_ ~run_id:_ = Ok []
 end
 
 module Crashing_metering_runner =
-  Runner.Make (Executor.Local) (Model_provider.Default) (Crashing_metering)
-    (Store.Filesystem)
+  Runner.Make (Executor.Local) (Model_provider.Default) (Crashing_metering) (Store.Filesystem)
 
 let test_resume_meters_a_step_saved_before_a_crash () =
   let root = make_temp_root () in
@@ -4466,24 +4011,19 @@ let test_resume_meters_a_step_saved_before_a_crash () =
   ignore
     (in_child_process (fun () ->
          ignore
-           (Crashing_metering_runner.execute_run ~run_id:"saved-run" ~root
-              ~workflow_name:"hello" ~task:"say hi" ~isolated:false ())));
-  (match
-     Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"saved-run"
-   with
+           (Crashing_metering_runner.execute_run ~run_id:"saved-run" ~root ~workflow_name:"hello"
+              ~task:"say hi" ~isolated:false ())));
+  (match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"saved-run" with
   | Error message -> Alcotest.fail message
   | Ok run ->
       Alcotest.(check int) "the step was saved" 1 (List.length run.Run.steps);
-      Alcotest.(check (list string)) "but not metered" []
-        (metered_attempt_ids root));
+      Alcotest.(check (list string)) "but not metered" [] (metered_attempt_ids root));
   match Runner.Default.resume_run ~root ~run_id:"saved-run" ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check (list string))
-        "the saved attempt is metered once and does not run again"
-        [ "saved-run/e0/r0/s0#1" ]
+        "the saved attempt is metered once and does not run again" [ "saved-run/e0/r0/s0#1" ]
         (metered_attempt_ids root)
 
 (* Resume inside a retry group *)
@@ -4491,9 +4031,7 @@ let test_resume_meters_a_step_saved_before_a_crash () =
 let step_keys run =
   List.map
     (fun step ->
-      match step.Run.attempt with
-      | Some attempt -> attempt.Run.step_key
-      | None -> "no attempt")
+      match step.Run.attempt with Some attempt -> attempt.Run.step_key | None -> "no attempt")
     run.Run.steps
 
 let test_resume_continues_a_retry_group_at_the_paused_step () =
@@ -4506,29 +4044,23 @@ let test_resume_continues_a_retry_group_at_the_paused_step () =
         handoff_block ~status:"escalate" ~summary:"need a human" ();
       ];
   match
-    Scripted_runner.execute_run ~run_id:"group" ~root ~workflow_name:"fixloop"
-      ~task:"fix it" ~isolated:false ()
+    Scripted_runner.execute_run ~run_id:"group" ~root ~workflow_name:"fixloop" ~task:"fix it"
+      ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (paused, _) -> (
-      Alcotest.(check string) "paused" "paused"
-        (Run.string_of_status paused.Run.status);
-      Alcotest.(check int) "paused at the second step of the group" 1
-        paused.Run.position.Run.step_index;
+      Alcotest.(check string) "paused" "paused" (Run.string_of_status paused.Run.status);
+      Alcotest.(check int)
+        "paused at the second step of the group" 1 paused.Run.position.Run.step_index;
       Scripted_executor.reset
         ~outputs:
           [
-            handoff_block ~status:"fail" ~summary:"tests red" ();
-            handoff_block ();
-            handoff_block ();
+            handoff_block ~status:"fail" ~summary:"tests red" (); handoff_block (); handoff_block ();
           ];
-      match
-        Scripted_runner.resume_run ~root ~run_id:"group" ~guidance:None ()
-      with
+      match Scripted_runner.resume_run ~root ~run_id:"group" ~guidance:None () with
       | Error message -> Alcotest.fail message
       | Ok (run, _) -> (
-          Alcotest.(check string) "completed" "completed"
-            (Run.string_of_status run.Run.status);
+          Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
           Alcotest.(check (list string))
             "the resume re-enters at s1; the next iteration starts at s0"
             [
@@ -4541,9 +4073,11 @@ let test_resume_continues_a_retry_group_at_the_paused_step () =
             (step_keys run);
           match Scripted_executor.prompts () with
           | first :: _ ->
-              Alcotest.(check bool) "the first resumed step is run-tests" true
+              Alcotest.(check bool)
+                "the first resumed step is run-tests" true
                 (contains ~affix:"# run-tests" first);
-              Alcotest.(check bool) "it is not implement-fix" false
+              Alcotest.(check bool)
+                "it is not implement-fix" false
                 (contains ~affix:"# implement-fix" first)
           | [] -> Alcotest.fail "expected the resume to execute steps"))
 
@@ -4559,19 +4093,16 @@ let test_resume_continues_a_retry_group_in_a_for_each_item () =
         handoff_block ~status:"escalate" ~summary:"stuck on beta" ();
       ];
   match
-    Scripted_runner.execute_run ~run_id:"fanned" ~root ~workflow_name:"fanout"
-      ~task:"port" ~isolated:false ()
+    Scripted_runner.execute_run ~run_id:"fanned" ~root ~workflow_name:"fanout" ~task:"port"
+      ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
       Scripted_executor.reset ~outputs:[ handoff_block () ];
-      match
-        Scripted_runner.resume_run ~root ~run_id:"fanned" ~guidance:None ()
-      with
+      match Scripted_runner.resume_run ~root ~run_id:"fanned" ~guidance:None () with
       | Error message -> Alcotest.fail message
       | Ok (run, _) -> (
-          Alcotest.(check string) "completed" "completed"
-            (Run.string_of_status run.Run.status);
+          Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
           Alcotest.(check (list string))
             "only the paused step of item 2 runs again"
             [
@@ -4584,23 +4115,22 @@ let test_resume_continues_a_retry_group_in_a_for_each_item () =
             (step_keys run);
           match Scripted_executor.prompts () with
           | [ only ] ->
-              Alcotest.(check bool) "the resumed step is port-two" true
+              Alcotest.(check bool)
+                "the resumed step is port-two" true
                 (contains ~affix:"# port-two" only);
-              Alcotest.(check bool) "bound to item 2" true
+              Alcotest.(check bool)
+                "bound to item 2" true
                 (contains ~affix:"item 2 of 2 (beta)" only)
           | prompts ->
-              Alcotest.fail
-                (Printf.sprintf "expected 1 prompt, got %d"
-                   (List.length prompts))))
+              Alcotest.fail (Printf.sprintf "expected 1 prompt, got %d" (List.length prompts))))
 
 let test_resume_refuses_a_step_past_a_shrunken_retry_group () =
   let root = make_temp_root () in
   setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
-  Scripted_executor.reset
-    ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
   match
-    Scripted_runner.execute_run ~run_id:"shrunk" ~root ~workflow_name:"fixloop"
-      ~task:"fix it" ~isolated:false ()
+    Scripted_runner.execute_run ~run_id:"shrunk" ~root ~workflow_name:"fixloop" ~task:"fix it"
+      ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ -> (
@@ -4614,15 +4144,13 @@ let test_resume_refuses_a_step_past_a_shrunken_retry_group () =
         \      steps:\n\
         \        - skill: implement-fix\n";
       Scripted_executor.reset ~outputs:[];
-      match
-        Scripted_runner.resume_run ~root ~run_id:"shrunk" ~guidance:None ()
-      with
+      match Scripted_runner.resume_run ~root ~run_id:"shrunk" ~guidance:None () with
       | Ok _ -> Alcotest.fail "expected the resume to refuse the position"
       | Error message ->
-          Alcotest.(check bool) "names the retry group" true
+          Alcotest.(check bool)
+            "names the retry group" true
             (contains ~affix:"past the retry group's steps" message);
-          Alcotest.(check int) "no step ran" 0
-            (List.length (Scripted_executor.prompts ())))
+          Alcotest.(check int) "no step ran" 0 (List.length (Scripted_executor.prompts ())))
 
 let test_run_json_rejects_a_negative_step_index () =
   let json =
@@ -4634,8 +4162,7 @@ let test_run_json_rejects_a_negative_step_index () =
   match Run.of_json json with
   | Ok _ -> Alcotest.fail "expected a negative step_index to be rejected"
   | Error message ->
-      Alcotest.(check bool) "names the field" true
-        (contains ~affix:"step_index" message)
+      Alcotest.(check bool) "names the field" true (contains ~affix:"step_index" message)
 
 (* Appends each step key it sees to [log]; kills jig at [kill_at]. *)
 let step_logging_harness ~log ~kill_at =
@@ -4643,8 +4170,8 @@ let step_logging_harness ~log ~kill_at =
     "sh";
     "-c";
     Printf.sprintf
-      "printf '%%s\\n' \"$JIG_STEP_KEY\" >> %s; if [ \"$JIG_STEP_KEY\" = %s ]; \
-       then kill -9 $PPID; fi; %s"
+      "printf '%%s\\n' \"$JIG_STEP_KEY\" >> %s; if [ \"$JIG_STEP_KEY\" = %s ]; then kill -9 $PPID; \
+       fi; %s"
       (Filename.quote log) (Filename.quote kill_at) pass_handoff_command;
   ]
 
@@ -4654,17 +4181,14 @@ let crash_then_resume root ~run_id ~workflow_name ~kill_at =
   let status =
     in_child_process (fun () ->
         ignore
-          (Runner.Default.execute_run ~run_id ~root ~workflow_name ~task:"go"
-             ~isolated:false ()))
+          (Runner.Default.execute_run ~run_id ~root ~workflow_name ~task:"go" ~isolated:false ()))
   in
-  Alcotest.(check bool) "the jig process was killed" true
-    (status = Unix.WSIGNALED Sys.sigkill);
+  Alcotest.(check bool) "the jig process was killed" true (status = Unix.WSIGNALED Sys.sigkill);
   write_harness_config root (step_logging_harness ~log ~kill_at:"none");
   match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       String.split_on_char '\n' (String.trim (read_text log))
 
 let test_crash_in_a_retry_group_resumes_at_the_killed_step () =
@@ -4673,8 +4197,7 @@ let test_crash_in_a_retry_group_resumes_at_the_killed_step () =
   Alcotest.(check (list string))
     "the first step of the iteration does not run again"
     [ "crashed/e0/r0/s0"; "crashed/e0/r0/s1"; "crashed/e0/r0/s1" ]
-    (crash_then_resume root ~run_id:"crashed" ~workflow_name:"fixloop"
-       ~kill_at:"crashed/e0/r0/s1")
+    (crash_then_resume root ~run_id:"crashed" ~workflow_name:"fixloop" ~kill_at:"crashed/e0/r0/s1")
 
 let test_crash_in_a_for_each_retry_group_resumes_at_the_item_and_step () =
   let root = make_temp_root () in
@@ -4711,54 +4234,49 @@ module Crashing_after_result_runner =
   Runner.Make (Executor.Local) (Model_provider.Default) (Metering.Jsonl)
     (Crashing_after_result_store)
 
-let handoff_command status =
-  Printf.sprintf "printf '```handoff\\nstatus: %s\\n```\\n'" status
+let handoff_command status = Printf.sprintf "printf '```handoff\\nstatus: %s\\n```\\n'" status
 
 (* Logs each step key and prompt; runs the [answers] command of a key, else passes. *)
 let answering_harness ~root ~answers =
   let cases =
     String.concat ""
       (List.map
-         (fun (key, command) ->
-           Printf.sprintf "%s) %s ;; " (Filename.quote key) command)
+         (fun (key, command) -> Printf.sprintf "%s) %s ;; " (Filename.quote key) command)
          answers)
   in
   [
     "sh";
     "-c";
     Printf.sprintf
-      "printf '%%s\\n' \"$JIG_STEP_KEY\" >> %s; printf '%%s' \"$0\" > %s; \
-       case \"$JIG_STEP_KEY\" in %s*) %s ;; esac"
+      "printf '%%s\\n' \"$JIG_STEP_KEY\" >> %s; printf '%%s' \"$0\" > %s; case \"$JIG_STEP_KEY\" \
+       in %s*) %s ;; esac"
       (Filename.quote (Filename.concat root "step-keys.log"))
       (Filename.quote (Filename.concat root "last-prompt.txt"))
       cases pass_handoff_command;
   ]
 
 let logged_step_keys root =
-  String.split_on_char '\n'
-    (String.trim (read_text (Filename.concat root "step-keys.log")))
+  String.split_on_char '\n' (String.trim (read_text (Filename.concat root "step-keys.log")))
 
 let expect_jig_died_after_result_save root ~run_id ~finished_steps action =
   crash_after_finished_steps := finished_steps;
   let exit_status = in_child_process action in
-  Alcotest.(check bool) "jig died after the result save" true
-    (exit_status = Unix.WEXITED 3);
+  Alcotest.(check bool) "jig died after the result save" true (exit_status = Unix.WEXITED 3);
   match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run_id with
   | Error message -> Alcotest.fail message
   | Ok run ->
-      Alcotest.(check int) "the result was saved" finished_steps
-        (List.length run.Run.steps);
-      Alcotest.(check string) "the save left the run running" "running"
+      Alcotest.(check int) "the result was saved" finished_steps (List.length run.Run.steps);
+      Alcotest.(check string)
+        "the save left the run running" "running"
         (Run.string_of_status run.Run.status)
 
 (* Crashes after the result save of the [finished_steps]-th step. *)
-let crash_after_result ?(answers = []) root ~run_id ~workflow_name
-    ~finished_steps =
+let crash_after_result ?(answers = []) root ~run_id ~workflow_name ~finished_steps =
   write_harness_config root (answering_harness ~root ~answers);
   expect_jig_died_after_result_save root ~run_id ~finished_steps (fun () ->
       ignore
-        (Crashing_after_result_runner.execute_run ~run_id ~root ~workflow_name
-           ~task:"go" ~isolated:false ()))
+        (Crashing_after_result_runner.execute_run ~run_id ~root ~workflow_name ~task:"go"
+           ~isolated:false ()))
 
 let resume_crashed ?(answers = []) root ~run_id =
   write_harness_config root (answering_harness ~root ~answers);
@@ -4769,65 +4287,62 @@ let resume_crashed ?(answers = []) root ~run_id =
 let test_crash_after_a_plain_step_result_does_not_run_it_again () =
   let root = make_temp_root () in
   setup_three_step_project root;
-  crash_after_result root ~run_id:"plain" ~workflow_name:"pipeline"
-    ~finished_steps:1;
+  crash_after_result root ~run_id:"plain" ~workflow_name:"pipeline" ~finished_steps:1;
   let run = resume_crashed root ~run_id:"plain" in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check (list string)) "the first entry runs once"
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string))
+    "the first entry runs once"
     [ "plain/e0/r0/s0"; "plain/e1/r0/s0"; "plain/e2/r0/s0" ]
     (logged_step_keys root)
 
 let test_crash_after_a_retry_step_result_does_not_run_it_again () =
   let root = make_temp_root () in
   setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
-  crash_after_result root ~run_id:"group" ~workflow_name:"fixloop"
-    ~finished_steps:1;
+  crash_after_result root ~run_id:"group" ~workflow_name:"fixloop" ~finished_steps:1;
   let run = resume_crashed root ~run_id:"group" in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check (list string)) "the resume starts at the next step"
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string))
+    "the resume starts at the next step"
     [ "group/e0/r0/s0"; "group/e0/r0/s1" ]
     (logged_step_keys root)
 
 let test_crash_after_a_failed_retry_step_starts_the_next_iteration () =
   let root = make_temp_root () in
   setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
-  crash_after_result root ~run_id:"failed" ~workflow_name:"fixloop"
-    ~finished_steps:2
+  crash_after_result root ~run_id:"failed" ~workflow_name:"fixloop" ~finished_steps:2
     ~answers:[ ("failed/e0/r0/s1", handoff_command "fail") ];
   let run = resume_crashed root ~run_id:"failed" in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check (list string)) "the saved fail fails the iteration"
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string))
+    "the saved fail fails the iteration"
     [ "failed/e0/r0/s0"; "failed/e0/r0/s1"; "failed/e0/r1/s0"; "failed/e0/r1/s1" ]
     (logged_step_keys root)
 
 let test_crash_after_an_invalid_handoff_threads_its_output () =
   let root = make_temp_root () in
   setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
-  crash_after_result root ~run_id:"garbled" ~workflow_name:"fixloop"
-    ~finished_steps:2
+  crash_after_result root ~run_id:"garbled" ~workflow_name:"fixloop" ~finished_steps:2
     ~answers:[ ("garbled/e0/r0/s1", "echo tests-printed-no-handoff") ];
   let run =
     resume_crashed root ~run_id:"garbled"
       ~answers:[ ("garbled/e0/r1/s0", handoff_command "escalate") ]
   in
-  Alcotest.(check string) "paused at the next iteration" "paused"
+  Alcotest.(check string)
+    "paused at the next iteration" "paused"
     (Run.string_of_status run.Run.status);
-  Alcotest.(check bool) "the next iteration sees the saved output" true
+  Alcotest.(check bool)
+    "the next iteration sees the saved output" true
     (contains ~affix:"tests-printed-no-handoff"
        (read_text (Filename.concat root "last-prompt.txt")))
 
 let test_crash_after_a_for_each_item_result_moves_to_the_next_item () =
   let root = make_temp_root () in
   setup_fanout_project ~workflow:retry_fanout_workflow_yaml root;
-  crash_after_result root ~run_id:"fanned" ~workflow_name:"fanout"
-    ~finished_steps:2;
+  crash_after_result root ~run_id:"fanned" ~workflow_name:"fanout" ~finished_steps:2;
   let run = resume_crashed root ~run_id:"fanned" in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check (list string)) "item 1 does not run again"
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string))
+    "item 1 does not run again"
     [
       "fanned/e0/i0/b0/r0/s0";
       "fanned/e0/i0/b0/r0/s1";
@@ -4839,18 +4354,18 @@ let test_crash_after_a_for_each_item_result_moves_to_the_next_item () =
 let test_crash_after_an_escalate_result_pauses_then_reruns_on_resume () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
-  crash_after_result root ~run_id:"stuck" ~workflow_name:"hello"
-    ~finished_steps:1
+  crash_after_result root ~run_id:"stuck" ~workflow_name:"hello" ~finished_steps:1
     ~answers:[ ("stuck/e0/r0/s0", handoff_command "escalate") ];
   let paused = resume_crashed root ~run_id:"stuck" in
-  Alcotest.(check string) "the saved escalate pauses" "paused"
+  Alcotest.(check string)
+    "the saved escalate pauses" "paused"
     (Run.string_of_status paused.Run.status);
-  Alcotest.(check (list string)) "without running the step again"
-    [ "stuck/e0/r0/s0" ] (logged_step_keys root);
+  Alcotest.(check (list string))
+    "without running the step again" [ "stuck/e0/r0/s0" ] (logged_step_keys root);
   let run = resume_crashed root ~run_id:"stuck" in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check (list string)) "resuming the pause runs the step again"
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string))
+    "resuming the pause runs the step again"
     [ "stuck/e0/r0/s0"; "stuck/e0/r0/s0" ]
     (logged_step_keys root)
 
@@ -4858,25 +4373,19 @@ let test_crash_early_in_a_paused_resume_still_reruns_the_step () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   write_harness_config root
-    (answering_harness ~root
-       ~answers:[ ("early/e0/r0/s0", handoff_command "escalate") ]);
+    (answering_harness ~root ~answers:[ ("early/e0/r0/s0", handoff_command "escalate") ]);
   (match
-     Runner.Default.execute_run ~run_id:"early" ~root ~workflow_name:"hello"
-       ~task:"go" ~isolated:false ()
+     Runner.Default.execute_run ~run_id:"early" ~root ~workflow_name:"hello" ~task:"go"
+       ~isolated:false ()
    with
   | Error message -> Alcotest.fail message
-  | Ok (run, _) ->
-      Alcotest.(check string) "paused" "paused"
-        (Run.string_of_status run.Run.status));
-  expect_jig_died_after_result_save root ~run_id:"early" ~finished_steps:1
-    (fun () ->
-      ignore
-        (Crashing_after_result_runner.resume_run ~root ~run_id:"early"
-           ~guidance:None ()));
+  | Ok (run, _) -> Alcotest.(check string) "paused" "paused" (Run.string_of_status run.Run.status));
+  expect_jig_died_after_result_save root ~run_id:"early" ~finished_steps:1 (fun () ->
+      ignore (Crashing_after_result_runner.resume_run ~root ~run_id:"early" ~guidance:None ()));
   let run = resume_crashed root ~run_id:"early" in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check (list string)) "the paused step runs again"
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check (list string))
+    "the paused step runs again"
     [ "early/e0/r0/s0"; "early/e0/r0/s0" ]
     (logged_step_keys root)
 
@@ -4909,12 +4418,14 @@ let test_ledger_lists_the_attempt_ids_of_one_run () =
   match Metering.Jsonl.recorded_attempt_ids ~runs_dir ~run_id:"run" with
   | Error message -> Alcotest.fail message
   | Ok attempt_ids ->
-      Alcotest.(check (list string)) "only this run's attempts"
+      Alcotest.(check (list string))
+        "only this run's attempts"
         [ "run/e0/r0/s0#1"; "run/e0/r0/s0#2" ]
         attempt_ids
 
 (* Counts ledger reads and keeps the ledger in memory. *)
 let ledger_reads = ref 0
+
 let ledger_events : Metering.event list ref = ref []
 
 module Counting_metering : Metering.S = struct
@@ -4926,44 +4437,35 @@ module Counting_metering : Metering.S = struct
     incr ledger_reads;
     Ok
       (List.filter_map
-         (fun event ->
-           if event.Metering.run_id = run_id then event.Metering.attempt_id
-           else None)
+         (fun event -> if event.Metering.run_id = run_id then event.Metering.attempt_id else None)
          !ledger_events)
 end
 
 module Counting_metering_runner =
-  Runner.Make (Scripted_executor) (Model_provider.Default) (Counting_metering)
-    (Store.Filesystem)
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Counting_metering) (Store.Filesystem)
 
 let test_a_drive_reads_the_ledger_at_most_once () =
   let root = make_temp_root () in
   setup_three_step_project root;
   ledger_reads := 0;
   ledger_events := [];
-  Scripted_executor.reset
-    ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
+  Scripted_executor.reset ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
   (match
-     Counting_metering_runner.execute_run ~run_id:"counted" ~root
-       ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
+     Counting_metering_runner.execute_run ~run_id:"counted" ~root ~workflow_name:"pipeline"
+       ~task:"build" ~isolated:false ()
    with
   | Error message -> Alcotest.fail message
   | Ok _ -> ());
   Alcotest.(check int) "a new run never reads the ledger" 0 !ledger_reads;
-  match
-    Counting_metering_runner.resume_run ~root ~run_id:"counted"
-      ~guidance:None ()
-  with
+  match Counting_metering_runner.resume_run ~root ~run_id:"counted" ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       Alcotest.(check int) "the resume reads the ledger once" 1 !ledger_reads;
-      Alcotest.(check (list string)) "one event per attempt"
+      Alcotest.(check (list string))
+        "one event per attempt"
         [ "counted/e0/r0/s0#1"; "counted/e1/r0/s0#1"; "counted/e1/r0/s0#2"; "counted/e2/r0/s0#1" ]
-        (List.filter_map
-           (fun event -> event.Metering.attempt_id)
-           !ledger_events)
+        (List.filter_map (fun event -> event.Metering.attempt_id) !ledger_events)
 
 let test_metering_appends_after_a_torn_line () =
   let root = make_temp_root () in
@@ -4973,17 +4475,13 @@ let test_metering_appends_after_a_torn_line () =
   (match Metering.Jsonl.record ~runs_dir ~event with
   | Ok () -> ()
   | Error message -> Alcotest.fail message);
-  let lines =
-    read_text (Filename.concat runs_dir "metering.jsonl")
-    |> String.split_on_char '\n'
-  in
-  Alcotest.(check bool) "the event is a whole line of its own" true
+  let lines = read_text (Filename.concat runs_dir "metering.jsonl") |> String.split_on_char '\n' in
+  Alcotest.(check bool)
+    "the event is a whole line of its own" true
     (List.exists
        (fun line ->
          match Yojson.Safe.from_string line with
-         | json ->
-             Yojson.Safe.Util.(json |> member "attempt_id" |> to_string)
-             = "run/e0/r0/s0#1"
+         | json -> Yojson.Safe.Util.(json |> member "attempt_id" |> to_string) = "run/e0/r0/s0#1"
          | exception _ -> false)
        lines)
 
@@ -4996,8 +4494,8 @@ module Environment_capturing_executor : Executor.S = struct
 end
 
 module Environment_capturing_runner =
-  Runner.Make (Environment_capturing_executor) (Model_provider.Default)
-    (Metering.Noop) (Store.Filesystem)
+  Runner.Make (Environment_capturing_executor) (Model_provider.Default) (Metering.Noop)
+    (Store.Filesystem)
 
 let test_step_keys_follow_items_iterations_and_retry_steps () =
   let root = make_temp_root () in
@@ -5014,8 +4512,8 @@ let test_step_keys_follow_items_iterations_and_retry_steps () =
         handoff_block ();
       ];
   match
-    Environment_capturing_runner.execute_run ~run_id:"keyed" ~root
-      ~workflow_name:"fanout" ~task:"port" ~isolated:false ()
+    Environment_capturing_runner.execute_run ~run_id:"keyed" ~root ~workflow_name:"fanout"
+      ~task:"port" ~isolated:false ()
   with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
@@ -5029,22 +4527,20 @@ let test_step_keys_follow_items_iterations_and_retry_steps () =
           "keyed/e0/i1/b0/r0/s1";
         ]
       in
-      Alcotest.(check (list string)) "each step record carries its key"
-        expected_keys
+      Alcotest.(check (list string))
+        "each step record carries its key" expected_keys
         (List.map
            (fun step ->
              match step.Run.attempt with
              | Some attempt -> attempt.Run.step_key
              | None -> "no attempt")
            run.Run.steps);
-      Alcotest.(check (list (pair string string))) "the harness gets the key"
-        (List.map
-           (fun key -> (key, key ^ "#1"))
-           expected_keys)
+      Alcotest.(check (list (pair string string)))
+        "the harness gets the key"
+        (List.map (fun key -> (key, key ^ "#1")) expected_keys)
         (List.map
            (fun environment ->
-             ( List.assoc "JIG_STEP_KEY" environment,
-               List.assoc "JIG_ATTEMPT_ID" environment ))
+             (List.assoc "JIG_STEP_KEY" environment, List.assoc "JIG_ATTEMPT_ID" environment))
            !captured_environments)
 
 let sample_attempt ~step_key ~number =
@@ -5077,12 +4573,9 @@ let test_run_json_round_trips_attempts () =
   in
   let run =
     {
-      (persisted_run ~steps:[ finished ] ~status:Run.Running
-         ~position:(pos 1))
-      with
+      (persisted_run ~steps:[ finished ] ~status:Run.Running ~position:(pos 1)) with
       Run.attempts_in_flight =
-        Run.Step_key_map.(
-          empty |> add first.Run.step_key first |> add second.Run.step_key second);
+        Run.Step_key_map.(empty |> add first.Run.step_key first |> add second.Run.step_key second);
       interrupted_attempts = [ { interrupted with Run.child_pid = None } ];
       paused_on_attempt = Some "run/e1/r0/s0#2";
     }
@@ -5094,10 +4587,12 @@ let test_run_json_round_trips_attempts () =
       let without_map (run : Run.t) =
         { run with Run.attempts_in_flight = Run.Step_key_map.empty }
       in
-      Alcotest.(check bool) "attempts in flight survive, keyed by step" true
+      Alcotest.(check bool)
+        "attempts in flight survive, keyed by step" true
         (Run.Step_key_map.bindings loaded.Run.attempts_in_flight
         = Run.Step_key_map.bindings run.Run.attempts_in_flight);
-      Alcotest.(check bool) "the rest of the record survives" true
+      Alcotest.(check bool)
+        "the rest of the record survives" true
         (without_map loaded = without_map run)
 
 let test_older_paused_record_was_paused_by_its_last_step () =
@@ -5115,46 +4610,40 @@ let test_older_paused_record_was_paused_by_its_last_step () =
   match Run.of_json (Run.to_json run) with
   | Error message -> Alcotest.fail message
   | Ok loaded ->
-      Alcotest.(check (option string)) "the last step paused the run"
-        (Some "run/e0/r0/s0#1") loaded.Run.paused_on_attempt;
-      Alcotest.(check bool) "so its result is not routed again" true
+      Alcotest.(check (option string))
+        "the last step paused the run" (Some "run/e0/r0/s0#1") loaded.Run.paused_on_attempt;
+      Alcotest.(check bool)
+        "so its result is not routed again" true
         (Run.unrouted_finished_step loaded ~step_key:"run/e0/r0/s0" = None)
 
 (* The harness runs, then reading its output fails. *)
 module Spawn_then_fail_executor : Executor.S = struct
   let execute ?on_spawn ?environment:_ ~command:_ ~cwd:_ ~prompt:_ () =
-    Option.iter
-      (fun notify -> notify ~child_pid:4242 ~stdout_path:"" ~stderr_path:"")
-      on_spawn;
+    Option.iter (fun notify -> notify ~child_pid:4242 ~stdout_path:"" ~stderr_path:"") on_spawn;
     Error "executor: lost the capture files"
 end
 
 module Spawn_then_fail_runner =
-  Runner.Make (Spawn_then_fail_executor) (Model_provider.Default)
-    (Metering.Jsonl) (Store.Filesystem)
+  Runner.Make (Spawn_then_fail_executor) (Model_provider.Default) (Metering.Jsonl)
+    (Store.Filesystem)
 
 let test_an_error_after_spawn_keeps_the_attempt () =
   let root = make_temp_root () in
   setup_project root ~harness:[ "irrelevant" ];
   (match
-     Spawn_then_fail_runner.execute_run ~run_id:"lost-output" ~root
-       ~workflow_name:"hello" ~task:"say hi" ~isolated:false ()
+     Spawn_then_fail_runner.execute_run ~run_id:"lost-output" ~root ~workflow_name:"hello"
+       ~task:"say hi" ~isolated:false ()
    with
   | Ok _ -> Alcotest.fail "expected the executor error"
   | Error _ -> ());
-  match
-    Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"lost-output"
-  with
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"lost-output" with
   | Error message -> Alcotest.fail message
   | Ok run ->
-      Alcotest.(check (list string)) "the attempt that ran is recorded"
-        [ "lost-output/e0/r0/s0#1" ]
-        (List.map
-           (fun attempt -> attempt.Run.attempt_id)
-           run.Run.interrupted_attempts);
-      Alcotest.(check (list string)) "and metered once"
-        [ "lost-output/e0/r0/s0#1" ]
-        (metered_attempt_ids root)
+      Alcotest.(check (list string))
+        "the attempt that ran is recorded" [ "lost-output/e0/r0/s0#1" ]
+        (List.map (fun attempt -> attempt.Run.attempt_id) run.Run.interrupted_attempts);
+      Alcotest.(check (list string))
+        "and metered once" [ "lost-output/e0/r0/s0#1" ] (metered_attempt_ids root)
 
 (* Lets one event through, then refuses like a budget gate at its cap. *)
 let budget_events_left = ref 0
@@ -5170,8 +4659,7 @@ module Budget_gate_metering : Metering.S = struct
 end
 
 module Budget_gate_runner =
-  Runner.Make (Scripted_executor) (Model_provider.Default) (Budget_gate_metering)
-    (Store.Filesystem)
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Budget_gate_metering) (Store.Filesystem)
 
 let test_infrastructure_error_keeps_the_saved_steps () =
   let root = make_temp_root () in
@@ -5179,51 +4667,46 @@ let test_infrastructure_error_keeps_the_saved_steps () =
   Scripted_executor.reset ~outputs:[];
   budget_events_left := 1;
   (match
-     Budget_gate_runner.execute_run ~run_id:"capped" ~root
-       ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
+     Budget_gate_runner.execute_run ~run_id:"capped" ~root ~workflow_name:"pipeline" ~task:"build"
+       ~isolated:false ()
    with
   | Ok _ -> Alcotest.fail "expected the budget gate to stop the run"
   | Error message ->
-      Alcotest.(check string) "the gate's message" "budget: spend cap reached"
-        message);
+      Alcotest.(check string) "the gate's message" "budget: spend cap reached" message);
   match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"capped" with
   | Error message -> Alcotest.fail message
   | Ok run ->
-      Alcotest.(check string) "failed" "failed"
-        (Run.string_of_status run.Run.status);
-      Alcotest.(check (list string)) "both executed steps stay recorded"
-        [ "one"; "two" ]
+      Alcotest.(check string) "failed" "failed" (Run.string_of_status run.Run.status);
+      Alcotest.(check (list string))
+        "both executed steps stay recorded" [ "one"; "two" ]
         (List.map (fun step -> step.Run.skill) run.Run.steps);
-      Alcotest.(check (option string)) "the error is recorded"
-        (Some "budget: spend cap reached") run.Run.error
+      Alcotest.(check (option string))
+        "the error is recorded" (Some "budget: spend cap reached") run.Run.error
 
 (* on_interrupt, continue: and probe: *)
 
 let yaml_list key parts =
   Printf.sprintf "%s:\n%s" key
-    (String.concat ""
-       (List.map (fun part -> Printf.sprintf "  - %S\n" part) parts))
+    (String.concat "" (List.map (fun part -> Printf.sprintf "  - %S\n" part) parts))
 
 let write_config root sections =
-  write_file
-    (Filename.concat root ".jig/config.yaml")
-    (String.concat "" sections)
+  write_file (Filename.concat root ".jig/config.yaml") (String.concat "" sections)
 
 let write_say_hi_skill root ~on_interrupt =
   write_file
     (Filename.concat root ".jig/skills/say-hi/SKILL.md")
-    (Printf.sprintf "---\non_interrupt: %s\n---\n# Say hi\n\nGreet the user.\n"
-       on_interrupt)
+    (Printf.sprintf "---\non_interrupt: %s\n---\n# Say hi\n\nGreet the user.\n" on_interrupt)
 
 (* Waits until jig has recorded the child, so a resume can check it. *)
-let wait_until_child_recorded = "for attempt in $(seq 100); do grep -qs child_start_time .jig/runs/*.json && break; sleep 0.05; done"
+let wait_until_child_recorded =
+  "for attempt in $(seq 100); do grep -qs child_start_time .jig/runs/*.json && break; sleep 0.05; \
+   done"
 
 let crashing_harness =
   [
     "sh";
     "-c";
-    "echo dirty > state; echo partial-work-done; " ^ wait_until_child_recorded
-    ^ "; kill -9 $PPID";
+    "echo dirty > state; echo partial-work-done; " ^ wait_until_child_recorded ^ "; kill -9 $PPID";
   ]
 
 let state_probe = [ "sh"; "-c"; "cat state 2>/dev/null || echo clean" ]
@@ -5232,8 +4715,8 @@ let crash_run_without_waiting root ~run_id =
   ignore
     (in_child_process (fun () ->
          ignore
-           (Runner.Default.execute_run ~run_id ~root ~workflow_name:"hello"
-              ~task:"say hi" ~isolated:false ())))
+           (Runner.Default.execute_run ~run_id ~root ~workflow_name:"hello" ~task:"say hi"
+              ~isolated:false ())))
 
 let crash_run root ~run_id =
   crash_run_without_waiting root ~run_id;
@@ -5244,8 +4727,7 @@ let prompt_recording_harness ~path =
   [
     "sh";
     "-c";
-    Printf.sprintf "printf '%%s' \"$0\" > %s; %s" (Filename.quote path)
-      pass_handoff_command;
+    Printf.sprintf "printf '%%s' \"$0\" > %s; %s" (Filename.quote path) pass_handoff_command;
   ]
 
 let resume root ~run_id ~guidance =
@@ -5268,16 +4750,13 @@ let test_validate_rejects_an_unknown_on_interrupt () =
   with
   | Ok () -> Alcotest.fail "expected validation to reject the value"
   | Error message ->
-      Alcotest.(check bool) "names the key" true
-        (contains ~affix:"on_interrupt" message);
-      Alcotest.(check bool) "names the bad value" true
-        (contains ~affix:"sometimes" message)
+      Alcotest.(check bool) "names the key" true (contains ~affix:"on_interrupt" message);
+      Alcotest.(check bool) "names the bad value" true (contains ~affix:"sometimes" message)
 
 let test_recover_tells_the_new_attempt_about_the_cut_off_one () =
   let root = make_temp_root () in
   setup_project root ~harness:crashing_harness;
-  write_config root
-    [ yaml_list "harness" crashing_harness; yaml_list "probe" state_probe ];
+  write_config root [ yaml_list "harness" crashing_harness; yaml_list "probe" state_probe ];
   crash_run root ~run_id:"recover-run";
   let prompt_path = Filename.concat root "prompt" in
   write_config root
@@ -5286,13 +4765,11 @@ let test_recover_tells_the_new_attempt_about_the_cut_off_one () =
       yaml_list "probe" state_probe;
     ];
   let run = resume root ~run_id:"recover-run" ~guidance:None in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
   let prompt = read_text prompt_path in
   List.iter
     (fun affix ->
-      Alcotest.(check bool) (Printf.sprintf "prompt has %S" affix) true
-        (contains ~affix prompt))
+      Alcotest.(check bool) (Printf.sprintf "prompt has %S" affix) true (contains ~affix prompt))
     [
       "Interrupted attempt";
       "recover-run/e0/r0/s0#1";
@@ -5303,14 +4780,13 @@ let test_recover_tells_the_new_attempt_about_the_cut_off_one () =
     ];
   match run.Run.interrupted_attempts with
   | [ cut_off ] ->
-      Alcotest.(check (option string)) "probe before the cut-off attempt"
-        (Some "clean\n") cut_off.Run.probe_before;
-      Alcotest.(check (option string)) "probe after it, taken on resume"
-        (Some "dirty\n") cut_off.Run.probe_after
+      Alcotest.(check (option string))
+        "probe before the cut-off attempt" (Some "clean\n") cut_off.Run.probe_before;
+      Alcotest.(check (option string))
+        "probe after it, taken on resume" (Some "dirty\n") cut_off.Run.probe_after
   | attempts ->
       Alcotest.fail
-        (Printf.sprintf "expected one interrupted attempt, found %d"
-           (List.length attempts))
+        (Printf.sprintf "expected one interrupted attempt, found %d" (List.length attempts))
 
 let test_rerun_starts_the_step_again_unchanged () =
   let root = make_temp_root () in
@@ -5320,12 +4796,13 @@ let test_rerun_starts_the_step_again_unchanged () =
   let prompt_path = Filename.concat root "prompt" in
   write_harness_config root (prompt_recording_harness ~path:prompt_path);
   let run = resume root ~run_id:"rerun-run" ~guidance:None in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
   let prompt = read_text prompt_path in
-  Alcotest.(check bool) "the prompt says nothing of the interruption" false
+  Alcotest.(check bool)
+    "the prompt says nothing of the interruption" false
     (contains ~affix:"Interrupted attempt" prompt);
-  Alcotest.(check bool) "the prompt is the step's normal prompt" true
+  Alcotest.(check bool)
+    "the prompt is the step's normal prompt" true
     (contains ~affix:"Greet the user." prompt)
 
 let test_escalate_pauses_until_a_human_resumes () =
@@ -5336,34 +4813,30 @@ let test_escalate_pauses_until_a_human_resumes () =
   let prompt_path = Filename.concat root "prompt" in
   write_harness_config root (prompt_recording_harness ~path:prompt_path);
   let paused = resume root ~run_id:"escalate-run" ~guidance:None in
-  Alcotest.(check string) "paused" "paused"
-    (Run.string_of_status paused.Run.status);
+  Alcotest.(check string) "paused" "paused" (Run.string_of_status paused.Run.status);
   Alcotest.(check bool) "no attempt ran" false (Sys.file_exists prompt_path);
-  Alcotest.(check bool) "the pause names the policy" true
-    (contains ~affix:"on_interrupt: escalate"
-       (Option.value paused.Run.error ~default:""));
+  Alcotest.(check bool)
+    "the pause names the policy" true
+    (contains ~affix:"on_interrupt: escalate" (Option.value paused.Run.error ~default:""));
   let resumed = resume root ~run_id:"escalate-run" ~guidance:None in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status resumed.Run.status);
-  Alcotest.(check bool) "the human's resume recovers" true
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status resumed.Run.status);
+  Alcotest.(check bool)
+    "the human's resume recovers" true
     (contains ~affix:"Interrupted attempt" (read_text prompt_path));
-  Alcotest.(check (option string)) "the pause message is cleared" None
-    resumed.Run.error
+  Alcotest.(check (option string)) "the pause message is cleared" None resumed.Run.error
 
 (* $0 is the session id jig assigns; the prompt follows as $1. *)
 let session_reporting_crash_harness ~path =
   [
     "sh";
     "-c";
-    Printf.sprintf "printf '%%s' \"$0\" > %s; kill -9 $PPID"
-      (Filename.quote path);
+    Printf.sprintf "printf '%%s' \"$0\" > %s; kill -9 $PPID" (Filename.quote path);
     "{session_id}";
   ]
 
 let crash_with_assigned_session root ~run_id =
   let assigned_path = Filename.concat root "assigned" in
-  setup_project root
-    ~harness:(session_reporting_crash_harness ~path:assigned_path);
+  setup_project root ~harness:(session_reporting_crash_harness ~path:assigned_path);
   crash_run root ~run_id;
   let assigned = read_text assigned_path in
   match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:run_id with
@@ -5372,8 +4845,8 @@ let crash_with_assigned_session root ~run_id =
       match Run.Step_key_map.bindings run.Run.attempts_in_flight with
       | [ (_, attempt) ] ->
           Alcotest.(check (option string))
-            "the session id is on the attempt before the harness ran"
-            (Some assigned) attempt.Run.session_id;
+            "the session id is on the attempt before the harness ran" (Some assigned)
+            attempt.Run.session_id;
           Alcotest.(check int) "a UUID" 36 (String.length assigned);
           Alcotest.(check char) "version 4" '4' assigned.[14];
           assigned
@@ -5384,8 +4857,8 @@ let session_recording_command ~path =
   [
     "sh";
     "-c";
-    Printf.sprintf "printf '%%s|%%s' \"$0\" \"$1\" > %s; %s"
-      (Filename.quote path) pass_handoff_command;
+    Printf.sprintf "printf '%%s|%%s' \"$0\" \"$1\" > %s; %s" (Filename.quote path)
+      pass_handoff_command;
     "{session_id}";
   ]
 
@@ -5399,17 +4872,18 @@ let test_continue_reopens_the_interrupted_session () =
       yaml_list "continue" (session_recording_command ~path:continued_path);
     ];
   let run = resume root ~run_id:"continue-run" ~guidance:None in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
   let continued = read_text continued_path in
-  Alcotest.(check bool) "continue: got the same session id" true
+  Alcotest.(check bool)
+    "continue: got the same session id" true
     (String.starts_with ~prefix:(assigned ^ "|") continued);
-  Alcotest.(check bool) "with a recovery prompt" true
+  Alcotest.(check bool)
+    "with a recovery prompt" true
     (contains ~affix:"Interrupted attempt" continued);
   match List.rev run.Run.steps with
   | last :: _ ->
-      Alcotest.(check (option string)) "the step keeps the session"
-        (Some assigned) last.Run.session_id
+      Alcotest.(check (option string))
+        "the step keeps the session" (Some assigned) last.Run.session_id
   | [] -> Alcotest.fail "expected a step"
 
 let test_without_continue_a_new_session_follows_the_policy () =
@@ -5418,18 +4892,13 @@ let test_without_continue_a_new_session_follows_the_policy () =
   let reported_path = Filename.concat root "reported" in
   write_harness_config root (session_recording_command ~path:reported_path);
   let run = resume root ~run_id:"fallback-run" ~guidance:None in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
   let reported = read_text reported_path in
-  Alcotest.(check bool) "a new session id" false
-    (String.starts_with ~prefix:assigned reported);
-  Alcotest.(check bool) "the recover prompt" true
-    (contains ~affix:"Interrupted attempt" reported)
+  Alcotest.(check bool) "a new session id" false (String.starts_with ~prefix:assigned reported);
+  Alcotest.(check bool) "the recover prompt" true (contains ~affix:"Interrupted attempt" reported)
 
 let test_attach_after_a_crash_opens_the_interrupted_session () =
-  let previous =
-    { (recorded "first") with Run.session_id = Some "previous-session" }
-  in
+  let previous = { (recorded "first") with Run.session_id = Some "previous-session" } in
   let cut_off =
     {
       (sample_attempt ~step_key:"r/e1/r0/s0" ~number:1) with
@@ -5438,15 +4907,12 @@ let test_attach_after_a_crash_opens_the_interrupted_session () =
   in
   let crashed =
     {
-      (persisted_run ~steps:[ previous ] ~status:Run.Running ~position:(pos 1))
-      with
-      Run.attempts_in_flight =
-        Run.Step_key_map.singleton cut_off.Run.step_key cut_off;
+      (persisted_run ~steps:[ previous ] ~status:Run.Running ~position:(pos 1)) with
+      Run.attempts_in_flight = Run.Step_key_map.singleton cut_off.Run.step_key cut_off;
     }
   in
   Alcotest.(check (result string string))
-    "the interrupted attempt's session" (Ok "interrupted-session")
-    (Attach.session_of_run crashed);
+    "the interrupted attempt's session" (Ok "interrupted-session") (Attach.session_of_run crashed);
   let escalated =
     {
       crashed with
@@ -5459,19 +4925,16 @@ let test_attach_after_a_crash_opens_the_interrupted_session () =
     "the same once a resume marked it interrupted" (Ok "interrupted-session")
     (Attach.session_of_run escalated);
   Alcotest.(check (result string string))
-    "once the position moves on, the newest step's session"
-    (Ok "previous-session")
+    "once the position moves on, the newest step's session" (Ok "previous-session")
     (Attach.session_of_run { escalated with Run.position = pos 2 });
   match
     Attach.session_of_run
-      {
-        escalated with
-        Run.interrupted_attempts = [ { cut_off with Run.session_id = None } ];
-      }
+      { escalated with Run.interrupted_attempts = [ { cut_off with Run.session_id = None } ] }
   with
   | Ok session -> Alcotest.fail ("expected a refusal, got " ^ session)
   | Error message ->
-      Alcotest.(check bool) "names the attempt" true
+      Alcotest.(check bool)
+        "names the attempt" true
         (contains ~affix:cut_off.Run.attempt_id message)
 
 let test_continue_skips_sessions_of_a_tier_harness () =
@@ -5489,8 +4952,7 @@ let test_continue_skips_sessions_of_a_tier_harness () =
         yaml_list "harness" passing_harness;
         "tiers:\n";
         "  cheap:\n"
-        ^ String.concat ""
-            (List.map (fun part -> Printf.sprintf "    - %S\n" part) cheap);
+        ^ String.concat "" (List.map (fun part -> Printf.sprintf "    - %S\n" part) cheap);
         yaml_list "continue" (session_recording_command ~path:continued_path);
       ]
   in
@@ -5498,11 +4960,11 @@ let test_continue_skips_sessions_of_a_tier_harness () =
   crash_run root ~run_id:"tier-run";
   config_with ~cheap:(session_recording_command ~path:reported_path);
   let run = resume root ~run_id:"tier-run" ~guidance:None in
-  Alcotest.(check string) "completed" "completed"
-    (Run.string_of_status run.Run.status);
-  Alcotest.(check bool) "continue: is not given the tier's session" false
-    (Sys.file_exists continued_path);
-  Alcotest.(check bool) "the tier harness recovers with a new attempt" true
+  Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+  Alcotest.(check bool)
+    "continue: is not given the tier's session" false (Sys.file_exists continued_path);
+  Alcotest.(check bool)
+    "the tier harness recovers with a new attempt" true
     (contains ~affix:"Interrupted attempt" (read_text reported_path))
 
 (* A live harness left behind by a killed jig *)
@@ -5518,11 +4980,7 @@ let edit_in_flight_attempt root ~run_id edit =
   | Error message -> Alcotest.fail message
   | Ok run -> (
       let run =
-        {
-          run with
-          Run.attempts_in_flight =
-            Run.Step_key_map.map edit run.Run.attempts_in_flight;
-        }
+        { run with Run.attempts_in_flight = Run.Step_key_map.map edit run.Run.attempts_in_flight }
       in
       match Store.Filesystem.save ~runs_dir run with
       | Ok _ -> ()
@@ -5535,9 +4993,7 @@ let resume_error root ~run_id =
 
 let test_a_live_orphan_harness_blocks_the_resume () =
   let root = make_temp_root () in
-  setup_project root
-    ~harness:
-      [ "sh"; "-c"; wait_until_child_recorded ^ "; kill -9 $PPID; sleep 2" ];
+  setup_project root ~harness:[ "sh"; "-c"; wait_until_child_recorded ^ "; kill -9 $PPID; sleep 2" ];
   crash_run_without_waiting root ~run_id:"orphan-run";
   let orphan_pid =
     match in_flight_attempts root ~run_id:"orphan-run" with
@@ -5549,13 +5005,13 @@ let test_a_live_orphan_harness_blocks_the_resume () =
   let message = resume_error root ~run_id:"orphan-run" in
   List.iter
     (fun affix ->
-      Alcotest.(check bool) (Printf.sprintf "refusal has %S" affix) true
-        (contains ~affix message))
+      Alcotest.(check bool) (Printf.sprintf "refusal has %S" affix) true (contains ~affix message))
     [ string_of_int orphan_pid; "orphan-run/e0/r0/s0#1"; "stop it or wait" ];
   Alcotest.(check bool) "no harness ran" false (Sys.file_exists prompt_path);
   wait_for_in_flight_children root ~run_id:"orphan-run";
   let run = resume root ~run_id:"orphan-run" ~guidance:None in
-  Alcotest.(check string) "completed once the orphan exited" "completed"
+  Alcotest.(check string)
+    "completed once the orphan exited" "completed"
     (Run.string_of_status run.Run.status)
 
 let crash_and_point_the_attempt_at root ~run_id edit =
@@ -5568,7 +5024,8 @@ let test_a_child_on_another_host_blocks_the_resume () =
   let root = make_temp_root () in
   crash_and_point_the_attempt_at root ~run_id:"remote-run" (fun attempt ->
       { attempt with Run.child_host = Some "build-agent-7" });
-  Alcotest.(check bool) "names the other host" true
+  Alcotest.(check bool)
+    "names the other host" true
     (contains ~affix:"build-agent-7" (resume_error root ~run_id:"remote-run"))
 
 let test_a_reused_pid_does_not_block_the_resume () =
@@ -5580,13 +5037,14 @@ let test_a_reused_pid_does_not_block_the_resume () =
         Run.child_pid = Some live_pid;
         child_start_time = Process_identity.start_time live_pid;
       });
-  Alcotest.(check bool) "the same live process blocks" true
+  Alcotest.(check bool)
+    "the same live process blocks" true
     (contains ~affix:"still running" (resume_error root ~run_id:"reused-run"));
   edit_in_flight_attempt root ~run_id:"reused-run" (fun attempt ->
       { attempt with Run.child_start_time = Some "Thu Jan  1 00:00:00 1970" });
   let run = resume root ~run_id:"reused-run" ~guidance:None in
-  Alcotest.(check string) "a pid with another start time is a new process"
-    "completed"
+  Alcotest.(check string)
+    "a pid with another start time is a new process" "completed"
     (Run.string_of_status run.Run.status)
 
 let test_a_live_harness_blocks_the_attach_hand_back () =
@@ -5608,7 +5066,8 @@ let test_a_live_harness_blocks_the_attach_hand_back () =
   with
   | Ok _ -> Alcotest.fail "expected the attach to refuse"
   | Error message ->
-      Alcotest.(check bool) "names the live pid" true
+      Alcotest.(check bool)
+        "names the live pid" true
         (contains ~affix:(string_of_int live_pid) message);
       Alcotest.(check bool) "no session was reopened" false !chat_opened
 
@@ -5617,32 +5076,24 @@ let test_a_live_harness_blocks_the_attach_hand_back () =
 let setup_parallel_project root ~concurrency ~items ~body =
   write_file
     (Filename.concat root ".jig/config.yaml")
-    (Printf.sprintf "harness:\n  - unused-by-these-steps\nconcurrency: %d\n"
-       concurrency);
+    (Printf.sprintf "harness:\n  - unused-by-these-steps\nconcurrency: %d\n" concurrency);
   write_file
     (Filename.concat root ".jig/workflows/fan/workflow.yaml")
-    ("name: fan\n\
-      steps:\n\
-     \  - forEach:\n\
-     \      items: items.tsv\n\
-     \      as: it\n\
-     \      steps:\n" ^ body);
+    ("name: fan\nsteps:\n  - forEach:\n      items: items.tsv\n      as: it\n      steps:\n" ^ body);
   write_file
     (Filename.concat root ".jig/workflows/fan/items.tsv")
     ("name\n" ^ String.concat "\n" items ^ "\n");
   run_shell root
-    "git init -q && git config user.email jig@test && git config user.name \
-     jig && git add -A && git commit -qm fixture"
+    "git init -q && git config user.email jig@test && git config user.name jig && git add -A && \
+     git commit -qm fixture"
 
 let set_concurrency root concurrency =
   write_file
     (Filename.concat root ".jig/config.yaml")
-    (Printf.sprintf "harness:\n  - unused-by-these-steps\nconcurrency: %d\n"
-       concurrency)
+    (Printf.sprintf "harness:\n  - unused-by-these-steps\nconcurrency: %d\n" concurrency)
 
 let run_fan ?run_id root =
-  Runner.Default.execute_run ?run_id ~root ~workflow_name:"fan" ~task:"fan out"
-    ~isolated:true ()
+  Runner.Default.execute_run ?run_id ~root ~workflow_name:"fan" ~task:"fan out" ~isolated:true ()
 
 let timed action =
   let started = Unix.gettimeofday () in
@@ -5650,9 +5101,7 @@ let timed action =
   (result, Unix.gettimeofday () -. started)
 
 let item_worktree_name ~run_id ~item_index =
-  Filename.basename
-    (Workspace.item_worktree_path ~root:"/repo" ~run_id ~entry_index:0
-       ~item_index)
+  Filename.basename (Workspace.item_worktree_path ~root:"/repo" ~run_id ~entry_index:0 ~item_index)
 
 let test_config_concurrency () =
   let parse text = Config.of_string ("harness:\n  - claude\n" ^ text) in
@@ -5667,26 +5116,22 @@ let test_config_concurrency () =
       match parse text with
       | Ok _ -> Alcotest.fail ("expected a rejection of " ^ text)
       | Error message ->
-          Alcotest.(check bool) "names the key" true
-            (contains ~affix:"concurrency" message))
+          Alcotest.(check bool) "names the key" true (contains ~affix:"concurrency" message))
     [ "concurrency: 0\n"; "concurrency: 1.5\n"; "concurrency: many\n" ]
 
 let test_parallel_items_run_at_once_each_in_its_own_worktree () =
   let root = make_temp_root () in
   let body =
-    Printf.sprintf
-      "        - command: \"sleep 2; pwd > %s/seen-{{ it.name }}\"\n"
+    Printf.sprintf "        - command: \"sleep 2; pwd > %s/seen-{{ it.name }}\"\n"
       (Filename.quote root)
   in
   setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b"; "c" ] ~body;
   let seen item = String.trim (read_text (Filename.concat root ("seen-" ^ item))) in
   match timed (fun () -> run_fan root) with
-  | (Error message, _) -> Alcotest.fail message
-  | (Ok (parallel_run, _), parallel_seconds) -> (
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status parallel_run.Run.status);
-      Alcotest.(check int) "one step per item" 3
-        (List.length parallel_run.Run.steps);
+  | Error message, _ -> Alcotest.fail message
+  | Ok (parallel_run, _), parallel_seconds -> (
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status parallel_run.Run.status);
+      Alcotest.(check int) "one step per item" 3 (List.length parallel_run.Run.steps);
       List.iteri
         (fun item_index item ->
           let directory = seen item in
@@ -5700,79 +5145,73 @@ let test_parallel_items_run_at_once_each_in_its_own_worktree () =
         [ "a"; "b"; "c" ];
       set_concurrency root 1;
       match timed (fun () -> run_fan root) with
-      | (Error message, _) -> Alcotest.fail message
-      | (Ok (sequential_run, _), sequential_seconds) ->
-          Alcotest.(check string) "sequential completed" "completed"
+      | Error message, _ -> Alcotest.fail message
+      | Ok (sequential_run, _), sequential_seconds ->
+          Alcotest.(check string)
+            "sequential completed" "completed"
             (Run.string_of_status sequential_run.Run.status);
           Alcotest.(check string)
-            "concurrency 1 runs every item in the run's own worktree"
-            sequential_run.Run.id
+            "concurrency 1 runs every item in the run's own worktree" sequential_run.Run.id
             (Filename.basename (seen "a"));
           (* Three two-second items: about 2s at once, at least 6s in turn. *)
           Alcotest.(check bool)
             (Printf.sprintf "the items overlap (%.2fs)" parallel_seconds)
             true (parallel_seconds < 4.5);
           Alcotest.(check bool)
-            (Printf.sprintf
-               "parallel %.2fs is under 0.6 of sequential %.2fs"
-               parallel_seconds sequential_seconds)
+            (Printf.sprintf "parallel %.2fs is under 0.6 of sequential %.2fs" parallel_seconds
+               sequential_seconds)
             true
-            (sequential_seconds >= 6.0
-            && parallel_seconds < 0.6 *. sequential_seconds))
+            (sequential_seconds >= 6.0 && parallel_seconds < 0.6 *. sequential_seconds))
 
 let test_a_passed_items_commits_stay_on_a_branch () =
   let root = make_temp_root () in
   setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ]
     ~body:
-      "        - command: \"test {{ it.name }} = b || git -c \
-       user.email=jig@test -c user.name=jig commit -q --allow-empty -m \
-       from-{{ it.name }}\"\n";
+      "        - command: \"test {{ it.name }} = b || git -c user.email=jig@test -c user.name=jig \
+       commit -q --allow-empty -m from-{{ it.name }}\"\n";
   match run_fan root with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
-      let branch item_index =
-        "jig/" ^ item_worktree_name ~run_id:run.Run.id ~item_index
-      in
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
+      let branch item_index = "jig/" ^ item_worktree_name ~run_id:run.Run.id ~item_index in
       let subject_path = Filename.concat root "subject" in
-      Alcotest.(check int) "the committing item's branch exists" 0
+      Alcotest.(check int)
+        "the committing item's branch exists" 0
         (Sys.command
-           (Printf.sprintf "git -C %s log -1 --format=%%s %s > %s"
-              (Filename.quote root) (branch 0) (Filename.quote subject_path)));
-      Alcotest.(check string) "it holds the item's commit" "from-a"
+           (Printf.sprintf "git -C %s log -1 --format=%%s %s > %s" (Filename.quote root) (branch 0)
+              (Filename.quote subject_path)));
+      Alcotest.(check string)
+        "it holds the item's commit" "from-a"
         (String.trim (read_text subject_path));
-      Alcotest.(check bool) "an item without commits leaves no branch" true
+      Alcotest.(check bool)
+        "an item without commits leaves no branch" true
         (Sys.command
-           (Printf.sprintf "git -C %s rev-parse -q --verify %s > /dev/null"
-              (Filename.quote root) (branch 1))
+           (Printf.sprintf "git -C %s rev-parse -q --verify %s > /dev/null" (Filename.quote root)
+              (branch 1))
         <> 0)
 
 let test_parallel_items_need_an_isolated_run () =
   let root = make_temp_root () in
   setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b" ]
     ~body:"        - command: \"true\"\n";
-  (match
-     Runner.Default.execute_run ~root ~workflow_name:"fan" ~task:"t"
-       ~isolated:false ()
-   with
+  (match Runner.Default.execute_run ~root ~workflow_name:"fan" ~task:"t" ~isolated:false () with
   | Ok _ -> Alcotest.fail "expected concurrency 3 without --isolated to fail"
   | Error message ->
-      Alcotest.(check bool) "names --isolated" true
+      Alcotest.(check bool)
+        "names --isolated" true
         (contains ~affix:"concurrency 3 needs --isolated" message);
-      Alcotest.(check bool) "refused before a run record exists" false
+      Alcotest.(check bool)
+        "refused before a run record exists" false
         (Sys.file_exists (Project.runs_dir ~root)));
   write_file
     (Filename.concat root ".jig/workflows/plain.yaml")
     "name: plain\nsteps:\n  - command: \"true\"\n";
-  match
-    Runner.Default.execute_run ~root ~workflow_name:"plain" ~task:"t"
-      ~isolated:false ()
-  with
+  match Runner.Default.execute_run ~root ~workflow_name:"plain" ~task:"t" ~isolated:false () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "a workflow without forEach ignores concurrency"
-        "completed" (Run.string_of_status run.Run.status)
+      Alcotest.(check string)
+        "a workflow without forEach ignores concurrency" "completed"
+        (Run.string_of_status run.Run.status)
 
 let rec wait_until ~deadline condition =
   if condition () then true
@@ -5803,14 +5242,11 @@ let crash_parallel_run root ~run_id ~attempts_in_flight ~ready =
         List.length (attempts run) = attempts_in_flight
         && List.for_all
              (fun (attempt : Run.attempt) ->
-               attempt.Run.child_pid <> None
-               && attempt.Run.child_start_time <> None)
+               attempt.Run.child_pid <> None && attempt.Run.child_start_time <> None)
              (attempts run)
     | Error _ -> false
   in
-  let reached =
-    wait_until ~deadline:(Unix.gettimeofday () +. 20.0) all_recorded
-  in
+  let reached = wait_until ~deadline:(Unix.gettimeofday () +. 20.0) all_recorded in
   (* The group is gone already when the run ended before the kill. *)
   (try Unix.kill (-driver) Sys.sigkill with Unix.Unix_error _ -> ());
   ignore (Unix.waitpid [] driver);
@@ -5829,7 +5265,9 @@ let crash_parallel_run root ~run_id ~attempts_in_flight ~ready =
         attempt.Run.child_pid)
     (attempts crashed);
   ignore
-    (wait_until ~deadline:(Unix.gettimeofday () +. 10.0) (fun () ->
+    (wait_until
+       ~deadline:(Unix.gettimeofday () +. 10.0)
+       (fun () ->
          List.for_all
            (fun (attempt : Run.attempt) ->
              match attempt.Run.child_pid with
@@ -5844,8 +5282,8 @@ let test_crash_with_items_in_flight_resumes_each_item () =
   let body =
     Printf.sprintf
       "        - command: \"echo ran >> %s/first-{{ it.name }}\"\n\
-      \        - command: \"test -e %s/resume && exit 0; touch %s/in-second-{{ \
-       it.name }}; sleep 30\"\n"
+      \        - command: \"test -e %s/resume && exit 0; touch %s/in-second-{{ it.name }}; sleep \
+       30\"\n"
       quoted quoted quoted
   in
   setup_parallel_project root ~concurrency:3 ~items:[ "a"; "b"; "c" ] ~body;
@@ -5853,27 +5291,24 @@ let test_crash_with_items_in_flight_resumes_each_item () =
   let crashed =
     crash_parallel_run root ~run_id ~attempts_in_flight:3 ~ready:(fun () ->
         List.for_all
-          (fun item ->
-            Sys.file_exists (Filename.concat root ("in-second-" ^ item)))
+          (fun item -> Sys.file_exists (Filename.concat root ("in-second-" ^ item)))
           [ "a"; "b"; "c" ])
   in
-  Alcotest.(check int) "three items in progress in the record" 3
+  Alcotest.(check int)
+    "three items in progress in the record" 3
     (List.length (Run.parallel_items_in_progress crashed.Run.position));
   write_file (Filename.concat root "resume") "";
   match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (run, _) ->
-      Alcotest.(check string) "completed" "completed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "completed" "completed" (Run.string_of_status run.Run.status);
       List.iteri
         (fun item_index item ->
           Alcotest.(check string)
             (Printf.sprintf "item %s's finished first step did not re-run" item)
             "ran\n"
             (read_text (Filename.concat root ("first-" ^ item)));
-          let second_key =
-            Printf.sprintf "%s/e0/i%d/b1/r0/s0" run_id item_index
-          in
+          let second_key = Printf.sprintf "%s/e0/i%d/b1/r0/s0" run_id item_index in
           Alcotest.(check bool)
             (Printf.sprintf "item %s's second step ran again as attempt 2" item)
             true
@@ -5881,12 +5316,12 @@ let test_crash_with_items_in_flight_resumes_each_item () =
                (fun (step : Run.step_record) ->
                  match step.Run.attempt with
                  | Some attempt ->
-                     attempt.Run.attempt_id = second_key ^ "#2"
-                     && step.Run.outcome = Run.Pass
+                     attempt.Run.attempt_id = second_key ^ "#2" && step.Run.outcome = Run.Pass
                  | None -> false)
                run.Run.steps))
         [ "a"; "b"; "c" ];
-      Alcotest.(check int) "each item's cut-off attempt is on record" 3
+      Alcotest.(check int)
+        "each item's cut-off attempt is on record" 3
         (List.length run.Run.interrupted_attempts)
 
 let test_an_escalating_interruption_pauses_every_item () =
@@ -5894,50 +5329,45 @@ let test_an_escalating_interruption_pauses_every_item () =
   write_file
     (Filename.concat root ".jig/skills/work/SKILL.md")
     "---\non_interrupt: escalate\n---\n# Work\n\nDo the item.\n";
-  setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ]
-    ~body:"        - skill: work\n";
+  setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ] ~body:"        - skill: work\n";
   write_file
     (Filename.concat root ".jig/config.yaml")
     "harness:\n  - sh\n  - -c\n  - sleep 30\nconcurrency: 2\n";
   let run_id = "parallel-escalate" in
-  ignore
-    (crash_parallel_run root ~run_id ~attempts_in_flight:2 ~ready:(fun () ->
-         true));
+  ignore (crash_parallel_run root ~run_id ~attempts_in_flight:2 ~ready:(fun () -> true));
   write_file
     (Filename.concat root ".jig/config.yaml")
-    (Printf.sprintf "harness:\n  - sh\n  - -c\n  - %S\nconcurrency: 2\n"
-       pass_handoff_command);
+    (Printf.sprintf "harness:\n  - sh\n  - -c\n  - %S\nconcurrency: 2\n" pass_handoff_command);
   match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
   | Error message -> Alcotest.fail message
   | Ok (paused, _) -> (
-      Alcotest.(check string) "the run pauses for a human" "paused"
+      Alcotest.(check string)
+        "the run pauses for a human" "paused"
         (Run.string_of_status paused.Run.status);
       let items = Run.parallel_items_in_progress paused.Run.position in
-      Alcotest.(check (list string)) "every item reads paused, none running"
-        [ "paused"; "paused" ]
+      Alcotest.(check (list string))
+        "every item reads paused, none running" [ "paused"; "paused" ]
         (List.map
-           (fun (item : Run.item_in_progress) ->
-             Run.string_of_status item.Run.item_status)
+           (fun (item : Run.item_in_progress) -> Run.string_of_status item.Run.item_status)
            items);
       let json = Yojson.Safe.to_string (Run.to_json paused) in
-      Alcotest.(check bool) "status --json says paused for the items" false
+      Alcotest.(check bool)
+        "status --json says paused for the items" false
         (contains ~affix:{|"status":"running"|} json);
       let entries =
-        match
-          Workflow.load
-            ~path:(Filename.concat root ".jig/workflows/fan/workflow.yaml")
-        with
+        match Workflow.load ~path:(Filename.concat root ".jig/workflows/fan/workflow.yaml") with
         | Ok workflow -> workflow.Workflow.entries
         | Error message -> Alcotest.fail message
       in
-      Alcotest.(check (list string)) "watch draws both items paused"
+      Alcotest.(check (list string))
+        "watch draws both items paused"
         [ "\u{25c9} forEach (0/2)"; "  \u{25c9} a"; "  \u{25c9} b" ]
         (Progress.render ~working:"@" (Progress.restore ~entries paused));
       match Runner.Default.resume_run ~root ~run_id ~guidance:None () with
       | Error message -> Alcotest.fail message
       | Ok (finished, _) ->
-          Alcotest.(check string) "a human's resume recovers each item"
-            "completed"
+          Alcotest.(check string)
+            "a human's resume recovers each item" "completed"
             (Run.string_of_status finished.Run.status))
 
 (* Escalates the items named in [escalating_items] and sleeps on "slow"; a
@@ -5948,9 +5378,7 @@ module Item_aware_executor : Executor.S = struct
   let execute ?on_spawn:_ ?environment:_ ~command:_ ~cwd:_ ~prompt () =
     let names item = contains ~affix:("item: " ^ item ^ "\n") prompt in
     if names "slow" then Unix.sleepf 1.0;
-    let status =
-      if List.exists names !escalating_items then "escalate" else "pass"
-    in
+    let status = if List.exists names !escalating_items then "escalate" else "pass" in
     Ok
       {
         Executor.exit_code = 0;
@@ -5960,97 +5388,75 @@ module Item_aware_executor : Executor.S = struct
 end
 
 module Item_aware_runner =
-  Runner.Make (Item_aware_executor) (Model_provider.Default) (Metering.Noop)
-    (Store.Filesystem)
+  Runner.Make (Item_aware_executor) (Model_provider.Default) (Metering.Noop) (Store.Filesystem)
 
 let test_an_escalating_item_lets_items_in_flight_finish_then_pauses () =
   let root = make_temp_root () in
   add_skill root "work" "# Work\n\nDo the item.\n";
-  setup_parallel_project root ~concurrency:2
-    ~items:[ "slow"; "b"; "c"; "d" ]
-    ~body:
-      "        - skill: work\n\
-      \          with:\n\
-      \            item: \"{{ it.name }}\"\n";
+  setup_parallel_project root ~concurrency:2 ~items:[ "slow"; "b"; "c"; "d" ]
+    ~body:"        - skill: work\n          with:\n            item: \"{{ it.name }}\"\n";
   escalating_items := [ "b" ];
   let item_keys (run : Run.t) =
     List.filter_map (fun (step : Run.step_record) -> step.Run.item_key) run.Run.steps
   in
-  match
-    Item_aware_runner.execute_run ~root ~workflow_name:"fan" ~task:"t"
-      ~isolated:true ()
-  with
+  match Item_aware_runner.execute_run ~root ~workflow_name:"fan" ~task:"t" ~isolated:true () with
   | Error message -> Alcotest.fail message
   | Ok (paused, _) -> (
-      Alcotest.(check string) "paused" "paused"
-        (Run.string_of_status paused.Run.status);
+      Alcotest.(check string) "paused" "paused" (Run.string_of_status paused.Run.status);
       Alcotest.(check (list string))
-        "the slow item in flight finished; no new item started"
-        [ "b"; "slow" ] (item_keys paused);
+        "the slow item in flight finished; no new item started" [ "b"; "slow" ] (item_keys paused);
       (match Run.parallel_items_in_progress paused.Run.position with
       | [ item ] ->
-          Alcotest.(check int) "the escalated item stays in progress" 1
-            item.Run.started_item_index;
-          Alcotest.(check string) "as paused" "paused"
-            (Run.string_of_status item.Run.item_status);
-          Alcotest.(check bool) "its worktree stays for the resume" true
-            (match item.Run.item_workspace with
-            | Some path -> Sys.file_exists path
-            | None -> false)
+          Alcotest.(check int) "the escalated item stays in progress" 1 item.Run.started_item_index;
+          Alcotest.(check string) "as paused" "paused" (Run.string_of_status item.Run.item_status);
+          Alcotest.(check bool)
+            "its worktree stays for the resume" true
+            (match item.Run.item_workspace with Some path -> Sys.file_exists path | None -> false)
       | items ->
           Alcotest.fail
-            (Printf.sprintf "expected one item in progress, found %d"
-               (List.length items)));
+            (Printf.sprintf "expected one item in progress, found %d" (List.length items)));
       escalating_items := [];
       match
-        Item_aware_runner.resume_run ~root ~run_id:paused.Run.id
-          ~guidance:(Some "go on") ()
+        Item_aware_runner.resume_run ~root ~run_id:paused.Run.id ~guidance:(Some "go on") ()
       with
       | Error message -> Alcotest.fail message
       | Ok (finished, _) ->
-          Alcotest.(check string) "completed" "completed"
-            (Run.string_of_status finished.Run.status);
+          Alcotest.(check string) "completed" "completed" (Run.string_of_status finished.Run.status);
           Alcotest.(check (list string))
-            "the escalated item ran again, the rest ran once"
-            [ "b"; "c"; "d"; "slow" ]
+            "the escalated item ran again, the rest ran once" [ "b"; "c"; "d"; "slow" ]
             (List.sort_uniq compare
-               (List.filteri (fun index _ -> index >= 2) (item_keys finished)
-               @ [ "slow" ]));
-          Alcotest.(check int) "the slow item did not run again" 1
-            (List.length
-               (List.filter (fun key -> key = "slow") (item_keys finished))))
+               (List.filteri (fun index _ -> index >= 2) (item_keys finished) @ [ "slow" ]));
+          Alcotest.(check int)
+            "the slow item did not run again" 1
+            (List.length (List.filter (fun key -> key = "slow") (item_keys finished))))
 
 let test_a_failing_item_fails_the_run_and_keeps_its_worktree () =
   let root = make_temp_root () in
   setup_parallel_project root ~concurrency:2 ~items:[ "slow"; "bad"; "c" ]
     ~body:
-      "        - command: \"test {{ it.name }} = bad && exit 1; test {{ it.name \
-       }} = slow && sleep 1; true\"\n";
+      "        - command: \"test {{ it.name }} = bad && exit 1; test {{ it.name }} = slow && sleep \
+       1; true\"\n";
   match run_fan root with
   | Error message -> Alcotest.fail message
   | Ok (run, _) -> (
-      Alcotest.(check string) "failed" "failed"
-        (Run.string_of_status run.Run.status);
+      Alcotest.(check string) "failed" "failed" (Run.string_of_status run.Run.status);
       Alcotest.(check (list (option string)))
-        "the item in flight finished; the third never started"
-        [ Some "bad"; Some "slow" ]
+        "the item in flight finished; the third never started" [ Some "bad"; Some "slow" ]
         (List.map (fun (step : Run.step_record) -> step.Run.item_key) run.Run.steps);
       match Run.parallel_items_in_progress run.Run.position with
       | [ item ] ->
-          Alcotest.(check string) "the failed item is on record" "failed"
+          Alcotest.(check string)
+            "the failed item is on record" "failed"
             (Run.string_of_status item.Run.item_status);
-          Alcotest.(check bool) "its worktree is kept for inspection" true
-            (match item.Run.item_workspace with
-            | Some path -> Sys.file_exists path
-            | None -> false);
-          Alcotest.(check bool) "the run worktree is removed as usual" false
-            (match run.Run.workspace with
-            | Some path -> Sys.file_exists path
-            | None -> true)
+          Alcotest.(check bool)
+            "its worktree is kept for inspection" true
+            (match item.Run.item_workspace with Some path -> Sys.file_exists path | None -> false);
+          Alcotest.(check bool)
+            "the run worktree is removed as usual" false
+            (match run.Run.workspace with Some path -> Sys.file_exists path | None -> true)
       | items ->
           Alcotest.fail
-            (Printf.sprintf "expected one item in progress, found %d"
-               (List.length items)))
+            (Printf.sprintf "expected one item in progress, found %d" (List.length items)))
 
 let test_progress_shows_every_parallel_item_in_flight () =
   let t = progress_plan () in
@@ -6131,7 +5537,8 @@ let test_run_json_round_trips_items_in_progress () =
   match Run.of_json (Run.to_json run) with
   | Error message -> Alcotest.fail message
   | Ok read_back ->
-      Alcotest.(check bool) "the per-item cursor survives" true
+      Alcotest.(check bool)
+        "the per-item cursor survives" true
         (read_back.Run.position = run.Run.position)
 
 (* Subprocess process groups and signal forwarding *)
@@ -6150,15 +5557,16 @@ let test_time_limit_stops_child_and_grandchild () =
   with
   | Error message -> Alcotest.fail message
   | Ok outcome ->
-      Alcotest.(check bool) "returned soon after the limit" true
+      Alcotest.(check bool)
+        "returned soon after the limit" true
         (Unix.gettimeofday () -. started_at < 3.0);
-      Alcotest.(check int) "child ended by SIGTERM" 143
-        outcome.Subprocess.exit_code;
-      Alcotest.(check bool) "output before the stop is kept" true
+      Alcotest.(check int) "child ended by SIGTERM" 143 outcome.Subprocess.exit_code;
+      Alcotest.(check bool)
+        "output before the stop is kept" true
         (contains ~affix:"started" outcome.Subprocess.stdout);
-      Alcotest.(check bool) "grandchild in the group was stopped" true
-        (process_exits_within ~seconds:3.0
-           (read_pid_file (Filename.concat root "grandchild.pid")))
+      Alcotest.(check bool)
+        "grandchild in the group was stopped" true
+        (process_exits_within ~seconds:3.0 (read_pid_file (Filename.concat root "grandchild.pid")))
 
 let test_time_limit_escalates_to_sigkill () =
   let started_at = Unix.gettimeofday () in
@@ -6170,11 +5578,12 @@ let test_time_limit_escalates_to_sigkill () =
   | Error message -> Alcotest.fail message
   | Ok outcome ->
       let elapsed = Unix.gettimeofday () -. started_at in
-      Alcotest.(check int) "child ended by SIGKILL" 137
-        outcome.Subprocess.exit_code;
-      Alcotest.(check bool) "SIGKILL waited for the grace period" true
+      Alcotest.(check int) "child ended by SIGKILL" 137 outcome.Subprocess.exit_code;
+      Alcotest.(check bool)
+        "SIGKILL waited for the grace period" true
         (elapsed >= Process_group.termination_grace_seconds);
-      Alcotest.(check bool) "and not much longer" true
+      Alcotest.(check bool)
+        "and not much longer" true
         (elapsed < 0.2 +. Process_group.termination_grace_seconds +. 2.0)
 
 let test_grandchild_gets_grace_after_leader_exits () =
@@ -6187,41 +5596,33 @@ let test_grandchild_gets_grace_after_leader_exits () =
           "sh";
           "-c";
           Printf.sprintf
-            "(trap 'sleep 1; echo done > %s; exit' TERM; while :; do sleep 0.1; done) \
-             & wait"
+            "(trap 'sleep 1; echo done > %s; exit' TERM; while :; do sleep 0.1; done) & wait"
             (Filename.quote cleaned_path);
         ]
       ()
   with
   | Error message -> Alcotest.fail message
   | Ok _ ->
-      Alcotest.(check bool) "the grandchild ran its SIGTERM cleanup" true
-        (Sys.file_exists cleaned_path)
+      Alcotest.(check bool)
+        "the grandchild ran its SIGTERM cleanup" true (Sys.file_exists cleaned_path)
 
 let test_child_within_time_limit_keeps_exit_code () =
   let started_at = Unix.gettimeofday () in
-  match
-    Subprocess.run ~time_limit_seconds:30.0 ~argv:[ "sh"; "-c"; "exit 3" ] ()
-  with
+  match Subprocess.run ~time_limit_seconds:30.0 ~argv:[ "sh"; "-c"; "exit 3" ] () with
   | Error message -> Alcotest.fail message
   | Ok outcome ->
       Alcotest.(check int) "real exit code" 3 outcome.Subprocess.exit_code;
-      Alcotest.(check bool) "no wait for the limit" true
-        (Unix.gettimeofday () -. started_at < 2.0)
+      Alcotest.(check bool) "no wait for the limit" true (Unix.gettimeofday () -. started_at < 2.0)
 
 let test_child_leads_its_own_process_group () =
-  match
-    Subprocess.run ~argv:[ "sh"; "-c"; "ps -o pgid= -p $$; echo $$" ] ()
-  with
+  match Subprocess.run ~argv:[ "sh"; "-c"; "ps -o pgid= -p $$; echo $$" ] () with
   | Error message -> Alcotest.fail message
   | Ok outcome -> (
       match
-        String.split_on_char '\n' (String.trim outcome.Subprocess.stdout)
-        |> List.map String.trim
+        String.split_on_char '\n' (String.trim outcome.Subprocess.stdout) |> List.map String.trim
       with
       | [ process_group_id; pid ] ->
-          Alcotest.(check string) "group id is the child's pid" pid
-            process_group_id
+          Alcotest.(check string) "group id is the child's pid" pid process_group_id
       | _ -> Alcotest.failf "unexpected output: %s" outcome.Subprocess.stdout)
 
 let jig_binary = Filename.concat (Sys.getcwd ()) "../bin/main.exe"
@@ -6232,16 +5633,13 @@ let setup_hanging_command_project root =
     ~yaml:
       "name: cmd\n\
        steps:\n\
-      \  - command: 'echo $PPID > jig.pid; sleep 300 & echo $! > \
-       grandchild.pid; wait'\n"
+      \  - command: 'echo $PPID > jig.pid; sleep 300 & echo $! > grandchild.pid; wait'\n"
 
 let spawn_jig root arguments =
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
   let pid =
     Unix.create_process "sh"
-      (Array.of_list
-         ([ "sh"; "-c"; "cd \"$0\" && exec \"$@\""; root; jig_binary ]
-         @ arguments))
+      (Array.of_list ([ "sh"; "-c"; "cd \"$0\" && exec \"$@\""; root; jig_binary ] @ arguments))
       devnull devnull devnull
   in
   Unix.close devnull;
@@ -6251,39 +5649,35 @@ let check_signal_stops_foreground_step ~signal ~expected_exit_code =
   let root = make_temp_root () in
   setup_hanging_command_project root;
   let jig_pid = spawn_jig root [ "run"; "cmd"; "--task"; "t" ] in
-  let grandchild_pid =
-    wait_for_pid_file ~seconds:10.0 (Filename.concat root "grandchild.pid")
-  in
+  let grandchild_pid = wait_for_pid_file ~seconds:10.0 (Filename.concat root "grandchild.pid") in
   Unix.kill jig_pid signal;
   let _, status = Unix.waitpid [] jig_pid in
   Alcotest.(check bool)
     (Printf.sprintf "jig exits with %d" expected_exit_code)
     true
     (status = Unix.WEXITED expected_exit_code);
-  Alcotest.(check bool) "the step's grandchild was stopped" true
+  Alcotest.(check bool)
+    "the step's grandchild was stopped" true
     (process_exits_within ~seconds:3.0 grandchild_pid)
 
 let test_sigint_to_foreground_run_stops_grandchild () =
   check_signal_stops_foreground_step ~signal:Sys.sigint ~expected_exit_code:130
 
 let test_sigterm_to_foreground_run_stops_grandchild () =
-  check_signal_stops_foreground_step ~signal:Sys.sigterm
-    ~expected_exit_code:143
+  check_signal_stops_foreground_step ~signal:Sys.sigterm ~expected_exit_code:143
 
 let test_sigterm_to_jig_stops_every_parallel_item () =
   let root = make_temp_root () in
   setup_parallel_project root ~concurrency:2 ~items:[ "a"; "b" ]
     ~body:
       (Printf.sprintf
-         "        - command: \"sleep 300 & echo $! > %s/grandchild-{{ it.name \
-          }}.pid; wait\"\n"
+         "        - command: \"sleep 300 & echo $! > %s/grandchild-{{ it.name }}.pid; wait\"\n"
          (Filename.quote root));
   let jig_pid = spawn_jig root [ "run"; "fan"; "--task"; "t"; "--isolated" ] in
   let grandchild_pids =
     List.map
       (fun item ->
-        wait_for_pid_file ~seconds:20.0
-          (Filename.concat root ("grandchild-" ^ item ^ ".pid")))
+        wait_for_pid_file ~seconds:20.0 (Filename.concat root ("grandchild-" ^ item ^ ".pid")))
       [ "a"; "b" ]
   in
   Unix.kill jig_pid Sys.sigterm;
@@ -6291,7 +5685,8 @@ let test_sigterm_to_jig_stops_every_parallel_item () =
   Alcotest.(check bool) "jig exits with 143" true (status = Unix.WEXITED 143);
   List.iter
     (fun grandchild_pid ->
-      Alcotest.(check bool) "the item's grandchild was stopped" true
+      Alcotest.(check bool)
+        "the item's grandchild was stopped" true
         (process_exits_within ~seconds:3.0 grandchild_pid))
     grandchild_pids
 
@@ -6310,26 +5705,23 @@ let test_forked_worker_starts_with_nothing_in_flight () =
       let _, status = Unix.waitpid [] worker_pid in
       Process_group.forget_worker_process worker_pid;
       Unix.close pipe_from_worker;
-      Alcotest.(check bool) "the worker's tracking state is empty" true
-        (status = Unix.WEXITED 0);
-      Alcotest.(check int) "the driver's fork is no longer starting" 0
-        !Process_group.processes_starting
+      Alcotest.(check bool) "the worker's tracking state is empty" true (status = Unix.WEXITED 0);
+      Alcotest.(check int)
+        "the driver's fork is no longer starting" 0 !Process_group.processes_starting
 
 let test_sigterm_to_detached_run_stops_grandchild () =
   let root = make_temp_root () in
   setup_hanging_command_project root;
-  let launcher_pid =
-    spawn_jig root [ "run"; "cmd"; "--task"; "t"; "--detach" ]
-  in
+  let launcher_pid = spawn_jig root [ "run"; "cmd"; "--task"; "t"; "--detach" ] in
   ignore (Unix.waitpid [] launcher_pid);
-  let grandchild_pid =
-    wait_for_pid_file ~seconds:10.0 (Filename.concat root "grandchild.pid")
-  in
+  let grandchild_pid = wait_for_pid_file ~seconds:10.0 (Filename.concat root "grandchild.pid") in
   let detached_jig_pid = read_pid_file (Filename.concat root "jig.pid") in
   Unix.kill detached_jig_pid Sys.sigterm;
-  Alcotest.(check bool) "detached jig exited" true
+  Alcotest.(check bool)
+    "detached jig exited" true
     (process_exits_within ~seconds:10.0 detached_jig_pid);
-  Alcotest.(check bool) "the step's grandchild was stopped" true
+  Alcotest.(check bool)
+    "the step's grandchild was stopped" true
     (process_exits_within ~seconds:3.0 grandchild_pid)
 
 let () =
@@ -6339,26 +5731,18 @@ let () =
       ( "workflow",
         [
           Alcotest.test_case "parses name and steps" `Quick test_workflow_parses;
-          Alcotest.test_case "rejects missing name" `Quick
-            test_workflow_rejects_missing_name;
-          Alcotest.test_case "rejects empty steps" `Quick
-            test_workflow_rejects_empty_steps;
-          Alcotest.test_case "rejects name with slash" `Quick
-            test_workflow_rejects_name_with_slash;
-          Alcotest.test_case "parses the full frozen schema" `Quick
-            test_workflow_parses_full_schema;
+          Alcotest.test_case "rejects missing name" `Quick test_workflow_rejects_missing_name;
+          Alcotest.test_case "rejects empty steps" `Quick test_workflow_rejects_empty_steps;
+          Alcotest.test_case "rejects name with slash" `Quick test_workflow_rejects_name_with_slash;
+          Alcotest.test_case "parses the full frozen schema" `Quick test_workflow_parses_full_schema;
           Alcotest.test_case "retry requires max_iterations" `Quick
             test_retry_requires_max_iterations;
-          Alcotest.test_case "retry requires on_exhausted" `Quick
-            test_retry_requires_on_exhausted;
+          Alcotest.test_case "retry requires on_exhausted" `Quick test_retry_requires_on_exhausted;
           Alcotest.test_case "rejects unknown top-level key" `Quick
             test_unknown_top_level_key_rejected;
-          Alcotest.test_case "rejects unknown step key" `Quick
-            test_unknown_step_key_rejected;
-          Alcotest.test_case "rejects until outside retry" `Quick
-            test_until_outside_retry_rejected;
-          Alcotest.test_case "rejects nested retry" `Quick
-            test_nested_retry_rejected;
+          Alcotest.test_case "rejects unknown step key" `Quick test_unknown_step_key_rejected;
+          Alcotest.test_case "rejects until outside retry" `Quick test_until_outside_retry_rejected;
+          Alcotest.test_case "rejects nested retry" `Quick test_nested_retry_rejected;
           Alcotest.test_case "rejects invalid on_fail value" `Quick
             test_invalid_on_fail_value_rejected;
           Alcotest.test_case "rejects non-positive max_iterations" `Quick
@@ -6369,34 +5753,22 @@ let () =
             test_with_allowed_inside_retry;
           Alcotest.test_case "rejects non-string with value" `Quick
             test_with_rejects_non_string_value;
-          Alcotest.test_case "rejects non-mapping with" `Quick
-            test_with_rejects_non_mapping;
-          Alcotest.test_case "rejects duplicate with keys" `Quick
-            test_with_rejects_duplicate_keys;
-          Alcotest.test_case "parses a context field" `Quick
-            test_context_parses;
-          Alcotest.test_case "absent context is none" `Quick
-            test_context_absent_is_none;
-          Alcotest.test_case "rejects a non-string context" `Quick
-            test_context_rejects_non_string;
-          Alcotest.test_case "parses a forEach block" `Quick
-            test_for_each_parses;
-          Alcotest.test_case "forEach requires items" `Quick
-            test_for_each_requires_items;
-          Alcotest.test_case "forEach requires as" `Quick
-            test_for_each_requires_as;
-          Alcotest.test_case "forEach requires steps" `Quick
-            test_for_each_requires_steps;
-          Alcotest.test_case "rejects nested forEach" `Quick
-            test_for_each_rejects_nesting;
+          Alcotest.test_case "rejects non-mapping with" `Quick test_with_rejects_non_mapping;
+          Alcotest.test_case "rejects duplicate with keys" `Quick test_with_rejects_duplicate_keys;
+          Alcotest.test_case "parses a context field" `Quick test_context_parses;
+          Alcotest.test_case "absent context is none" `Quick test_context_absent_is_none;
+          Alcotest.test_case "rejects a non-string context" `Quick test_context_rejects_non_string;
+          Alcotest.test_case "parses a forEach block" `Quick test_for_each_parses;
+          Alcotest.test_case "forEach requires items" `Quick test_for_each_requires_items;
+          Alcotest.test_case "forEach requires as" `Quick test_for_each_requires_as;
+          Alcotest.test_case "forEach requires steps" `Quick test_for_each_requires_steps;
+          Alcotest.test_case "rejects nested forEach" `Quick test_for_each_rejects_nesting;
           Alcotest.test_case "rejects forEach inside retry" `Quick
             test_for_each_rejected_inside_retry;
-          Alcotest.test_case "rejects dotted forEach as name" `Quick
-            test_for_each_rejects_dotted_as;
+          Alcotest.test_case "rejects dotted forEach as name" `Quick test_for_each_rejects_dotted_as;
           Alcotest.test_case "rejects non-tsv-or-json items path" `Quick
             test_for_each_rejects_bad_items_extension;
-          Alcotest.test_case "rejects empty forEach steps" `Quick
-            test_for_each_rejects_empty_steps;
+          Alcotest.test_case "rejects empty forEach steps" `Quick test_for_each_rejects_empty_steps;
           Alcotest.test_case "rejects an unbound placeholder variable" `Quick
             test_for_each_rejects_unbound_variable;
           Alcotest.test_case "rejects a malformed placeholder" `Quick
@@ -6406,18 +5778,14 @@ let () =
         ] );
       ( "command",
         [
-          Alcotest.test_case "command step parses" `Quick
-            test_command_step_parses;
+          Alcotest.test_case "command step parses" `Quick test_command_step_parses;
           Alcotest.test_case "rejects skill and command together" `Quick
             test_step_rejects_skill_and_command;
-          Alcotest.test_case "rejects neither skill nor command" `Quick
-            test_step_rejects_neither;
-          Alcotest.test_case "rejects with on a command step" `Quick
-            test_command_step_rejects_with;
+          Alcotest.test_case "rejects neither skill nor command" `Quick test_step_rejects_neither;
+          Alcotest.test_case "rejects with on a command step" `Quick test_command_step_rejects_with;
           Alcotest.test_case "passes on exit 0 and costs nothing" `Quick
             test_command_step_passes_and_costs_nothing;
-          Alcotest.test_case "fails on nonzero exit" `Quick
-            test_command_step_fails_on_nonzero;
+          Alcotest.test_case "fails on nonzero exit" `Quick test_command_step_fails_on_nonzero;
           Alcotest.test_case "until:pass gates a command in a retry" `Quick
             test_command_step_until_pass_in_retry;
           Alcotest.test_case "interpolates a forEach item" `Quick
@@ -6425,31 +5793,24 @@ let () =
         ] );
       ( "progress",
         [
-          Alcotest.test_case "renders a mid-run tree" `Quick
-            test_progress_renders_mid_run;
-          Alcotest.test_case "renders a completed tree" `Quick
-            test_progress_renders_completed;
-          Alcotest.test_case "marks a failed step" `Quick
-            test_progress_marks_failure;
-          Alcotest.test_case "spinner cycles and wraps" `Quick
-            test_progress_spinner_cycles;
+          Alcotest.test_case "renders a mid-run tree" `Quick test_progress_renders_mid_run;
+          Alcotest.test_case "renders a completed tree" `Quick test_progress_renders_completed;
+          Alcotest.test_case "marks a failed step" `Quick test_progress_marks_failure;
+          Alcotest.test_case "spinner cycles and wraps" `Quick test_progress_spinner_cycles;
           Alcotest.test_case "annotates duration and cost" `Quick
             test_progress_detail_records_duration_and_cost;
           Alcotest.test_case "detail survives item collapse" `Quick
             test_progress_detail_survives_item_collapse;
-          Alcotest.test_case "restores a mid-run record" `Quick
-            test_progress_restore_mid_run;
+          Alcotest.test_case "restores a mid-run record" `Quick test_progress_restore_mid_run;
           Alcotest.test_case "restores a completed loop from records" `Quick
             test_progress_restore_completed_loop_from_records;
-          Alcotest.test_case "restores a paused leaf" `Quick
-            test_progress_restore_paused_leaf;
-          Alcotest.test_case "restore keeps retry repeats on their entry"
-            `Quick test_progress_restore_retry_repeats_stay_on_entry;
+          Alcotest.test_case "restores a paused leaf" `Quick test_progress_restore_paused_leaf;
+          Alcotest.test_case "restore keeps retry repeats on their entry" `Quick
+            test_progress_restore_retry_repeats_stay_on_entry;
         ] );
       ( "current",
         [
-          Alcotest.test_case "pointer round-trips" `Quick
-            test_current_round_trip;
+          Alcotest.test_case "pointer round-trips" `Quick test_current_round_trip;
           Alcotest.test_case "tolerates absence and garbage" `Quick
             test_current_tolerates_absence_and_garbage;
           Alcotest.test_case "written during a step, removed after" `Quick
@@ -6459,8 +5820,7 @@ let () =
         [
           Alcotest.test_case "renders the mid-run frame exactly" `Quick
             test_boxes_render_mid_run_exactly;
-          Alcotest.test_case "degrades with terminal height" `Quick
-            test_boxes_degrade_with_height;
+          Alcotest.test_case "degrades with terminal height" `Quick test_boxes_degrade_with_height;
           Alcotest.test_case "final frame keeps only the pipeline box" `Quick
             test_boxes_final_frame_drops_log;
           Alcotest.test_case "every line is exactly box width" `Quick
@@ -6473,11 +5833,9 @@ let () =
         ] );
       ( "sanitize",
         [
-          Alcotest.test_case "strips ansi escapes" `Quick
-            test_sanitize_strips_ansi;
+          Alcotest.test_case "strips ansi escapes" `Quick test_sanitize_strips_ansi;
           Alcotest.test_case "expands tabs" `Quick test_sanitize_expands_tabs;
-          Alcotest.test_case "drops control chars" `Quick
-            test_sanitize_drops_control_chars;
+          Alcotest.test_case "drops control chars" `Quick test_sanitize_drops_control_chars;
           Alcotest.test_case "replaces wide and invalid chars" `Quick
             test_sanitize_replaces_wide_and_invalid;
           Alcotest.test_case "width and truncate count scalars" `Quick
@@ -6485,33 +5843,22 @@ let () =
         ] );
       ( "tail",
         [
-          Alcotest.test_case "reads and stitches partial lines" `Quick
-            test_tail_reads_and_stitches;
-          Alcotest.test_case "keeps only the newest lines" `Quick
-            test_tail_keeps_only_capacity;
-          Alcotest.test_case "tolerates a missing file" `Quick
-            test_tail_tolerates_missing_file;
-          Alcotest.test_case "resets on truncation" `Quick
-            test_tail_resets_on_truncation;
+          Alcotest.test_case "reads and stitches partial lines" `Quick test_tail_reads_and_stitches;
+          Alcotest.test_case "keeps only the newest lines" `Quick test_tail_keeps_only_capacity;
+          Alcotest.test_case "tolerates a missing file" `Quick test_tail_tolerates_missing_file;
+          Alcotest.test_case "resets on truncation" `Quick test_tail_resets_on_truncation;
         ] );
       ( "items",
         [
-          Alcotest.test_case "parses tsv with a header" `Quick
-            test_items_parses_tsv;
-          Alcotest.test_case "parses a json array of objects" `Quick
-            test_items_parses_json;
-          Alcotest.test_case "tolerates crlf tsv" `Quick
-            test_items_tolerates_crlf_tsv;
-          Alcotest.test_case "rejects a header-only tsv" `Quick
-            test_items_rejects_header_only_tsv;
+          Alcotest.test_case "parses tsv with a header" `Quick test_items_parses_tsv;
+          Alcotest.test_case "parses a json array of objects" `Quick test_items_parses_json;
+          Alcotest.test_case "tolerates crlf tsv" `Quick test_items_tolerates_crlf_tsv;
+          Alcotest.test_case "rejects a header-only tsv" `Quick test_items_rejects_header_only_tsv;
           Alcotest.test_case "rejects an empty json array" `Quick
             test_items_rejects_empty_json_array;
-          Alcotest.test_case "rejects a ragged tsv row" `Quick
-            test_items_rejects_ragged_tsv_row;
-          Alcotest.test_case "rejects duplicate columns" `Quick
-            test_items_rejects_duplicate_columns;
-          Alcotest.test_case "rejects duplicate item keys" `Quick
-            test_items_rejects_duplicate_keys;
+          Alcotest.test_case "rejects a ragged tsv row" `Quick test_items_rejects_ragged_tsv_row;
+          Alcotest.test_case "rejects duplicate columns" `Quick test_items_rejects_duplicate_columns;
+          Alcotest.test_case "rejects duplicate item keys" `Quick test_items_rejects_duplicate_keys;
           Alcotest.test_case "rejects non-string json values" `Quick
             test_items_rejects_non_string_json_value;
           Alcotest.test_case "rejects ragged json objects" `Quick
@@ -6522,17 +5869,14 @@ let () =
       ( "config",
         [
           Alcotest.test_case "parses harness command" `Quick test_config_parses;
-          Alcotest.test_case "rejects missing harness" `Quick
-            test_config_rejects_missing_harness;
+          Alcotest.test_case "rejects missing harness" `Quick test_config_rejects_missing_harness;
         ] );
       ( "tiers",
         [
-          Alcotest.test_case "config parses the tiers map" `Quick
-            test_config_parses_tiers;
+          Alcotest.test_case "config parses the tiers map" `Quick test_config_parses_tiers;
           Alcotest.test_case "config rejects a scalar tier command" `Quick
             test_config_rejects_non_list_tier;
-          Alcotest.test_case "workflow step tier parses" `Quick
-            test_workflow_step_tier_parses;
+          Alcotest.test_case "workflow step tier parses" `Quick test_workflow_step_tier_parses;
           Alcotest.test_case "tier on a command step is rejected" `Quick
             test_workflow_rejects_tier_on_command_step;
           Alcotest.test_case "tier selects the mapped command" `Quick
@@ -6551,15 +5895,13 @@ let () =
             test_validate_warns_on_unmapped_tier;
           Alcotest.test_case "cost groups by tier in first-seen order" `Quick
             test_cost_by_tier_groups_in_first_seen_order;
-          Alcotest.test_case "step detail carries the tier" `Quick
-            test_step_detail_includes_tier;
+          Alcotest.test_case "step detail carries the tier" `Quick test_step_detail_includes_tier;
         ] );
       ( "field guide",
         [
           Alcotest.test_case "guide content and instruction inject" `Quick
             test_field_guide_injected_when_present;
-          Alcotest.test_case "no file, no injection" `Quick
-            test_field_guide_absent_means_silent;
+          Alcotest.test_case "no file, no injection" `Quick test_field_guide_absent_means_silent;
           Alcotest.test_case "empty file enables the instruction only" `Quick
             test_field_guide_empty_file_enables_instruction_only;
           Alcotest.test_case "an append reaches the next step" `Quick
@@ -6570,40 +5912,31 @@ let () =
           Alcotest.test_case "id embeds workflow name" `Quick test_run_id_format;
           Alcotest.test_case "ids differ across processes" `Quick
             test_run_ids_differ_across_processes;
-          Alcotest.test_case "store persists a run record" `Quick
-            test_store_saves_run;
+          Alcotest.test_case "store persists a run record" `Quick test_store_saves_run;
         ] );
       ( "handoff",
         [
-          Alcotest.test_case "parses status, artifacts, summary" `Quick
-            test_handoff_parses;
+          Alcotest.test_case "parses status, artifacts, summary" `Quick test_handoff_parses;
           Alcotest.test_case "empty artifacts key means none" `Quick
             test_handoff_empty_artifacts_key;
           Alcotest.test_case "empty artifact entries mean none" `Quick
             test_handoff_empty_artifact_entries;
-          Alcotest.test_case "last block wins" `Quick
-            test_handoff_last_block_wins;
-          Alcotest.test_case "missing block is an error" `Quick
-            test_handoff_missing_block;
-          Alcotest.test_case "unknown status is an error" `Quick
-            test_handoff_unknown_status;
+          Alcotest.test_case "last block wins" `Quick test_handoff_last_block_wins;
+          Alcotest.test_case "missing block is an error" `Quick test_handoff_missing_block;
+          Alcotest.test_case "unknown status is an error" `Quick test_handoff_unknown_status;
         ] );
       ( "runner",
         [
-          Alcotest.test_case "one-step workflow completes" `Quick
-            test_end_to_end_pass;
-          Alcotest.test_case "failing harness fails the run" `Quick
-            test_end_to_end_fail;
+          Alcotest.test_case "one-step workflow completes" `Quick test_end_to_end_pass;
+          Alcotest.test_case "failing harness fails the run" `Quick test_end_to_end_fail;
           Alcotest.test_case "missing handoff is a distinct outcome" `Quick
             test_missing_handoff_is_distinct;
           Alcotest.test_case "missing skill fails validation" `Quick
             test_missing_skill_fails_validation;
           Alcotest.test_case "validate lists all missing skills" `Quick
             test_validate_reports_missing_skills;
-          Alcotest.test_case "step output is recorded" `Quick
-            test_step_output_is_recorded;
-          Alcotest.test_case "executor port is swappable" `Quick
-            test_executor_is_swappable;
+          Alcotest.test_case "step output is recorded" `Quick test_step_output_is_recorded;
+          Alcotest.test_case "executor port is swappable" `Quick test_executor_is_swappable;
           Alcotest.test_case "a module-directory workflow runs" `Quick
             test_module_form_workflow_runs;
           Alcotest.test_case "list shows module and flat forms" `Quick
@@ -6612,10 +5945,8 @@ let () =
             test_agents_md_and_inline_context_conflict;
           Alcotest.test_case "execute_run honors a pre-issued run id" `Quick
             test_execute_run_honors_given_run_id;
-          Alcotest.test_case "notify fires when a run stops" `Quick
-            test_notify_fires_when_run_stops;
-          Alcotest.test_case "notify failure is harmless" `Quick
-            test_notify_failure_is_harmless;
+          Alcotest.test_case "notify fires when a run stops" `Quick test_notify_fires_when_run_stops;
+          Alcotest.test_case "notify failure is harmless" `Quick test_notify_failure_is_harmless;
           Alcotest.test_case "a hung notify does not block finishing" `Slow
             test_hung_notify_does_not_block_finishing;
           Alcotest.test_case "prompt carries the handoff protocol" `Quick
@@ -6624,8 +5955,7 @@ let () =
             test_prompt_states_workflow_position;
           Alcotest.test_case "retry prompts share the entry position" `Quick
             test_retry_prompt_states_group_position;
-          Alcotest.test_case "prompt carries step inputs" `Quick
-            test_prompt_carries_step_inputs;
+          Alcotest.test_case "prompt carries step inputs" `Quick test_prompt_carries_step_inputs;
           Alcotest.test_case "retry steps carry their own inputs" `Quick
             test_retry_steps_carry_their_own_inputs;
           Alcotest.test_case "context renders into every prompt" `Quick
@@ -6638,26 +5968,25 @@ let () =
             test_for_each_isolates_handoffs_between_items;
           Alcotest.test_case "forEach retry loops within one item" `Quick
             test_for_each_retry_loops_within_one_item;
-          Alcotest.test_case "escalate inside forEach pauses at the item"
-            `Quick test_for_each_escalate_pauses_at_the_item;
-          Alcotest.test_case "resume uses the snapshot, not the edited file"
-            `Quick test_for_each_resume_uses_the_snapshot;
-          Alcotest.test_case "skip completes the current item step only"
-            `Quick test_for_each_skip_completes_the_item_step_only;
-          Alcotest.test_case "missing referenced column fails before any step"
-            `Quick test_for_each_missing_column_fails_before_any_step;
+          Alcotest.test_case "escalate inside forEach pauses at the item" `Quick
+            test_for_each_escalate_pauses_at_the_item;
+          Alcotest.test_case "resume uses the snapshot, not the edited file" `Quick
+            test_for_each_resume_uses_the_snapshot;
+          Alcotest.test_case "skip completes the current item step only" `Quick
+            test_for_each_skip_completes_the_item_step_only;
+          Alcotest.test_case "missing referenced column fails before any step" `Quick
+            test_for_each_missing_column_fails_before_any_step;
           Alcotest.test_case "missing items file fails at entry" `Quick
             test_for_each_missing_items_file_fails_at_entry;
           Alcotest.test_case "validate defers an absent items file" `Quick
             test_validate_defers_absent_items;
           Alcotest.test_case "run json round-trips a forEach position" `Quick
             test_run_json_roundtrips_for_each_position;
-          Alcotest.test_case "old run json without for_each still loads"
-            `Quick test_old_run_json_still_loads;
+          Alcotest.test_case "old run json without for_each still loads" `Quick
+            test_old_run_json_still_loads;
           Alcotest.test_case "handoffs thread between steps" `Quick
             test_handoffs_thread_between_steps;
-          Alcotest.test_case "fail handoff short-circuits" `Quick
-            test_fail_handoff_short_circuits;
+          Alcotest.test_case "fail handoff short-circuits" `Quick test_fail_handoff_short_circuits;
           Alcotest.test_case "escalate handoff pauses the run" `Quick
             test_escalate_handoff_pauses_run;
           Alcotest.test_case "record keeps handoffs in order" `Quick
@@ -6669,19 +5998,16 @@ let () =
             test_list_workflows_reports_valid_and_invalid;
           Alcotest.test_case "store load hints at version mismatch" `Quick
             test_store_load_hints_version_on_garbage;
-          Alcotest.test_case "last handoff picks the latest" `Quick
-            test_last_handoff_picks_latest;
+          Alcotest.test_case "last handoff picks the latest" `Quick test_last_handoff_picks_latest;
         ] );
       ( "skill-paths",
         [
           Alcotest.test_case "external skill resolves and runs" `Quick
             test_external_skill_resolves_and_runs;
-          Alcotest.test_case "repo skill shadows external" `Quick
-            test_repo_skill_shadows_external;
+          Alcotest.test_case "repo skill shadows external" `Quick test_repo_skill_shadows_external;
           Alcotest.test_case "miss lists every searched path" `Quick
             test_missing_skill_error_lists_searched_paths;
-          Alcotest.test_case "tilde expands against HOME" `Quick
-            test_skill_paths_expand_home;
+          Alcotest.test_case "tilde expands against HOME" `Quick test_skill_paths_expand_home;
         ] );
       ( "visibility",
         [
@@ -6689,17 +6015,15 @@ let () =
             test_run_record_visible_during_first_step;
           Alcotest.test_case "on_step fires per step in order" `Quick
             test_on_step_fires_per_step_in_order;
-          Alcotest.test_case "list runs newest-first" `Quick
-            test_list_runs_newest_first;
-          Alcotest.test_case "list runs empty when none" `Quick
-            test_list_runs_empty_when_none;
+          Alcotest.test_case "list runs newest-first" `Quick test_list_runs_newest_first;
+          Alcotest.test_case "list runs empty when none" `Quick test_list_runs_empty_when_none;
         ] );
       ( "durable store",
         [
-          Alcotest.test_case "save killed midway keeps a complete record"
-            `Quick test_save_killed_midway_keeps_a_complete_record;
-          Alcotest.test_case "abandoned temp record ignored and cleaned"
-            `Quick test_abandoned_temporary_record_is_ignored_and_cleaned;
+          Alcotest.test_case "save killed midway keeps a complete record" `Quick
+            test_save_killed_midway_keeps_a_complete_record;
+          Alcotest.test_case "abandoned temp record ignored and cleaned" `Quick
+            test_abandoned_temporary_record_is_ignored_and_cleaned;
           Alcotest.test_case "list runs skips an unreadable record" `Quick
             test_list_runs_skips_an_unreadable_record;
           Alcotest.test_case "run lock refuses a second holder" `Quick
@@ -6710,18 +6034,15 @@ let () =
             test_run_lock_refuses_a_lock_from_another_host;
           Alcotest.test_case "run lock reports a malformed lock" `Quick
             test_run_lock_reports_a_malformed_lock_as_an_error;
-          Alcotest.test_case "resume refuses a run another process drives"
-            `Quick test_resume_refuses_a_run_another_process_drives;
-          Alcotest.test_case "attach refuses before the chat when driven"
-            `Quick
+          Alcotest.test_case "resume refuses a run another process drives" `Quick
+            test_resume_refuses_a_run_another_process_drives;
+          Alcotest.test_case "attach refuses before the chat when driven" `Quick
             test_attach_refuses_before_the_chat_when_another_process_drives;
         ] );
       ( "init",
         [
-          Alcotest.test_case "scaffolds a valid project" `Quick
-            test_init_scaffolds_valid_project;
-          Alcotest.test_case "refuses an existing .jig" `Quick
-            test_init_refuses_existing_jig_dir;
+          Alcotest.test_case "scaffolds a valid project" `Quick test_init_scaffolds_valid_project;
+          Alcotest.test_case "refuses an existing .jig" `Quick test_init_refuses_existing_jig_dir;
           Alcotest.test_case "claude preset is well-formed" `Quick
             test_init_claude_preset_is_well_formed;
           Alcotest.test_case "codex preset is well-formed" `Quick
@@ -6741,50 +6062,44 @@ let () =
             test_parse_cost_known_and_unknown;
           Alcotest.test_case "handoff found inside a json envelope" `Quick
             test_handoff_inside_json_envelope;
-          Alcotest.test_case "costs recorded per step and in jsonl" `Quick
-            test_metering_end_to_end;
+          Alcotest.test_case "costs recorded per step and in jsonl" `Quick test_metering_end_to_end;
           Alcotest.test_case "cost roundtrips through the store" `Quick
             test_cost_roundtrips_through_store;
-          Alcotest.test_case "session id parsed from harness output" `Quick
-            test_parse_session_id;
+          Alcotest.test_case "session id parsed from harness output" `Quick test_parse_session_id;
           Alcotest.test_case "session id roundtrips through the store" `Quick
             test_session_id_roundtrips_through_store;
-          Alcotest.test_case "attach command substitutes the session id"
-            `Quick test_attach_command_substitution;
+          Alcotest.test_case "attach command substitutes the session id" `Quick
+            test_attach_command_substitution;
         ] );
       ( "isolation",
         [
           Alcotest.test_case "config wrapper prepends to the harness" `Quick
             test_config_wrapper_prepends;
-          Alcotest.test_case "isolated run uses a worktree, resume reuses it"
-            `Quick test_isolated_run_uses_worktree_and_resume_reuses_it;
-          Alcotest.test_case "resume honors the recorded workspace location"
-            `Quick test_resume_honors_recorded_workspace_location;
-          Alcotest.test_case "concurrent isolated runs do not interfere"
-            `Quick test_concurrent_isolated_runs_do_not_interfere;
+          Alcotest.test_case "isolated run uses a worktree, resume reuses it" `Quick
+            test_isolated_run_uses_worktree_and_resume_reuses_it;
+          Alcotest.test_case "resume honors the recorded workspace location" `Quick
+            test_resume_honors_recorded_workspace_location;
+          Alcotest.test_case "concurrent isolated runs do not interfere" `Quick
+            test_concurrent_isolated_runs_do_not_interfere;
         ] );
       ( "lifecycle",
         [
-          Alcotest.test_case "retry loops until the until-step passes" `Quick
-            test_retry_until_pass;
-          Alcotest.test_case "invalid handoff text threads into the retry"
-            `Quick test_invalid_handoff_text_threads_into_retry;
+          Alcotest.test_case "retry loops until the until-step passes" `Quick test_retry_until_pass;
+          Alcotest.test_case "invalid handoff text threads into the retry" `Quick
+            test_invalid_handoff_text_threads_into_retry;
           Alcotest.test_case "exhausted retry escalates to paused" `Quick
             test_retry_exhausted_escalates;
-          Alcotest.test_case "exhausted retry aborts" `Quick
-            test_retry_exhausted_aborts;
-          Alcotest.test_case "on_fail escalate pauses" `Quick
-            test_on_fail_escalate_pauses;
-          Alcotest.test_case "on_fail abort aborts" `Quick
-            test_on_fail_abort_aborts;
+          Alcotest.test_case "exhausted retry aborts" `Quick test_retry_exhausted_aborts;
+          Alcotest.test_case "on_fail escalate pauses" `Quick test_on_fail_escalate_pauses;
+          Alcotest.test_case "on_fail abort aborts" `Quick test_on_fail_abort_aborts;
           Alcotest.test_case "attached pass drives the run onward" `Quick
             test_continue_attached_pass_drives_the_run;
           Alcotest.test_case "attached pass advances the item cursor" `Quick
             test_continue_attached_pass_advances_the_item_cursor;
           Alcotest.test_case "attached escalate stays paused" `Quick
             test_continue_attached_escalate_stays_paused;
-          Alcotest.test_case "unparseable elicitation leaves the run untouched"
-            `Quick test_continue_attached_invalid_leaves_run_untouched;
+          Alcotest.test_case "unparseable elicitation leaves the run untouched" `Quick
+            test_continue_attached_invalid_leaves_run_untouched;
           Alcotest.test_case "skip marks the paused entry done" `Quick
             test_skip_marks_paused_entry_done;
           Alcotest.test_case "skip advances past the whole retry group" `Quick
@@ -6800,89 +6115,75 @@ let () =
         [
           Alcotest.test_case "a step child leads its own process group" `Quick
             test_child_leads_its_own_process_group;
-          Alcotest.test_case "a time limit stops the child and grandchild"
-            `Quick test_time_limit_stops_child_and_grandchild;
+          Alcotest.test_case "a time limit stops the child and grandchild" `Quick
+            test_time_limit_stops_child_and_grandchild;
           Alcotest.test_case "a time limit escalates to SIGKILL" `Slow
             test_time_limit_escalates_to_sigkill;
           Alcotest.test_case "a grandchild gets the grace period" `Quick
             test_grandchild_gets_grace_after_leader_exits;
-          Alcotest.test_case "a child within its time limit keeps its exit code"
-            `Quick test_child_within_time_limit_keeps_exit_code;
-          Alcotest.test_case "SIGINT to a foreground run stops the grandchild"
-            `Quick test_sigint_to_foreground_run_stops_grandchild;
-          Alcotest.test_case "SIGTERM to a foreground run stops the grandchild"
-            `Quick test_sigterm_to_foreground_run_stops_grandchild;
-          Alcotest.test_case "SIGTERM to a detached run stops the grandchild"
-            `Quick test_sigterm_to_detached_run_stops_grandchild;
+          Alcotest.test_case "a child within its time limit keeps its exit code" `Quick
+            test_child_within_time_limit_keeps_exit_code;
+          Alcotest.test_case "SIGINT to a foreground run stops the grandchild" `Quick
+            test_sigint_to_foreground_run_stops_grandchild;
+          Alcotest.test_case "SIGTERM to a foreground run stops the grandchild" `Quick
+            test_sigterm_to_foreground_run_stops_grandchild;
+          Alcotest.test_case "SIGTERM to a detached run stops the grandchild" `Quick
+            test_sigterm_to_detached_run_stops_grandchild;
           Alcotest.test_case "SIGTERM to jig stops every parallel item" `Quick
             test_sigterm_to_jig_stops_every_parallel_item;
-          Alcotest.test_case "a forked worker starts with nothing in flight"
-            `Quick test_forked_worker_starts_with_nothing_in_flight;
+          Alcotest.test_case "a forked worker starts with nothing in flight" `Quick
+            test_forked_worker_starts_with_nothing_in_flight;
         ] );
       ( "attempts",
         [
-          Alcotest.test_case "a killed step leaves its attempt in flight"
-            `Quick test_killed_step_leaves_its_attempt_in_flight;
-          Alcotest.test_case "resume records the interrupted attempt"
-            `Quick
+          Alcotest.test_case "a killed step leaves its attempt in flight" `Quick
+            test_killed_step_leaves_its_attempt_in_flight;
+          Alcotest.test_case "resume records the interrupted attempt" `Quick
             test_resume_records_the_interrupted_attempt_and_meters_each_once;
-          Alcotest.test_case "resume meters a step saved before a crash"
-            `Quick test_resume_meters_a_step_saved_before_a_crash;
-          Alcotest.test_case "resume continues a retry group at the paused step"
-            `Quick test_resume_continues_a_retry_group_at_the_paused_step;
-          Alcotest.test_case "resume continues a retry group in a forEach item"
-            `Quick test_resume_continues_a_retry_group_in_a_for_each_item;
-          Alcotest.test_case
-            "resume refuses a step past a shrunken retry group" `Quick
+          Alcotest.test_case "resume meters a step saved before a crash" `Quick
+            test_resume_meters_a_step_saved_before_a_crash;
+          Alcotest.test_case "resume continues a retry group at the paused step" `Quick
+            test_resume_continues_a_retry_group_at_the_paused_step;
+          Alcotest.test_case "resume continues a retry group in a forEach item" `Quick
+            test_resume_continues_a_retry_group_in_a_for_each_item;
+          Alcotest.test_case "resume refuses a step past a shrunken retry group" `Quick
             test_resume_refuses_a_step_past_a_shrunken_retry_group;
           Alcotest.test_case "run json rejects a negative step index" `Quick
             test_run_json_rejects_a_negative_step_index;
-          Alcotest.test_case "a crash in a retry group resumes at the killed step"
-            `Quick test_crash_in_a_retry_group_resumes_at_the_killed_step;
-          Alcotest.test_case
-            "a crash in a forEach retry group resumes at the item and step"
-            `Quick
+          Alcotest.test_case "a crash in a retry group resumes at the killed step" `Quick
+            test_crash_in_a_retry_group_resumes_at_the_killed_step;
+          Alcotest.test_case "a crash in a forEach retry group resumes at the item and step" `Quick
             test_crash_in_a_for_each_retry_group_resumes_at_the_item_and_step;
-          Alcotest.test_case
-            "a crash after a plain step result does not run it again" `Quick
+          Alcotest.test_case "a crash after a plain step result does not run it again" `Quick
             test_crash_after_a_plain_step_result_does_not_run_it_again;
-          Alcotest.test_case
-            "a crash after a retry step result does not run it again" `Quick
+          Alcotest.test_case "a crash after a retry step result does not run it again" `Quick
             test_crash_after_a_retry_step_result_does_not_run_it_again;
-          Alcotest.test_case
-            "a crash after a failed retry step starts the next iteration"
-            `Quick
+          Alcotest.test_case "a crash after a failed retry step starts the next iteration" `Quick
             test_crash_after_a_failed_retry_step_starts_the_next_iteration;
-          Alcotest.test_case
-            "a crash after an invalid handoff threads its output" `Quick
+          Alcotest.test_case "a crash after an invalid handoff threads its output" `Quick
             test_crash_after_an_invalid_handoff_threads_its_output;
-          Alcotest.test_case
-            "a crash early in a paused resume still re-runs the step" `Quick
+          Alcotest.test_case "a crash early in a paused resume still re-runs the step" `Quick
             test_crash_early_in_a_paused_resume_still_reruns_the_step;
-          Alcotest.test_case
-            "a crash after a forEach item result moves to the next item"
-            `Quick
+          Alcotest.test_case "a crash after a forEach item result moves to the next item" `Quick
             test_crash_after_a_for_each_item_result_moves_to_the_next_item;
-          Alcotest.test_case
-            "a crash after an escalate result pauses, then re-runs on resume"
-            `Quick
-            test_crash_after_an_escalate_result_pauses_then_reruns_on_resume;
+          Alcotest.test_case "a crash after an escalate result pauses, then re-runs on resume"
+            `Quick test_crash_after_an_escalate_result_pauses_then_reruns_on_resume;
           Alcotest.test_case "the ledger lists one run's attempt ids" `Quick
             test_ledger_lists_the_attempt_ids_of_one_run;
           Alcotest.test_case "a drive reads the ledger at most once" `Quick
             test_a_drive_reads_the_ledger_at_most_once;
           Alcotest.test_case "metering appends after a torn line" `Quick
             test_metering_appends_after_a_torn_line;
-          Alcotest.test_case "step keys follow items, iterations, steps"
-            `Quick test_step_keys_follow_items_iterations_and_retry_steps;
+          Alcotest.test_case "step keys follow items, iterations, steps" `Quick
+            test_step_keys_follow_items_iterations_and_retry_steps;
           Alcotest.test_case "run json round-trips attempts" `Quick
             test_run_json_round_trips_attempts;
-          Alcotest.test_case "an older paused record was paused by its last step"
-            `Quick test_older_paused_record_was_paused_by_its_last_step;
+          Alcotest.test_case "an older paused record was paused by its last step" `Quick
+            test_older_paused_record_was_paused_by_its_last_step;
           Alcotest.test_case "an error after spawn keeps the attempt" `Quick
             test_an_error_after_spawn_keeps_the_attempt;
-          Alcotest.test_case "an infrastructure error keeps saved steps"
-            `Quick test_infrastructure_error_keeps_the_saved_steps;
+          Alcotest.test_case "an infrastructure error keeps saved steps" `Quick
+            test_infrastructure_error_keeps_the_saved_steps;
         ] );
       ( "interrupted attempts",
         [
@@ -6904,32 +6205,30 @@ let () =
             test_attach_after_a_crash_opens_the_interrupted_session;
           Alcotest.test_case "a live orphan harness blocks the resume" `Quick
             test_a_live_orphan_harness_blocks_the_resume;
-          Alcotest.test_case "a child on another host blocks the resume"
-            `Quick test_a_child_on_another_host_blocks_the_resume;
+          Alcotest.test_case "a child on another host blocks the resume" `Quick
+            test_a_child_on_another_host_blocks_the_resume;
           Alcotest.test_case "a reused pid does not block the resume" `Quick
             test_a_reused_pid_does_not_block_the_resume;
-          Alcotest.test_case "a live harness blocks the attach hand-back"
-            `Quick test_a_live_harness_blocks_the_attach_hand_back;
+          Alcotest.test_case "a live harness blocks the attach hand-back" `Quick
+            test_a_live_harness_blocks_the_attach_hand_back;
         ] );
       ( "parallel forEach",
         [
           Alcotest.test_case "config concurrency" `Quick test_config_concurrency;
-          Alcotest.test_case "items run at once, each in its own worktree"
-            `Quick test_parallel_items_run_at_once_each_in_its_own_worktree;
-          Alcotest.test_case "a passed item's commits stay on a branch"
-            `Quick test_a_passed_items_commits_stay_on_a_branch;
+          Alcotest.test_case "items run at once, each in its own worktree" `Quick
+            test_parallel_items_run_at_once_each_in_its_own_worktree;
+          Alcotest.test_case "a passed item's commits stay on a branch" `Quick
+            test_a_passed_items_commits_stay_on_a_branch;
           Alcotest.test_case "concurrency above 1 needs --isolated" `Quick
             test_parallel_items_need_an_isolated_run;
-          Alcotest.test_case "a crash with items in flight resumes each item"
-            `Quick test_crash_with_items_in_flight_resumes_each_item;
-          Alcotest.test_case "an escalating interruption pauses every item"
-            `Quick test_an_escalating_interruption_pauses_every_item;
-          Alcotest.test_case
-            "an escalating item lets items in flight finish, then pauses"
-            `Quick
+          Alcotest.test_case "a crash with items in flight resumes each item" `Quick
+            test_crash_with_items_in_flight_resumes_each_item;
+          Alcotest.test_case "an escalating interruption pauses every item" `Quick
+            test_an_escalating_interruption_pauses_every_item;
+          Alcotest.test_case "an escalating item lets items in flight finish, then pauses" `Quick
             test_an_escalating_item_lets_items_in_flight_finish_then_pauses;
-          Alcotest.test_case "a failing item fails the run, keeps its worktree"
-            `Quick test_a_failing_item_fails_the_run_and_keeps_its_worktree;
+          Alcotest.test_case "a failing item fails the run, keeps its worktree" `Quick
+            test_a_failing_item_fails_the_run_and_keeps_its_worktree;
           Alcotest.test_case "the step tree shows every item in flight" `Quick
             test_progress_shows_every_parallel_item_in_flight;
           Alcotest.test_case "run json round-trips items in progress" `Quick
@@ -6937,7 +6236,7 @@ let () =
         ] );
       ( "telemetry",
         [
-          Alcotest.test_case "subprocess environment reaches only the child"
-            `Quick test_subprocess_environment_reaches_only_the_child;
+          Alcotest.test_case "subprocess environment reaches only the child" `Quick
+            test_subprocess_environment_reaches_only_the_child;
         ] );
     ]

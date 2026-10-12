@@ -1,8 +1,4 @@
-type exec_result = {
-  exit_code : int;
-  stdout : string;
-  stderr : string;
-}
+type exec_result = { exit_code : int; stdout : string; stderr : string }
 
 module type S = sig
   val execute :

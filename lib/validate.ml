@@ -17,9 +17,7 @@ let for_each_problems ~workflow_dir (workflow : Workflow.t) =
           | Error _ -> None
           | Ok items -> (
               match
-                Items.check_columns ~path
-                  ~required:(Workflow.for_each_columns for_each)
-                  items
+                Items.check_columns ~path ~required:(Workflow.for_each_columns for_each) items
               with
               | Error message -> Some message
               | Ok () -> None)))
@@ -42,9 +40,7 @@ let tier_warnings ~jig_dir ~skill_paths ~tiers (workflow : Workflow.t) =
             match Skill.resolve_path ~jig_dir ~skill_paths ~name with
             | Error _ -> None
             | Ok path -> (
-                match Skill.load_path path with
-                | Error _ -> None
-                | Ok skill -> skill.Skill.tier))
+                match Skill.load_path path with Error _ -> None | Ok skill -> skill.Skill.tier))
           (Workflow.referenced_skills workflow)
       in
       List.filter_map
@@ -53,8 +49,7 @@ let tier_warnings ~jig_dir ~skill_paths ~tiers (workflow : Workflow.t) =
           else
             Some
               (Printf.sprintf
-                 "tier %S is not mapped in config tiers; its steps will run \
-                  on the default harness"
+                 "tier %S is not mapped in config tiers; its steps will run on the default harness"
                  tier))
         (List.sort_uniq compare (step_tiers @ skill_tiers))
 
@@ -70,24 +65,20 @@ let workflow ~workflow_dir ~jig_dir ~skill_paths (workflow : Workflow.t) =
   match skill_problems @ for_each_problems ~workflow_dir workflow with
   | [] -> Ok ()
   | problems ->
-      Error
-        (Printf.sprintf "workflow %S: %s" workflow.Workflow.name
-           (String.concat "; " problems))
+      Error (Printf.sprintf "workflow %S: %s" workflow.Workflow.name (String.concat "; " problems))
 
 let concurrency_isolation_message concurrency =
   Printf.sprintf
-    "config: concurrency %d needs --isolated: forEach items that run in parallel \
-     each work in their own git worktree. Start the run with --isolated, or \
-     set concurrency: 1 in .jig/config.yaml"
+    "config: concurrency %d needs --isolated: forEach items that run in parallel each work in \
+     their own git worktree. Start the run with --isolated, or set concurrency: 1 in \
+     .jig/config.yaml"
     concurrency
 
 (* Parallel forEach items each get a git worktree, which only an isolated
    run creates; a workflow with no forEach ignores concurrency. *)
 let concurrency_isolation ~concurrency ~isolated (workflow : Workflow.t) =
   let has_for_each =
-    List.exists
-      (function Workflow.For_each _ -> true | _ -> false)
-      workflow.Workflow.entries
+    List.exists (function Workflow.For_each _ -> true | _ -> false) workflow.Workflow.entries
   in
   if concurrency > 1 && has_for_each && not isolated then
     Error (concurrency_isolation_message concurrency)

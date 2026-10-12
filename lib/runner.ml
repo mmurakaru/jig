@@ -621,6 +621,8 @@ struct
         command;
         started_at;
         child_pid = None;
+        child_host = None;
+        child_start_time = None;
         session_id;
         on_interrupt;
         probe_before;
@@ -635,22 +637,34 @@ struct
     in
     let spawned_attempt = ref attempt in
     let on_spawn ~child_pid ~stdout_path ~stderr_path =
-      spawned_attempt :=
+      (* Best effort: the outcome save that follows reports a failing store. *)
+      let save_spawned_attempt spawned =
+        spawned_attempt := spawned;
+        ignore
+          (persist engine
+             (with_attempt_in_flight progress spawned)
+             ~status:Run.Running ~finished:false)
+      in
+      let spawned =
         {
           attempt with
           Run.child_pid = Some child_pid;
+          child_host = Some (Unix.gethostname ());
           stdout_path = Some stdout_path;
-        };
-      (* Best effort: the outcome save that follows reports a failing store. *)
-      ignore
-        (persist engine
-           (with_attempt_in_flight progress !spawned_attempt)
-           ~status:Run.Running ~finished:false);
+        }
+      in
+      save_spawned_attempt spawned;
       Current.write ~runs_dir:(runs_dir engine)
         ~run_id:progress.run.Run.id
         { Current.skill = label; item_key; tier; stdout_path; stderr_path;
           started_at };
-      engine.on_event (Step_output { stdout_path; stderr_path })
+      engine.on_event (Step_output { stdout_path; stderr_path });
+      (* Last: the ps read must not delay the pid record or the live pointer. *)
+      save_spawned_attempt
+        {
+          spawned with
+          Run.child_start_time = Process_identity.start_time child_pid;
+        }
     in
     let process_result = start_process ~on_spawn in
     Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
@@ -1280,6 +1294,7 @@ struct
                run_id
                (Run.string_of_status status))
     in
+    let* () = Process_identity.refuse_while_attempts_run existing in
     let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in
@@ -1358,6 +1373,7 @@ struct
                run_id
                (Run.string_of_status status))
     in
+    let* () = Process_identity.refuse_while_attempts_run existing in
     let* jig_dir, workflow_dir, workflow, config =
       load_project ~root ~workflow_name:existing.Run.workflow
     in

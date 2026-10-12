@@ -26,6 +26,10 @@ can override it, and `config.yaml` maps tier names to harness commands. A
 skill that is mechanical by nature (running tests, capturing output)
 declares that here once, instead of in every workflow that uses it.
 
+Other frontmatter keys (a `name:` or `description:` from harness skill
+ecosystems) are ignored. A file with no leading `---` has no frontmatter
+and passes byte-for-byte.
+
 `on_interrupt` says what a resume does with an attempt of this skill that
 stopped mid-step (jig was killed, the machine went down). Such an attempt
 may have done part of its work: changed files, made commits, pushed, or
@@ -47,10 +51,12 @@ opened a pull request.
 This follows pi-durable's rule that an interrupted call is never replayed
 unless it is marked safe to replay
 ([earendil-works/pi, packages/durable](https://github.com/earendil-works/pi/tree/main/packages/durable)).
-`jig validate` rejects any other value. Command steps always rerun. Other
-frontmatter keys (a `name:` or `description:` from harness skill
-ecosystems) are ignored. A file with no leading `---` has no frontmatter
-and passes byte-for-byte.
+`jig validate` rejects any other value. Command steps always rerun.
+
+Whatever the policy, a resume (or `jig attach`) refuses while the
+interrupted attempt's process still runs: jig records its pid, start time,
+and host at spawn, and names the pid (or the other host) so you can stop
+it or wait.
 
 ## The prompt
 

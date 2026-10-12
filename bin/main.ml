@@ -311,6 +311,7 @@ let attach_run run_id latest step_number =
                    (List.length steps) number))
       | None -> Jig_core.Attach.session_of_run run
     in
+    let* () = Jig_core.Process_identity.refuse_while_attempts_run run in
     let workspace = Option.value run.Jig_core.Run.workspace ~default:root in
     let* () =
       if Sys.file_exists workspace then Ok ()

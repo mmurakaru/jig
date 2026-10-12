@@ -41,9 +41,13 @@ schema routes on outcomes and never evaluates expressions.
 
 ## Step-skills - `.jig/skills/<name>/SKILL.md`
 
-Flat Markdown, **no frontmatter** - the body reaches the step agent
-byte-for-byte (this is a different artifact from harness skills like the
-one you are reading). Shape that works:
+Markdown; the body reaches the step agent byte-for-byte (this is a
+different artifact from harness skills like the one you are reading). An
+optional frontmatter block carries runner keys only: `tier:` and
+`on_interrupt: recover | rerun | escalate` (what a resume does after a
+crash cut an attempt off; default `recover`, `rerun` only for skills safe
+to run twice, `escalate` for skills with effects a human must check).
+Shape that works:
 
 ```markdown
 # Reproduce the issue

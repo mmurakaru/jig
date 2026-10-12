@@ -1,0 +1,65 @@
+{
+  "id": "2026-10-12-bugfix-114827-27710-1",
+  "workflow": "bugfix",
+  "task": "Listing 25 items at 10 per page shows only 2 pages.",
+  "status": "failed",
+  "position": { "entry_index": 1, "iterations_used": 0 },
+  "steps": [
+    {
+      "skill": "reproduce-issue",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "reproduce-issue call 1"
+      },
+      "session_id": "stub-reproduce-issue-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-114827-27710-1/e0/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-114827-27710-1/e0/r0/s0#1",
+        "skill": "reproduce-issue",
+        "command": [
+          "python3", "/tmp/jig-record.3r6Pw2/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T11:48:27Z",
+        "child_pid": 27711,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 11:48:27 2026",
+        "on_interrupt": "recover"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: reproduce-issue call 1\\n```\\n\", \"session_id\": \"stub-reproduce-issue-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T11:48:27Z",
+      "finished_at": "2026-10-12T11:48:27Z"
+    },
+    {
+      "skill": "write-failing-test",
+      "outcome": "invalid-handoff",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff_error": "handoff: no ```handoff block found in step output",
+      "session_id": "stub-write-failing-test-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-114827-27710-1/e1/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-114827-27710-1/e1/r0/s0#1",
+        "skill": "write-failing-test",
+        "command": [
+          "python3", "/tmp/jig-record.3r6Pw2/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T11:48:27Z",
+        "child_pid": 27713,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 11:48:27 2026",
+        "on_interrupt": "recover"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"I could not finish this step.\", \"session_id\": \"stub-write-failing-test-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T11:48:27Z",
+      "finished_at": "2026-10-12T11:48:27Z"
+    }
+  ],
+  "started_at": "2026-10-12T11:48:27Z",
+  "finished_at": "2026-10-12T11:48:27Z"
+}

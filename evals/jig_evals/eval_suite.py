@@ -17,18 +17,23 @@ JIG_AGENT_IMPORT_PATH = "jig_evals.jig_agent:JigAgent"
 BASELINE_AGENT_NAME = "claude-code"
 
 
+def harbor_cli_path() -> Path:
+    """Return the harbor CLI installed next to this Python, so the pinned version runs."""
+    return Path(sys.executable).parent / "harbor"
+
+
 def build_agent_configs(options: argparse.Namespace) -> list[dict]:
     """Return the Harbor agent entries: one per arm, all on the same model."""
     if options.smoke:
         return [{"name": "oracle"}, {"name": "nop"}]
-    jig_kwargs: dict = {}
+    jig_agent_options: dict = {}
     if options.jig_binary is not None:
-        jig_kwargs["jig_binary_path"] = str(Path(options.jig_binary).resolve())
+        jig_agent_options["jig_binary_path"] = str(Path(options.jig_binary).resolve())
     else:
-        jig_kwargs["jig_release"] = options.jig_release
+        jig_agent_options["jig_release"] = options.jig_release
     if options.mechanical_model is not None:
-        jig_kwargs["mechanical_model"] = options.mechanical_model
-    agents = [{"import_path": JIG_AGENT_IMPORT_PATH, "model_name": options.model, "kwargs": jig_kwargs}]
+        jig_agent_options["mechanical_model"] = options.mechanical_model
+    agents = [{"import_path": JIG_AGENT_IMPORT_PATH, "model_name": options.model, "kwargs": jig_agent_options}]
     if not options.no_baseline:
         agents.append({"name": BASELINE_AGENT_NAME, "model_name": options.model})
     return agents
@@ -72,10 +77,9 @@ def parse_suite_arguments(arguments: list[str] | None) -> argparse.Namespace:
 def main(arguments: list[str] | None = None) -> int:
     options = parse_suite_arguments(arguments)
     job_config = build_job_config(options)
-    harbor = Path(sys.executable).parent / "harbor"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as config_file:
         json.dump(job_config, config_file)
-    harbor_exit_code = subprocess.run([str(harbor), "run", "-c", config_file.name, "-y", "-q"]).returncode
+    harbor_exit_code = subprocess.run([str(harbor_cli_path()), "run", "-c", config_file.name, "-y", "-q"]).returncode
     Path(config_file.name).unlink()
 
     job_directory = Path(job_config["jobs_dir"]) / options.job_name

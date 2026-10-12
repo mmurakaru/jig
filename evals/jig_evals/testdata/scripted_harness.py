@@ -1,4 +1,4 @@
-"""Stand-in harness: answers each jig step per JIG_STUB_SCENARIO, counting calls in JIG_STUB_STATE_DIR."""
+"""Stand-in harness: answers each jig step per JIG_STUB_SCENARIO, counting calls in JIG_STUB_STATE_DIRECTORY."""
 
 import json
 import os
@@ -27,9 +27,9 @@ def main() -> None:
     skill_match = re.search(r"Workflow: \S+ - step \d+ of \d+ \(([a-z-]+)\)", prompt)
     skill = skill_match.group(1) if skill_match else "unknown"
     scenario = os.environ["JIG_STUB_SCENARIO"]
-    state_dir = Path(os.environ["JIG_STUB_STATE_DIR"])
-    state_dir.mkdir(parents=True, exist_ok=True)
-    counter_path = state_dir / f"{skill}.count"
+    state_directory = Path(os.environ["JIG_STUB_STATE_DIRECTORY"])
+    state_directory.mkdir(parents=True, exist_ok=True)
+    counter_path = state_directory / f"{skill}.count"
     call_number = int(counter_path.read_text()) + 1 if counter_path.exists() else 1
     counter_path.write_text(str(call_number))
 

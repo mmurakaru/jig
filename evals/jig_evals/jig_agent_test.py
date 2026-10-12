@@ -4,15 +4,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from jig_evals.jig_agent import JigAgent, jig_run_command
+from jig_evals.jig_agent import JIG_OUTPUT_LOG_NAME, JIG_RUNS_LOG_NAME, JigAgent, jig_run_command
 from jig_evals.jig_run_summary import summarize_jig_run
 
 
 @pytest.mark.parametrize("jig_exit_code", [0, 1, 2])
 def test_run_command_exits_zero_and_records_the_jig_exit_code(tmp_path, jig_exit_code):
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_jig = fake_bin / "jig"
+    fake_bin_directory = tmp_path / "bin"
+    fake_bin_directory.mkdir()
+    fake_jig = fake_bin_directory / "jig"
     fake_jig.write_text(
         "#!/bin/sh\n"
         'printf \'{"id": "run-1", "status": "paused", "steps": []}\' > .jig/runs/run-1.json\n'
@@ -27,14 +27,14 @@ def test_run_command_exits_zero_and_records_the_jig_exit_code(tmp_path, jig_exit
     completed = subprocess.run(
         ["bash", "-c", "set -o pipefail; " + jig_run_command("bugfix", str(logs))],
         cwd=workspace,
-        env={"PATH": f"{fake_bin}:/usr/bin:/bin", "JIG_EVAL_TASK": "fix 'the' bug"},
+        env={"PATH": f"{fake_bin_directory}:/usr/bin:/bin", "JIG_EVAL_TASK": "fix 'the' bug"},
     )
 
     assert completed.returncode == 0
-    summary = summarize_jig_run(logs / "jig-runs")
+    summary = summarize_jig_run(logs / JIG_RUNS_LOG_NAME)
     assert summary.exit_code == jig_exit_code
     assert summary.run_id == "run-1"
-    assert (logs / "jig-output.txt").read_text() == "task was: fix 'the' bug\n"
+    assert (logs / JIG_OUTPUT_LOG_NAME).read_text() == "task was: fix 'the' bug\n"
 
 
 def make_agent(tmp_path: Path, **options) -> JigAgent:
@@ -75,5 +75,5 @@ def test_harness_environment_passes_auth_from_the_host_only(tmp_path, monkeypatc
 
 
 def test_unknown_option_is_rejected(tmp_path):
-    with pytest.raises(Exception, match="no_such_option"):
+    with pytest.raises(ValueError, match="Unknown option .no_such_option."):
         make_agent(tmp_path, no_such_option=True)

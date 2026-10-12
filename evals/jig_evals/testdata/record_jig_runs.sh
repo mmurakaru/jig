@@ -20,7 +20,7 @@ tiers:
   mechanical: ["python3", "$scratch/scripted_harness.py", "--mechanical"]
 CONFIG
   exit_code=0
-  JIG_STUB_SCENARIO="$scenario" JIG_STUB_STATE_DIR="$scratch/state-$scenario" \
+  JIG_STUB_SCENARIO="$scenario" JIG_STUB_STATE_DIRECTORY="$scratch/state-$scenario" \
     "$jig_binary" run bugfix --task "Listing 25 items at 10 per page shows only 2 pages." \
     > /dev/null 2>&1 || exit_code=$?
   target="$testdata/jig-runs/$scenario"

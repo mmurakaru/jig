@@ -45,27 +45,28 @@ It builds the Linux binary from the checkout and reads the `ANTHROPIC_API_KEY` r
 ## The report
 
 The report has one block per arm.
-A trial is solved when the verifier writes reward 1: the hidden tests and the visible suite both pass.
+A trial is solved when the verifier writes reward 1 (the hidden tests and the visible suite both pass) and nothing timed out.
 
 - `solve rate`: solved trials over all trials.
 - `unattended solve rate`: solved trials whose run also finished on its own.
   For jig, the run status must be `completed`: a paused run waits for a human that an unattended eval never has, so it does not count, even when the verifier scores the workspace as fixed.
   For the baseline, the agent must end without an error or a timeout.
-- `cost per trial`: mean USD over trials that reported a cost.
-  A jig run reports the sum of its steps' metered cost.
-  Trials with no cost at all are counted next to it, never treated as free.
+- `cost per trial`: mean USD over trials that reported a whole cost.
+  A jig run reports the sum of its steps' metered cost, but only when every step reported one.
+  Trials without a whole cost are counted next to it, never treated as free.
 - `cost per solved task`: total cost of all trials, failed ones included, over solved trials.
   A cheap run that fails is not a saving.
-- `timeouts`: trials stopped by Harbor's agent timeout, or jig runs with a step that timed out; neither counts as solved unattended.
+  When some trials reported no cost, the number is marked as a lower bound.
+- `timeouts`: trials stopped by Harbor's agent timeout, or jig runs with a step that timed out; neither counts as solved.
 - `solved per task`: solved over attempts for each task.
 
 jig arms also show:
 
-- `cost per tier`: metered cost by tier (`default` is the default harness).
+- `cost per tier (all trials)`: metered cost by tier over the whole arm (`default` is the default harness).
   Steps whose harness reported no cost are counted as unknown-cost steps.
 - `retry iterations`: mean number of `run-tests` step records per trial, which is one per iteration of the bugfix retry group.
 - `escalation rate`: trials whose run paused.
-  `agent-escalated` means a step handed off `status: escalate`; `failure-escalated` means jig escalated a failure (`on_fail: escalate`, or the retry group ran out of iterations).
+  `agent-escalated` means a step handed off `status: escalate`; `failure-escalated` means jig escalated a failed, invalid, or timed-out step (`on_fail: escalate`, or the retry group ran out of iterations).
 - `invalid-handoff rate`: steps whose output had no valid handoff block, over all steps, and how many trials had one.
 
 ## How the adapter works

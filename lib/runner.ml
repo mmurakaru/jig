@@ -90,7 +90,6 @@ type worker_message =
       (* All of the item's, since a recovery updates them in place. *)
       interrupted_attempts : Run.attempt list;
     }
-  (* The worker waits for the driver's answer before it signals the child. *)
   | Worker_timeout_mark of Run.attempt
   | Worker_metering of Metering.event
   | Worker_event of run_event
@@ -357,6 +356,8 @@ struct
     | 1 -> Some (Bytes.get byte 0)
     | _ -> None
     | exception Unix.Unix_error (Unix.EINTR, _, _) ->
+        (* A stopping driver answers no mark, so a forwarded signal stops here. *)
+        Process_group.exit_if_stop_requested ();
         read_acknowledgement descriptor
     | exception Unix.Unix_error _ -> None
 

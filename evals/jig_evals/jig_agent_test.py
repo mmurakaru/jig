@@ -49,6 +49,7 @@ def test_eval_config_runs_claude_headless_on_the_trial_model(tmp_path):
     # jig appends the prompt last, so the list must not end on a multi-value flag.
     assert harness[-2:] == ["--permission-mode", "bypassPermissions"]
     assert "tiers" not in config
+    assert config["timeout"] == {"default": "15m"}
 
 
 def test_mechanical_model_adds_a_mechanical_tier(tmp_path):

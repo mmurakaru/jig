@@ -45,6 +45,9 @@ class JigAgentOptions(InstalledAgentOptions):
         default=None, description="Model for the mechanical tier; unset keeps one harness."
     )
     install_harness: bool = Field(default=True, description="Install the Claude Code CLI.")
+    step_timeout: str = Field(
+        default="15m", description="jig's limit per step attempt; keep it well under the task's agent timeout."
+    )
 
 
 def claude_harness_command(model: str | None) -> list[str]:
@@ -63,11 +66,12 @@ def claude_harness_command(model: str | None) -> list[str]:
     ]
 
 
-def render_jig_eval_config(harness: list[str], mechanical_harness: list[str] | None) -> str:
+def render_jig_eval_config(harness: list[str], mechanical_harness: list[str] | None, step_timeout: str) -> str:
     """Return a .jig/config.yaml; JSON flow sequences are valid YAML."""
     lines = [f"harness: {json.dumps(harness)}"]
     if mechanical_harness is not None:
         lines += ["tiers:", f"  mechanical: {json.dumps(mechanical_harness)}"]
+    lines += ["timeout:", f"  default: {json.dumps(step_timeout)}"]
     return "\n".join(lines) + "\n"
 
 
@@ -159,7 +163,7 @@ class JigAgent(BaseInstalledAgent):
             if self.options.mechanical_model
             else None
         )
-        return render_jig_eval_config(harness, mechanical_harness)
+        return render_jig_eval_config(harness, mechanical_harness, self.options.step_timeout)
 
     @override
     async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:

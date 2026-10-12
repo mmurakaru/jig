@@ -17,9 +17,11 @@ let posix_signal_number signal =
   else if signal = Sys.sigterm then 15
   else abs signal
 
-(* The process group of the child [run] is waiting on, if any; the signal
-   forwarding handlers stop it before jig exits. *)
+(* The child [run] waits on; its pid is also its process group id. *)
 let current_child_process_group : int option ref = ref None
+
+(* Set by a forwarded signal; the waiting thread stops the group and exits. *)
+let requested_stop_signal : int option ref = ref None
 
 let termination_grace_seconds = 5.0
 let child_poll_interval_seconds = 0.1
@@ -31,51 +33,65 @@ let signal_process_group process_group_id signal =
     try Unix.kill process_group_id signal
     with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
 
+let process_group_has_members process_group_id =
+  match Unix.kill (-process_group_id) 0 with
+  | () -> true
+  | exception Unix.Unix_error (Unix.ESRCH, _, _) -> false
+
 let rec poll_child_exit child_pid =
   match Unix.waitpid [ Unix.WNOHANG ] child_pid with
   | 0, _ -> None
   | _, status -> Some status
   | exception Unix.Unix_error (Unix.EINTR, _, _) -> poll_child_exit child_pid
 
-let rec wait_for_child_until child_pid ~deadline =
+(* None means [stop_waiting] turned true while the child still ran. *)
+let rec wait_for_child_until child_pid ~stop_waiting =
   match poll_child_exit child_pid with
   | Some status -> Some status
-  | None
-    when Option.fold ~none:false
-           ~some:(fun deadline -> Unix.gettimeofday () >= deadline)
-           deadline ->
-      None
+  | None when stop_waiting () -> None
   | None ->
       Unix.sleepf child_poll_interval_seconds;
-      wait_for_child_until child_pid ~deadline
+      wait_for_child_until child_pid ~stop_waiting
 
-(** Stops a child's whole process group: SIGTERM, a grace period, then SIGKILL.
-    The child must lead its own group, as every [run] child does. *)
-let terminate_process_group ?(grace_seconds = termination_grace_seconds)
-    child_pid =
+let rec wait_for_empty_group process_group_id ~until =
+  if process_group_has_members process_group_id && Unix.gettimeofday () < until
+  then (
+    Unix.sleepf child_poll_interval_seconds;
+    wait_for_empty_group process_group_id ~until)
+
+(** Stops a child's whole process group: SIGTERM, a grace period, then SIGKILL. *)
+let terminate_process_group child_pid =
+  let grace_ends_at = Unix.gettimeofday () +. termination_grace_seconds in
+  let grace_has_ended () = Unix.gettimeofday () >= grace_ends_at in
   signal_process_group child_pid Sys.sigterm;
   let status =
-    match
-      wait_for_child_until child_pid
-        ~deadline:(Some (Unix.gettimeofday () +. grace_seconds))
-    with
+    match wait_for_child_until child_pid ~stop_waiting:grace_has_ended with
     | Some status -> status
     | None ->
         signal_process_group child_pid Sys.sigkill;
-        Option.get (wait_for_child_until child_pid ~deadline:None)
+        Option.get
+          (wait_for_child_until child_pid ~stop_waiting:(fun () -> false))
   in
-  (* Descendants that ignored SIGTERM or outlived the leader. *)
+  wait_for_empty_group child_pid ~until:grace_ends_at;
   signal_process_group child_pid Sys.sigkill;
   status
 
-(* A poll loop, not a blocking waitpid, so signal handlers run within one
-   tick; past [deadline], [on_deadline] runs before the group is stopped. *)
 let wait_for_child child_pid ~deadline ~on_deadline =
-  match wait_for_child_until child_pid ~deadline with
+  let deadline_has_passed () =
+    match deadline with
+    | Some deadline -> Unix.gettimeofday () >= deadline
+    | None -> false
+  in
+  let stop_waiting () =
+    Option.is_some !requested_stop_signal || deadline_has_passed ()
+  in
+  match wait_for_child_until child_pid ~stop_waiting with
   | Some status -> status
   | None ->
-      on_deadline ();
+      if Option.is_none !requested_stop_signal then on_deadline ();
       terminate_process_group child_pid
+
+let exit_for_signal signal = exit (128 + posix_signal_number signal)
 
 let read_and_remove path =
   let content = In_channel.with_open_text path In_channel.input_all in
@@ -87,8 +103,7 @@ let read_and_remove path =
    because Unix.create_process cannot change the child's working directory.
    [on_spawn] fires in the parent once the child is running, with the capture
    paths - a live view can tail them while this call waits. The child leads
-   its own process group, so jig can stop it with all its descendants; past
-   [time_limit_seconds] that group is terminated. *)
+   its own process group; past [time_limit_seconds] that group is stopped. *)
 let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
   match argv with
   | [] -> Error "subprocess: empty command"
@@ -136,6 +151,7 @@ let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
           in
           let stdout = read_and_remove stdout_path in
           let stderr = read_and_remove stderr_path in
+          Option.iter exit_for_signal !requested_stop_signal;
           let exit_code =
             match status with
             | Unix.WEXITED code -> code
@@ -150,24 +166,15 @@ let run ?cwd ?on_spawn ?time_limit_seconds ~argv () =
                (Unix.error_message error))
       | Sys_error message -> Error (Printf.sprintf "subprocess: %s" message))
 
-(** Forwards SIGINT, SIGTERM and SIGHUP to the running child's process group,
-    stops that group, then exits with 128 + the signal number. *)
+(** Forwards SIGINT, SIGTERM and SIGHUP to the running step's process group,
+    then exits with 128 + the signal number. *)
 let install_signal_forwarding () =
-  let forwarded_signals = [ Sys.sigint; Sys.sigterm; Sys.sighup ] in
-  let forward_and_exit signal =
-    (* A repeated Ctrl-C must not cut the grace period short. *)
-    List.iter
-      (fun forwarded -> Sys.set_signal forwarded Sys.Signal_ignore)
-      forwarded_signals;
-    Option.iter
-      (fun process_group_id ->
-        (* Another thread may reap the leader first; the group still needs stopping. *)
-        try ignore (terminate_process_group process_group_id)
-        with Unix.Unix_error (Unix.ECHILD, _, _) ->
-          signal_process_group process_group_id Sys.sigkill)
-      !current_child_process_group;
-    exit (128 + posix_signal_number signal)
+  (* The handler may run on any thread, so only the thread waiting in [run] reaps the child. *)
+  let forward_signal signal =
+    match !current_child_process_group with
+    | Some _ -> requested_stop_signal := Some signal
+    | None -> exit_for_signal signal
   in
   List.iter
-    (fun signal -> Sys.set_signal signal (Sys.Signal_handle forward_and_exit))
-    forwarded_signals
+    (fun signal -> Sys.set_signal signal (Sys.Signal_handle forward_signal))
+    [ Sys.sigint; Sys.sigterm; Sys.sighup ]

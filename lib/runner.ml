@@ -611,7 +611,7 @@ struct
     loop progress progress.run.Run.position.Run.entry_index
 
   (* Best-effort announcement that the run stopped executing; a notify
-     failure never affects the run's outcome, and a hung one is stopped. *)
+     failure never affects the run's outcome. *)
   let notify engine run =
     match engine.config.Config.notify with
     | [] -> ()

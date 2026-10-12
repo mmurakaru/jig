@@ -175,7 +175,8 @@ let fork_worker_process ~pipe_from_worker =
       | 0 ->
           worker_processes := [];
           active_child_process_groups := [];
-          processes_starting := 0;
+          (* The enclosing [with_process_starting] decrements this to 0 in the worker too. *)
+          processes_starting := 1;
           exit_after_stop := Unix._exit;
           (* A caught SIGPIPE turns a write to a closed driver pipe into EPIPE; exec resets it. *)
           Sys.set_signal Sys.sigpipe (Sys.Signal_handle ignore);

@@ -6290,6 +6290,26 @@ let test_sigterm_to_jig_stops_every_parallel_item () =
         (process_exits_within ~seconds:3.0 grandchild_pid))
     grandchild_pids
 
+let test_forked_worker_starts_with_nothing_in_flight () =
+  let pipe_from_worker, pipe_to_driver = Unix.pipe () in
+  match Process_group.fork_worker_process ~pipe_from_worker with
+  | 0 ->
+      let clean =
+        !Process_group.processes_starting = 0
+        && !Process_group.active_child_process_groups = []
+        && !Process_group.worker_processes = []
+      in
+      Unix._exit (if clean then 0 else 1)
+  | worker_pid ->
+      Unix.close pipe_to_driver;
+      let _, status = Unix.waitpid [] worker_pid in
+      Process_group.forget_worker_process worker_pid;
+      Unix.close pipe_from_worker;
+      Alcotest.(check bool) "the worker's tracking state is empty" true
+        (status = Unix.WEXITED 0);
+      Alcotest.(check int) "the driver's fork is no longer starting" 0
+        !Process_group.processes_starting
+
 let test_sigterm_to_detached_run_stops_grandchild () =
   let root = make_temp_root () in
   setup_hanging_command_project root;
@@ -6791,6 +6811,8 @@ let () =
             `Quick test_sigterm_to_detached_run_stops_grandchild;
           Alcotest.test_case "SIGTERM to jig stops every parallel item" `Quick
             test_sigterm_to_jig_stops_every_parallel_item;
+          Alcotest.test_case "a forked worker starts with nothing in flight"
+            `Quick test_forked_worker_starts_with_nothing_in_flight;
         ] );
       ( "attempts",
         [

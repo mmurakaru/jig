@@ -34,6 +34,5 @@ module Local : S = struct
             })
           (Result.map_error
              (fun message -> "executor: " ^ message)
-             (Subprocess.run ~cwd ?on_spawn ?environment ?time_limit
-                ~argv:(command @ [ prompt ]) ()))
+             (Subprocess.run ~cwd ?on_spawn ?environment ?time_limit ~argv:(command @ [ prompt ]) ()))
 end

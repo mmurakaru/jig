@@ -13,5 +13,5 @@ let relative_path = Filename.concat ".jig" "FIELDGUIDE.md"
    opt-in still enables the append instruction). *)
 let load ~workspace =
   let path = Filename.concat workspace relative_path in
-  if not (Sys.file_exists path) || Sys.is_directory path then None
+  if (not (Sys.file_exists path)) || Sys.is_directory path then None
   else match File.read path with Ok content -> Some content | Error _ -> None

@@ -4,9 +4,7 @@ let path ~runs_dir ~run_id = Filename.concat runs_dir (run_id ^ ".otlp-sent")
 
 let is_span_id text =
   String.length text = 16
-  && String.for_all
-       (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
-       text
+  && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) text
 
 let read_ledger_text ~runs_dir ~run_id =
   let ledger_path = path ~runs_dir ~run_id in
@@ -20,17 +18,14 @@ let read_ledger_text ~runs_dir ~run_id =
 let span_ids_of_ledger_text text =
   match List.rev (String.split_on_char '\n' text) with
   | [] -> []
-  | _torn_or_empty :: complete_lines ->
-      List.filter is_span_id (List.rev complete_lines)
+  | _torn_or_empty :: complete_lines -> List.filter is_span_id (List.rev complete_lines)
 
 (** The span ids already printed for the run; none when no ledger exists. *)
 let read_sent_span_ids ~runs_dir ~run_id =
   Result.map span_ids_of_ledger_text (read_ledger_text ~runs_dir ~run_id)
 
 let fsync_directory directory =
-  let descriptor =
-    Unix.openfile directory [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0
-  in
+  let descriptor = Unix.openfile directory [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0 in
   Fun.protect
     ~finally:(fun () -> Unix.close descriptor)
     (fun () -> try Unix.fsync descriptor with Unix.Unix_error _ -> ())
@@ -46,13 +41,10 @@ let append_sent_span_ids ~runs_dir ~run_id span_ids =
           let ledger_path = path ~runs_dir ~run_id in
           let created = not (Sys.file_exists ledger_path) in
           let separator =
-            if existing = "" || String.ends_with ~suffix:"\n" existing then ""
-            else "\n"
+            if existing = "" || String.ends_with ~suffix:"\n" existing then "" else "\n"
           in
           let text =
-            separator
-            ^ String.concat ""
-                (List.map (fun span_id -> span_id ^ "\n") span_ids)
+            separator ^ String.concat "" (List.map (fun span_id -> span_id ^ "\n") span_ids)
           in
           try
             let descriptor =
@@ -67,16 +59,13 @@ let append_sent_span_ids ~runs_dir ~run_id span_ids =
                 let rec write_from offset =
                   if offset < Bytes.length bytes then
                     write_from
-                      (offset
-                      + Unix.write descriptor bytes offset
-                          (Bytes.length bytes - offset))
+                      (offset + Unix.write descriptor bytes offset (Bytes.length bytes - offset))
                 in
                 write_from 0;
                 Unix.fsync descriptor);
             if created then fsync_directory runs_dir;
             Ok ()
-          with Unix.Unix_error (error, _, _) ->
-            Error ("otlp-sent: " ^ Unix.error_message error)))
+          with Unix.Unix_error (error, _, _) -> Error ("otlp-sent: " ^ Unix.error_message error)))
 
 (** Prints, then records, the spans no earlier call printed; maybe none. *)
 let print_new_spans ~runs_dir ~resource_attributes ~print (run : Run.t) =
@@ -88,8 +77,5 @@ let print_new_spans ~runs_dir ~resource_attributes ~print (run : Run.t) =
           (fun span -> not (List.mem (Otlp.span_id_of_span span) sent))
           (Otlp.spans_of_run run)
       in
-      print
-        (Yojson.Safe.to_string
-           (Otlp.traces_document ~resource_attributes new_spans));
-      append_sent_span_ids ~runs_dir ~run_id:run.Run.id
-        (List.map Otlp.span_id_of_span new_spans)
+      print (Yojson.Safe.to_string (Otlp.traces_document ~resource_attributes new_spans));
+      append_sent_span_ids ~runs_dir ~run_id:run.Run.id (List.map Otlp.span_id_of_span new_spans)

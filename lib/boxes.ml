@@ -6,13 +6,17 @@
    overwrite frames in place without clearing. *)
 
 type style = Plain | Dim | Green | Red | Yellow | Magenta | Title
+
 type segment = { text : string; style : style }
+
 type run_state = Running | Passed | Failed | Paused
 
 let seg ?(style = Plain) text = { text; style }
+
 let plain segments = String.concat "" (List.map (fun s -> s.text) segments)
 
 let segment_width segment = Sanitize.width segment.text
+
 let width_of segments = List.fold_left (fun n s -> n + segment_width s) 0 segments
 
 (* Cut a segment list to [limit] display columns, truncating mid-segment. *)
@@ -28,8 +32,11 @@ let truncate_segments limit segments =
   cut limit segments
 
 let default_log_lines = 6
+
 let compact_log_lines = 3
+
 let max_box_width = 80
+
 let min_box_width = 40
 
 let box_width ~columns = max min_box_width (min columns max_box_width)
@@ -38,10 +45,7 @@ let box_width ~columns = max min_box_width (min columns max_box_width)
 let interior ~box_width left right =
   let content_width = box_width - 4 in
   let right_width = width_of right in
-  let available =
-    if right = [] then content_width
-    else max 0 (content_width - right_width - 2)
-  in
+  let available = if right = [] then content_width else max 0 (content_width - right_width - 2) in
   let left = truncate_segments available left in
   let padding = content_width - width_of left - right_width in
   List.concat
@@ -58,8 +62,7 @@ let repeat count text = String.concat "" (List.init (max 0 count) (fun _ -> text
 let top ~box_width title =
   let title = truncate_segments (box_width - 6) title in
   let fill = box_width - 5 - width_of title in
-  List.concat
-    [ [ seg ~style:Dim "╭─ " ]; title; [ seg ~style:Dim (" " ^ repeat fill "─" ^ "╮") ] ]
+  List.concat [ [ seg ~style:Dim "╭─ " ]; title; [ seg ~style:Dim (" " ^ repeat fill "─" ^ "╮") ] ]
 
 let bottom ?footer ~box_width () =
   match footer with
@@ -67,10 +70,7 @@ let bottom ?footer ~box_width () =
   | Some footer ->
       let footer = Sanitize.truncate (box_width - 9) footer in
       let fill = box_width - 8 - Sanitize.width footer in
-      [
-        seg ~style:Dim
-          ("╰" ^ repeat 4 "─" ^ " " ^ footer ^ " " ^ repeat fill "─" ^ "╯");
-      ]
+      [ seg ~style:Dim ("╰" ^ repeat 4 "─" ^ " " ^ footer ^ " " ^ repeat fill "─" ^ "╯") ]
 
 let status_style : Progress.status -> style = function
   | Progress.Pending -> Dim
@@ -95,36 +95,27 @@ let last_working_index rows =
     rows;
   !result
 
-let pipeline_box ~box_width ~connectors ~workflow ~state ~spinner ~elapsed rows
-    =
+let pipeline_box ~box_width ~connectors ~workflow ~state ~spinner ~elapsed rows =
   let lines = ref [] in
   let push line = lines := line :: !lines in
   push (top ~box_width [ seg ~style:Title "Pipeline" ]);
-  push
-    (interior ~box_width
-       [ seg ~style:Dim (Sanitize.line workflow) ]
-       [ state_banner state ]);
+  push (interior ~box_width [ seg ~style:Dim (Sanitize.line workflow) ] [ state_banner state ]);
   push (interior ~box_width [] []);
   let elapsed_index = last_working_index rows in
   let seen_top_level = ref false in
   List.iteri
     (fun index (row : Progress.row) ->
       if row.Progress.indent = 0 then (
-        if connectors && !seen_top_level then
-          push (interior ~box_width [ seg ~style:Dim "│" ] []);
+        if connectors && !seen_top_level then push (interior ~box_width [ seg ~style:Dim "│" ] []);
         seen_top_level := true);
       let glyph = Progress.glyph ~working:spinner row.Progress.status in
-      let label_style =
-        if row.Progress.status = Progress.Pending then Dim else Plain
-      in
+      let label_style = if row.Progress.status = Progress.Pending then Dim else Plain in
       (* Labels come from workflow files and can carry anything a YAML
          string can (a command step's label is the command itself). *)
       let left =
         List.concat
           [
-            (if row.Progress.indent > 0 then
-               [ seg (String.make row.Progress.indent ' ') ]
-             else []);
+            (if row.Progress.indent > 0 then [ seg (String.make row.Progress.indent ' ') ] else []);
             [ seg ~style:(status_style row.Progress.status) glyph ];
             [ seg ~style:label_style (" " ^ Sanitize.line row.Progress.label) ];
           ]
@@ -135,9 +126,7 @@ let pipeline_box ~box_width ~connectors ~workflow ~state ~spinner ~elapsed rows
         | None when index = elapsed_index -> elapsed
         | None -> None
       in
-      let right =
-        match detail with Some text -> [ seg ~style:Dim text ] | None -> []
-      in
+      let right = match detail with Some text -> [ seg ~style:Dim text ] | None -> [] in
       push (interior ~box_width left right))
     rows;
   push (bottom ~box_width ());
@@ -150,8 +139,7 @@ let log_box ~box_width ~title ~max_lines lines =
   in
   let tail =
     let overflow = List.length sanitized - max_lines in
-    if overflow > 0 then List.filteri (fun i _ -> i >= overflow) sanitized
-    else sanitized
+    if overflow > 0 then List.filteri (fun i _ -> i >= overflow) sanitized else sanitized
   in
   let styled line =
     if String.length line >= 4 && String.sub line 0 4 = "PASS" then
@@ -162,9 +150,10 @@ let log_box ~box_width ~title ~max_lines lines =
   in
   let title_segments =
     seg ~style:Title "Log"
-    :: (match title with
-       | Some text -> [ seg ~style:Dim (" ─ " ^ Sanitize.line text) ]
-       | None -> [])
+    ::
+    (match title with
+    | Some text -> [ seg ~style:Dim (" ─ " ^ Sanitize.line text) ]
+    | None -> [])
   in
   List.concat
     [
@@ -177,26 +166,18 @@ let log_box ~box_width ~title ~max_lines lines =
    repaint corrupts, so it degrades in order: drop the connectors, shrink
    the log, hide the log. The last tier is used even when it still does not
    fit - a best effort beats rendering nothing. *)
-let view ~columns ~height ~workflow ~state ~spinner ~elapsed ~log_title
-    ~log_lines rows =
+let view ~columns ~height ~workflow ~state ~spinner ~elapsed ~log_title ~log_lines rows =
   let box_width = box_width ~columns in
   let log_wanted = state = Running && log_lines <> [] in
   let assemble ~connectors ~log_budget =
-    let pipeline =
-      pipeline_box ~box_width ~connectors ~workflow ~state ~spinner ~elapsed
-        rows
-    in
+    let pipeline = pipeline_box ~box_width ~connectors ~workflow ~state ~spinner ~elapsed rows in
     if log_wanted && log_budget > 0 then
-      pipeline @ [ [] ]
-      @ log_box ~box_width ~title:log_title ~max_lines:log_budget log_lines
+      pipeline @ [ [] ] @ log_box ~box_width ~title:log_title ~max_lines:log_budget log_lines
     else pipeline
   in
   let tiers =
     [
-      (true, default_log_lines);
-      (false, default_log_lines);
-      (false, compact_log_lines);
-      (false, 0);
+      (true, default_log_lines); (false, default_log_lines); (false, compact_log_lines); (false, 0);
     ]
   in
   let fits frame = List.length frame <= height - 1 in

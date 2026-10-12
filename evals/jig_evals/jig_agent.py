@@ -1,10 +1,4 @@
-"""Harbor installed agent that runs a jig workflow inside the task container.
-
-Select it with `--agent jig_evals.jig_agent:JigAgent`. The agent installs a
-Linux jig binary and the Claude Code CLI, scaffolds `.jig/` in the task's
-working directory, runs `jig run <workflow> --task <instruction>`, and keeps
-the run record and metering ledger under the trial's agent logs.
-"""
+"""Harbor installed agent (`--agent jig_evals.jig_agent:JigAgent`) that runs a jig workflow in the task container."""
 
 import asyncio
 import json
@@ -78,12 +72,7 @@ def render_jig_eval_config(harness: list[str], mechanical_harness: list[str] | N
 
 
 def jig_run_command(workflow: str, agent_logs_directory: str) -> str:
-    """Return the shell command that runs jig and always exits 0.
-
-    jig exits 1 (failed) or 2 (paused) on a real outcome; Harbor would treat
-    that as an agent error and might retry it, so the exit code goes to a file.
-    The task text comes from $JIG_EVAL_TASK.
-    """
+    """Return the jig run command; it exits 0 so Harbor never retries a failed or paused run as an error."""
     runs_log = shlex.quote(f"{agent_logs_directory}/{JIG_RUNS_LOG_NAME}")
     output_log = shlex.quote(f"{agent_logs_directory}/{JIG_OUTPUT_LOG_NAME}")
     exit_code_file = shlex.quote(f"{agent_logs_directory}/{JIG_RUNS_LOG_NAME}/{JIG_EXIT_CODE_FILE}")

@@ -1,9 +1,4 @@
-"""Summarize one jig run from its run record and metering ledger.
-
-The input is a copy of `.jig/runs/` plus the `jig-exit-code` file the
-adapter writes next to it. Both the Harbor adapter and the report use this,
-so a metric has one definition.
-"""
+"""Summarize one jig run from `.jig/runs/` and the adapter's `jig-exit-code` file."""
 
 import json
 from dataclasses import asdict, dataclass, field

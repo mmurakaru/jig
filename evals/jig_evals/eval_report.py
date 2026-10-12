@@ -1,10 +1,4 @@
-"""Report jig eval metrics from a Harbor job directory.
-
-Usage: python -m jig_evals.eval_report <job directory> [--json]
-
-Each agent configuration in the job is one arm (for example jig and the
-plain claude-code baseline on the same tasks).
-"""
+"""Report jig eval metrics per arm (agent configuration) from a Harbor job directory."""
 
 import argparse
 import json

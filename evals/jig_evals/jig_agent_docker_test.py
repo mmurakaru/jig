@@ -1,7 +1,4 @@
-"""End-to-end: Harbor runs JigAgent in Docker with a stub harness, no model.
-
-Opt in with JIG_EVALS_LINUX_JIG_BINARY=<path to a Linux x86-64 jig binary>.
-"""
+"""Harbor runs JigAgent in Docker with a stub harness; opt in with JIG_EVALS_LINUX_JIG_BINARY."""
 
 import json
 import os

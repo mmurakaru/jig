@@ -1,9 +1,4 @@
-"""A stand-in harness that answers each jig step from a scripted scenario.
-
-jig appends the step prompt as the last argument; the prompt names the
-skill as "(skill-name)". JIG_STUB_SCENARIO picks the scenario and
-JIG_STUB_STATE_DIR keeps per-skill call counts between invocations.
-"""
+"""Stand-in harness: answers each jig step per JIG_STUB_SCENARIO, counting calls in JIG_STUB_STATE_DIR."""
 
 import json
 import os

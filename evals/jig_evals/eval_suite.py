@@ -1,9 +1,4 @@
-"""Run the jig eval suite with Harbor and print the report.
-
-`jig-evals --model anthropic/<model>` runs jig and the plain claude-code
-baseline on the same tasks. `jig-evals --smoke` runs Harbor's oracle and
-no-op agents instead: it checks the dataset and spends no model tokens.
-"""
+"""Run the jig eval suite with Harbor and print the report."""
 
 import argparse
 import json

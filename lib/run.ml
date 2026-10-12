@@ -49,11 +49,13 @@ type for_each_state = {
 }
 
 (* Where the run is in the workflow: the entry being executed, how many
-   full iterations a retry has used and, for a forEach entry, the item
-   cursor and snapshot. Enough to resume. *)
+   full iterations a retry has used, the step inside the retry group and,
+   for a forEach entry, the item cursor and snapshot. Enough to resume. *)
 type position = {
   entry_index : int;
   iterations_used : int;
+  (* The step being executed inside a retry group; 0 outside one. *)
+  step_index : int;
   for_each : for_each_state option;
 }
 
@@ -118,14 +120,14 @@ let make_id ~workflow ~time ~pid =
     utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec pid !sequence
 
 (* Every coordinate of the step's place, so the key survives a resume. *)
-let step_key_of_position ~run_id ~(position : position) ~step_index =
+let step_key_of_position ~run_id ~(position : position) =
   let for_each_part =
     match position.for_each with
     | Some state -> Printf.sprintf "/i%d/b%d" state.item_index state.body_index
     | None -> ""
   in
   Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
-    position.iterations_used step_index
+    position.iterations_used position.step_index
 
 (* Counts every earlier attempt of the key, finished or interrupted. *)
 let next_attempt_id run ~step_key =
@@ -281,6 +283,8 @@ let to_json run =
                ("entry_index", `Int run.position.entry_index);
                ("iterations_used", `Int run.position.iterations_used);
              ]
+            @ (if run.position.step_index = 0 then []
+               else [ ("step_index", `Int run.position.step_index) ])
             @
             (* Emitted only while a forEach entry is in flight, so runs that
                never fan out serialize exactly as before. *)
@@ -461,6 +465,13 @@ let of_json json =
   let position_json = Yojson.Safe.Util.member "position" json in
   let* entry_index = member_int position_json "entry_index" in
   let* iterations_used = member_int position_json "iterations_used" in
+  (* Absent in records saved before the step inside a group was kept. *)
+  let* step_index =
+    match Yojson.Safe.Util.member "step_index" position_json with
+    | `Null -> Ok 0
+    | `Int value -> Ok value
+    | _ -> Error "run: position step_index must be an integer"
+  in
   let* for_each =
     match Yojson.Safe.Util.member "for_each" position_json with
     | `Null -> Ok None
@@ -539,7 +550,7 @@ let of_json json =
       task;
       status;
       error = optional_string json "error";
-      position = { entry_index; iterations_used; for_each };
+      position = { entry_index; iterations_used; step_index; for_each };
       workspace = optional_string json "workspace";
       steps;
       attempts_in_flight;

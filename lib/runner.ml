@@ -333,7 +333,7 @@ struct
 
   (* Guidance rides on exactly one step - the first one executed after a
      resume - then is consumed. *)
-  let execute_step engine progress ~item ~step_index (step : Workflow.step) =
+  let execute_step engine progress ~item (step : Workflow.step) =
     let label = Workflow.step_label step in
     let item_key = Option.map (fun context -> Items.key context.bindings) item in
     let interpolate value =
@@ -368,7 +368,7 @@ struct
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
     let step_key =
       Run.step_key_of_position ~run_id:progress.run.Run.id
-        ~position:progress.run.Run.position ~step_index
+        ~position:progress.run.Run.position
     in
     let attempt_id = Run.next_attempt_id progress.run ~step_key in
     let environment =
@@ -578,7 +578,7 @@ struct
 
   let execute_plain_entry engine progress ~item step =
     let* step_record, progress =
-      execute_step engine progress ~item ~step_index:0 step
+      execute_step engine progress ~item step
     in
     match step_record.Run.outcome with
     | Run.Pass -> Ok (Proceed progress)
@@ -595,35 +595,50 @@ struct
     | Iteration_failed of progress
     | Interrupted of Run.status * progress
 
+  let set_step_index progress step_index =
+    {
+      progress with
+      run =
+        {
+          progress.run with
+          Run.position = { progress.run.Run.position with Run.step_index };
+        };
+    }
+
+  (* Starts at the saved step index, so a resume skips the steps this
+     iteration already passed. *)
   let execute_iteration engine progress ~item (retry : Workflow.retry) =
-    let rec loop progress step_index remaining =
-      match remaining with
-      | [] -> Ok (Group_done progress)
-      | (step : Workflow.step) :: rest -> (
-          let* step_record, progress =
-            execute_step engine progress ~item ~step_index step
-          in
+    let rec loop progress step_index =
+      match List.nth_opt retry.Workflow.retry_steps step_index with
+      | None -> Ok (Group_done progress)
+      | Some (step : Workflow.step) -> (
+          let progress = set_step_index progress step_index in
+          let* step_record, progress = execute_step engine progress ~item step in
           match step_record.Run.outcome with
           | Run.Pass ->
               if step.Workflow.until_pass then Ok (Group_done progress)
-              else loop progress (step_index + 1) rest
+              else loop progress (step_index + 1)
           | Run.Escalate -> Ok (Interrupted (Run.Paused, progress))
           | Run.Fail | Run.Invalid_handoff ->
               Ok (Iteration_failed progress))
     in
-    loop progress 0 retry.Workflow.retry_steps
+    loop progress progress.run.Run.position.Run.step_index
 
   let execute_retry_entry engine progress ~item (retry : Workflow.retry) =
     (* A record update, so entry_index and any forEach cursor survive - a
-       pause inside a retry inside a forEach must keep all three. *)
-    let update_iterations progress iterations_used =
+       pause inside a retry inside a forEach must keep them all. *)
+    let start_next_iteration progress iterations_used =
       {
         progress with
         run =
           {
             progress.run with
             Run.position =
-              { progress.run.Run.position with Run.iterations_used };
+              {
+                progress.run.Run.position with
+                Run.iterations_used;
+                step_index = 0;
+              };
           };
       }
     in
@@ -639,7 +654,7 @@ struct
         | Interrupted (status, progress) -> Ok (Stop (status, progress))
         | Iteration_failed progress ->
             attempt
-              (update_iterations progress (iterations_used + 1))
+              (start_next_iteration progress (iterations_used + 1))
               (iterations_used + 1)
     in
     attempt progress progress.run.Run.position.Run.iterations_used
@@ -692,9 +707,9 @@ struct
           Run.for_each = Some { Run.item_index; body_index; items };
         }
     in
-    let reset_iterations progress =
+    let reset_retry_cursor progress =
       set_position progress
-        { progress.run.Run.position with Run.iterations_used = 0 }
+        { progress.run.Run.position with Run.iterations_used = 0; step_index = 0 }
     in
     (* Each item is an independent unit of the fan-out: it must not inherit
        the previous item's (or the pre-forEach step's) handoff. Threading
@@ -723,7 +738,7 @@ struct
         in
         match verdict with
         | Proceed progress ->
-            loop (reset_iterations progress) item_index (body_index + 1)
+            loop (reset_retry_cursor progress) item_index (body_index + 1)
         | Stop (status, progress) -> Ok (Stop (status, progress))
     in
     loop progress state.Run.item_index state.Run.body_index
@@ -750,7 +765,12 @@ struct
                cursor, so finished runs carry no snapshot. *)
             let progress =
               set_position progress
-                { Run.entry_index; iterations_used = 0; for_each = None }
+                {
+                  Run.entry_index;
+                  iterations_used = 0;
+                  step_index = 0;
+                  for_each = None;
+                }
             in
             loop progress (entry_index + 1)
         | Stop (status, progress) -> Ok (status, progress)
@@ -877,7 +897,13 @@ struct
         task;
         status = Run.Running;
         error = None;
-        position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+        position =
+          {
+            Run.entry_index = 0;
+            iterations_used = 0;
+            step_index = 0;
+            for_each = None;
+          };
         workspace;
         steps = [];
         attempts_in_flight = Run.Step_key_map.empty;
@@ -940,6 +966,7 @@ struct
       {
         Run.entry_index = position.Run.entry_index + 1;
         iterations_used = 0;
+        step_index = 0;
         for_each = None;
       }
     in
@@ -953,6 +980,7 @@ struct
           {
             position with
             Run.iterations_used = 0;
+            step_index = 0;
             for_each =
               Some { state with Run.body_index = state.Run.body_index + 1 };
           }
@@ -960,6 +988,7 @@ struct
           {
             position with
             Run.iterations_used = 0;
+            step_index = 0;
             for_each =
               Some
                 {

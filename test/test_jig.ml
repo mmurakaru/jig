@@ -497,7 +497,8 @@ let test_store_saves_run () =
       task = "test";
       status = Run.Paused;
       error = None;
-      position = { Run.entry_index = 2; iterations_used = 1; for_each = None };
+      position =
+        { Run.entry_index = 2; iterations_used = 1; step_index = 1; for_each = None };
       workspace = Some "/somewhere/worktree";
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
@@ -521,6 +522,8 @@ let test_store_saves_run () =
             loaded.Run.position.Run.entry_index;
           Alcotest.(check int) "iterations roundtrip" 1
             loaded.Run.position.Run.iterations_used;
+          Alcotest.(check int) "step inside the retry group roundtrips" 1
+            loaded.Run.position.Run.step_index;
           Alcotest.(check bool) "workspace roundtrips" true
             (loaded.Run.workspace = Some "/somewhere/worktree");
           Alcotest.(check bool) "no finished_at while paused" true
@@ -1370,6 +1373,7 @@ let test_run_json_roundtrips_for_each_position () =
         {
           Run.entry_index = 0;
           iterations_used = 1;
+          step_index = 0;
           for_each =
             Some { Run.item_index = 1; body_index = 0; items = [ bindings ] };
         };
@@ -1431,6 +1435,8 @@ let test_old_run_json_still_loads () =
   | Ok run ->
       Alcotest.(check bool) "no for_each state" true
         (run.Run.position.Run.for_each = None);
+      Alcotest.(check int) "a group restarts at its first step" 0
+        run.Run.position.Run.step_index;
       let step = List.hd run.Run.steps in
       Alcotest.(check (option int)) "no item_index" None step.Run.item_index;
       Alcotest.(check (option string)) "no item_key" None step.Run.item_key;
@@ -2006,7 +2012,7 @@ let test_last_handoff_picks_latest () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = None;
       steps =
         [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
@@ -2145,7 +2151,7 @@ let test_resume_honors_recorded_workspace_location () =
       task = "iso";
       status = Run.Paused;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = Some old_workspace;
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
@@ -2272,7 +2278,7 @@ let sample_stored_run ~id ~task =
     task;
     status = Run.Paused;
     error = None;
-    position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+    position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
     workspace = None;
     steps = [];
     attempts_in_flight = Run.Step_key_map.empty;
@@ -3118,7 +3124,7 @@ let plan_entries () =
 let progress_plan () = Progress.init (plan_entries ())
 
 let pos ?for_each entry_index =
-  { Run.entry_index; iterations_used = 0; for_each }
+  { Run.entry_index; iterations_used = 0; step_index = 0; for_each }
 
 let started ?item_key ?tier skill position = Runner.Step_started { skill; position; item_key; tier }
 let finished skill outcome =
@@ -4027,7 +4033,7 @@ let test_cost_by_tier_groups_in_first_seen_order () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = None;
       steps =
         [

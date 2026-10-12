@@ -741,7 +741,7 @@ end = struct
 
   let prompts () = !recorded_prompts
 
-  let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt () =
+  let execute ?on_spawn:_ ?environment:_ ~command:_ ~cwd:_ ~prompt () =
     recorded_prompts := !recorded_prompts @ [ prompt ];
     let stdout =
       match !queued_outputs with
@@ -2161,7 +2161,7 @@ let probe_runs_dir = ref ""
 let probe_seen : Run.t list ref = ref []
 
 module Probe_executor : Executor.S = struct
-  let execute ?on_spawn:_ ~command:_ ~cwd:_ ~prompt:_ () =
+  let execute ?on_spawn:_ ?environment:_ ~command:_ ~cwd:_ ~prompt:_ () =
     (match Store.Filesystem.list_runs ~runs_dir:!probe_runs_dir with
     | Ok listing -> probe_seen := listing.Store.runs
     | Error _ -> probe_seen := []);
@@ -3902,7 +3902,7 @@ let test_skill_without_frontmatter_is_untouched () =
 let capture_commands : string list list ref = ref []
 
 module Capturing_executor : Executor.S = struct
-  let execute ?on_spawn:_ ~command ~cwd:_ ~prompt:_ () =
+  let execute ?on_spawn:_ ?environment:_ ~command ~cwd:_ ~prompt:_ () =
     capture_commands := !capture_commands @ [ command ];
     Ok { Executor.exit_code = 0; stdout = handoff_block (); stderr = "" }
 end
@@ -4146,6 +4146,27 @@ let test_field_guide_append_reaches_next_step () =
         (contains ~affix:"learned by step one" (step_stdout run 0));
       Alcotest.(check bool) "step two did" true
         (contains ~affix:"learned by step one" (step_stdout run 1))
+
+(* Telemetry *)
+
+let test_subprocess_environment_reaches_only_the_child () =
+  Unix.putenv "JIG_TEST_OVERRIDDEN" "parent";
+  match
+    Subprocess.run
+      ~environment:
+        [ ("JIG_TEST_OVERRIDDEN", "child"); ("JIG_TEST_ADDED", "added") ]
+      ~argv:
+        [ "sh"; "-c"; "printf '%s %s' \"$JIG_TEST_OVERRIDDEN\" \"$JIG_TEST_ADDED\"" ]
+      ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok outcome ->
+      Alcotest.(check string) "child sees the overrides" "child added"
+        outcome.Subprocess.stdout;
+      Alcotest.(check (option string)) "parent keeps its value" (Some "parent")
+        (Sys.getenv_opt "JIG_TEST_OVERRIDDEN");
+      Alcotest.(check (option string)) "parent gains nothing" None
+        (Sys.getenv_opt "JIG_TEST_ADDED")
 
 let () =
   Random.self_init ();
@@ -4608,5 +4629,10 @@ let () =
             test_resume_refuses_completed_runs;
           Alcotest.test_case "state persists incrementally" `Quick
             test_record_persisted_incrementally;
+        ] );
+      ( "telemetry",
+        [
+          Alcotest.test_case "subprocess environment reaches only the child"
+            `Quick test_subprocess_environment_reaches_only_the_child;
         ] );
     ]

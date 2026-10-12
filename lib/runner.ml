@@ -176,6 +176,14 @@ struct
 
   let runs_dir engine = Project.runs_dir ~root:engine.root
 
+  (* Held from before the first save until after the last, so no other
+     process drives the run in between. *)
+  let with_run_lock ~runs_dir ~run_id action =
+    let* run_lock = Store_port.acquire_run_lock ~runs_dir ~id:run_id in
+    Fun.protect
+      ~finally:(fun () -> Store_port.release_run_lock run_lock)
+      action
+
   let persist engine progress ~status ~finished =
     let run =
       {
@@ -681,6 +689,7 @@ struct
           Run.make_id ~workflow:workflow.Workflow.name ~time:started
             ~pid:(Unix.getpid ())
     in
+    with_run_lock ~runs_dir:(Project.runs_dir ~root) ~run_id @@ fun () ->
     let* workspace =
       if isolated then
         let* path = Workspace.create ~root ~run_id in
@@ -843,6 +852,7 @@ struct
       ?(skip = false) ~root ~run_id
       ~guidance () =
     let runs_directory = Project.runs_dir ~root in
+    with_run_lock ~runs_dir:runs_directory ~run_id @@ fun () ->
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
       match existing.Run.status with
@@ -899,6 +909,7 @@ struct
       ~root ~run_id
       ~(exec_result : Executor.exec_result) () =
     let runs_directory = Project.runs_dir ~root in
+    with_run_lock ~runs_dir:runs_directory ~run_id @@ fun () ->
     let* existing = Store_port.load ~runs_dir:runs_directory ~id:run_id in
     let* () =
       match existing.Run.status with

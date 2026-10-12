@@ -154,11 +154,17 @@ let run_workflow workflow resume task guidance skip detach isolated =
                            ~skill_paths:config.Jig_core.Config.skill_paths
                            parsed))))
       | None, Some run_id, None ->
-          Result.map
-            (fun (_ : Jig_core.Run.t) -> run_id)
-            (Jig_core.Store.Filesystem.load
-               ~runs_dir:(Jig_core.Project.runs_dir ~root)
-               ~id:run_id)
+          let runs_dir = Jig_core.Project.runs_dir ~root in
+          (* Probe the lock here so a live run is refused in the terminal,
+             not in the detached log; the child takes it for real. *)
+          Result.bind (Jig_core.Store.Filesystem.load ~runs_dir ~id:run_id)
+            (fun (_ : Jig_core.Run.t) ->
+              Result.map
+                (fun run_lock ->
+                  Jig_core.Store.Filesystem.release_run_lock run_lock;
+                  run_id)
+                (Jig_core.Store.Filesystem.acquire_run_lock ~runs_dir
+                   ~id:run_id))
       | _ -> Error "--detach needs a workflow with --task, or --resume <run-id>"
     in
     match run_id_result with

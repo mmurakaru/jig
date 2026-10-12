@@ -225,11 +225,13 @@ let latest_run_id ~runs_dir =
   | Ok [] -> Error "no runs yet - nothing under runs/"
   | Ok (newest :: _) -> Ok newest.Jig_core.Run.id
 
-let show_status run_id latest json_output =
+let show_status run_id latest json_output otlp_output =
   let root = Sys.getcwd () in
   let runs_dir = Jig_core.Project.runs_dir ~root in
   let resolved =
     match (run_id, latest) with
+    | _ when json_output && otlp_output ->
+        Error "pass --json or --otlp, not both"
     | Some _, true -> Error "pass a run id or --latest, not both"
     | Some id, false -> Ok id
     | None, true -> latest_run_id ~runs_dir
@@ -244,6 +246,13 @@ let show_status run_id latest json_output =
       exit 1
   | Ok run when json_output ->
       print_endline (Yojson.Safe.pretty_to_string (Jig_core.Run.to_json run))
+  | Ok run when otlp_output ->
+      let resource_attributes =
+        Jig_core.Otlp.resource_attributes_of_environment ~getenv:Sys.getenv_opt
+      in
+      print_endline
+        (Yojson.Safe.to_string
+           (Jig_core.Otlp.traces_of_run ~resource_attributes run))
   | Ok run ->
       Printf.printf "run %s: %s\n" run.Jig_core.Run.id
         (Jig_core.Run.string_of_status run.Jig_core.Run.status);
@@ -548,10 +557,18 @@ let latest_flag =
   let doc = "Inspect the newest run." in
   Arg.(value & flag & info [ "latest" ] ~doc)
 
+let otlp_flag =
+  let doc =
+    "Print the run as one OpenTelemetry trace (OTLP/JSON) for an OTLP/HTTP \
+     /v1/traces endpoint. jig never sends it; pipe it to curl."
+  in
+  Arg.(value & flag & info [ "otlp" ] ~doc)
+
 let status_cmd =
   let doc = "Inspect a run's progress, outcomes, and last handoff." in
   Cmd.v (Cmd.info "status" ~doc)
-    Term.(const show_status $ run_id_arg $ latest_flag $ json_flag)
+    Term.(
+      const show_status $ run_id_arg $ latest_flag $ json_flag $ otlp_flag)
 
 let watch_run run_id latest =
   let root = Sys.getcwd () in

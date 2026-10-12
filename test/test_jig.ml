@@ -3939,6 +3939,234 @@ let test_subprocess_environment_reaches_only_the_child () =
       Alcotest.(check (option string)) "parent gains nothing" None
         (Sys.getenv_opt "JIG_TEST_ADDED")
 
+(* Expected digests computed outside OCaml: md5 -s "<input>". *)
+let otlp_fixture_run_id = "2026-01-01-bugfix-000000-42-1"
+
+let test_otlp_ids_are_md5_of_the_run_id () =
+  let run_id = otlp_fixture_run_id in
+  Alcotest.(check string) "trace id" "0677e875928767ca7a7bde875840f43b"
+    (Otlp.trace_id_of_run ~run_id);
+  Alcotest.(check string) "root span id" "a69b0aaade807abf"
+    (Otlp.root_span_id_of_run ~run_id);
+  Alcotest.(check string) "traceparent of step 1"
+    "00-0677e875928767ca7a7bde875840f43b-95f79d68f4f3e2fe-01"
+    (Otlp.traceparent_for_step ~run_id ~step_index:1)
+
+let test_otlp_disabled_by_otel_sdk_disabled () =
+  let getenv_with value name =
+    if name = "OTEL_SDK_DISABLED" then value else None
+  in
+  let injected value =
+    List.map fst
+      (Otlp.traceparent_environment ~getenv:(getenv_with value) ~run_id:"r"
+         ~step_index:0)
+  in
+  Alcotest.(check (list string)) "TRUE disables" [] (injected (Some "TRUE"));
+  Alcotest.(check (list string))
+    "unset injects" [ "TRACEPARENT" ] (injected None);
+  Alcotest.(check (list string))
+    "false injects" [ "TRACEPARENT" ] (injected (Some "false"))
+
+let test_otlp_resource_attributes_from_environment () =
+  let environment =
+    [
+      ( "OTEL_RESOURCE_ATTRIBUTES",
+        "service.name=ignored, deployment.environment=dev%2Ctest,broken" );
+      ("OTEL_SERVICE_NAME", "jig-ci");
+    ]
+  in
+  Alcotest.(check (list (pair string string)))
+    "service name wins, values percent-decoded"
+    [ ("service.name", "jig-ci"); ("deployment.environment", "dev,test") ]
+    (Otlp.resource_attributes_of_environment ~getenv:(fun name ->
+         List.assoc_opt name environment));
+  Alcotest.(check (list (pair string string)))
+    "defaults to jig" [ ("service.name", "jig") ]
+    (Otlp.resource_attributes_of_environment ~getenv:(fun _ -> None))
+
+let otlp_step ~skill ~outcome ~started_at ~finished_at =
+  {
+    Run.skill;
+    outcome;
+    exit_code = 0;
+    cost = Metering.Unknown_cost;
+    tier = None;
+    stdout = "";
+    stderr = "";
+    handoff = None;
+    handoff_error = None;
+    session_id = None;
+    item_index = None;
+    item_key = None;
+    resumed = false;
+    started_at;
+    finished_at;
+  }
+
+let otlp_fixture_run ~status =
+  let implement =
+    {
+      (otlp_step ~skill:"implement-fix" ~outcome:Run.Pass
+         ~started_at:"2026-01-01T00:00:00Z" ~finished_at:"2026-01-01T00:05:00Z")
+      with
+      Run.cost = Metering.Cost_usd 1.5;
+      tier = Some "reasoning";
+      session_id = Some "session-1";
+      stdout =
+        {|{"total_cost_usd":1.5,"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":1000,"cache_creation_input_tokens":10}}|};
+      handoff =
+        Some
+          {
+            Handoff.status = Handoff.Pass;
+            artifacts = [ "src/fix.ml" ];
+            summary = "fixed the parser";
+          };
+    }
+  in
+  let tests =
+    {
+      (otlp_step ~skill:"make test" ~outcome:Run.Fail
+         ~started_at:"2026-01-01T00:05:00Z" ~finished_at:"2026-01-01T00:06:00Z")
+      with
+      Run.exit_code = 2;
+    }
+  in
+  let escalated =
+    otlp_step ~skill:"implement-fix" ~outcome:Run.Escalate
+      ~started_at:"2026-01-01T00:06:00Z" ~finished_at:"2026-01-01T00:07:00Z"
+  in
+  let resumed =
+    {
+      (otlp_step ~skill:"implement-fix" ~outcome:Run.Pass
+         ~started_at:"2026-01-01T01:00:00Z" ~finished_at:"2026-01-01T01:02:00Z")
+      with
+      Run.resumed = true;
+    }
+  in
+  let steps =
+    match status with
+    | Run.Paused -> [ implement; tests; escalated ]
+    | _ -> [ implement; tests; escalated; resumed ]
+  in
+  {
+    Run.id = otlp_fixture_run_id;
+    workflow = "bugfix";
+    task = "fix the parser";
+    status;
+    error = None;
+    position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
+    workspace = None;
+    steps;
+    started_at = "2026-01-01T00:00:00Z";
+    finished_at =
+      (match status with
+      | Run.Paused -> None
+      | _ -> Some "2026-01-01T01:02:00Z");
+  }
+
+let otlp_spans json =
+  let open Yojson.Safe.Util in
+  json |> member "resourceSpans" |> index 0 |> member "scopeSpans" |> index 0
+  |> member "spans" |> to_list
+
+let otlp_attribute span key =
+  let open Yojson.Safe.Util in
+  List.find_map
+    (fun attribute ->
+      if member "key" attribute = `String key then
+        Some (Yojson.Safe.to_string (member "value" attribute))
+      else None)
+    (span |> member "attributes" |> to_list)
+
+let otlp_string json key =
+  match Yojson.Safe.Util.member key json with
+  | `String value -> value
+  | _ -> Alcotest.fail (Printf.sprintf "expected a string at %s" key)
+
+let otlp_event_names span =
+  let open Yojson.Safe.Util in
+  List.map
+    (fun event -> event |> member "name" |> to_string)
+    (span |> member "events" |> to_list)
+
+let otlp_status_code span =
+  match Yojson.Safe.Util.member "status" span with
+  | `Null -> 0
+  | status -> Yojson.Safe.Util.(status |> member "code" |> to_int)
+
+let test_otlp_completed_run_is_one_trace () =
+  let run = otlp_fixture_run ~status:Run.Completed in
+  let json =
+    Otlp.traces_of_run ~resource_attributes:[ ("service.name", "jig") ] run
+  in
+  match otlp_spans json with
+  | [ root; implement; tests; escalated; resumed ] ->
+      Alcotest.(check string) "root name" "invoke_workflow bugfix"
+        (otlp_string root "name");
+      Alcotest.(check bool) "root has no parent" true
+        (Yojson.Safe.Util.member "parentSpanId" root = `Null);
+      Alcotest.(check int) "completed root is OK" 1 (otlp_status_code root);
+      Alcotest.(check string) "root starts at the run start"
+        "1767225600000000000"
+        (otlp_string root "startTimeUnixNano");
+      Alcotest.(check string) "root ends at the run end" "1767229320000000000"
+        (otlp_string root "endTimeUnixNano");
+      List.iter
+        (fun span ->
+          Alcotest.(check string) "one trace"
+            "0677e875928767ca7a7bde875840f43b"
+            (otlp_string span "traceId");
+          Alcotest.(check string) "child of the root" "a69b0aaade807abf"
+            (otlp_string span "parentSpanId"))
+        [ implement; tests; escalated; resumed ];
+      Alcotest.(check string) "step 1 span id from md5" "95f79d68f4f3e2fe"
+        (otlp_string tests "spanId");
+      Alcotest.(check int) "pass is OK" 1 (otlp_status_code implement);
+      Alcotest.(check int) "fail is ERROR" 2 (otlp_status_code tests);
+      Alcotest.(check int) "escalate is UNSET" 0 (otlp_status_code escalated);
+      Alcotest.(check (option string))
+        "input tokens include cached tokens" (Some {|{"intValue":"1110"}|})
+        (otlp_attribute implement "gen_ai.usage.input_tokens");
+      Alcotest.(check (option string))
+        "known cost is a double" (Some {|{"doubleValue":1.5}|})
+        (otlp_attribute implement "jig.cost_usd");
+      Alcotest.(check (option string))
+        "tier recorded" (Some {|{"stringValue":"reasoning"}|})
+        (otlp_attribute implement "jig.step.tier");
+      Alcotest.(check (option string))
+        "unknown cost is omitted, not zero" None
+        (otlp_attribute tests "jig.cost_usd");
+      Alcotest.(check (list string))
+        "handoff event" [ "jig.handoff" ]
+        (otlp_event_names implement);
+      Alcotest.(check (list string))
+        "escalate event" [ "jig.escalate" ]
+        (otlp_event_names escalated);
+      Alcotest.(check (list string))
+        "resume event" [ "jig.resume" ]
+        (otlp_event_names resumed)
+  | spans ->
+      Alcotest.fail
+        (Printf.sprintf "expected a root and four step spans, got %d"
+           (List.length spans))
+
+let test_otlp_paused_run_defers_the_root_and_keeps_ids () =
+  let span_ids json =
+    List.map (fun span -> otlp_string span "spanId") (otlp_spans json)
+  in
+  let export run = Otlp.traces_of_run ~resource_attributes:[] run in
+  let paused = export (otlp_fixture_run ~status:Run.Paused) in
+  let completed = export (otlp_fixture_run ~status:Run.Completed) in
+  Alcotest.(check bool) "no root while paused" false
+    (List.mem "a69b0aaade807abf" (span_ids paused));
+  Alcotest.(check bool) "paused step spans reappear unchanged" true
+    (List.for_all
+       (fun id -> List.mem id (span_ids completed))
+       (span_ids paused));
+  Alcotest.(check string) "exporting twice is identical"
+    (Yojson.Safe.to_string completed)
+    (Yojson.Safe.to_string (export (otlp_fixture_run ~status:Run.Completed)))
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -4383,5 +4611,15 @@ let () =
         [
           Alcotest.test_case "subprocess environment reaches only the child"
             `Quick test_subprocess_environment_reaches_only_the_child;
+          Alcotest.test_case "ids are md5 of the run id" `Quick
+            test_otlp_ids_are_md5_of_the_run_id;
+          Alcotest.test_case "OTEL_SDK_DISABLED turns injection off" `Quick
+            test_otlp_disabled_by_otel_sdk_disabled;
+          Alcotest.test_case "resource attributes from OTEL_* variables" `Quick
+            test_otlp_resource_attributes_from_environment;
+          Alcotest.test_case "completed run is one trace" `Quick
+            test_otlp_completed_run_is_one_trace;
+          Alcotest.test_case "paused run defers the root, keeps ids" `Quick
+            test_otlp_paused_run_defers_the_root_and_keeps_ids;
         ] );
     ]

@@ -23,12 +23,12 @@ def write_trial(
     """Write a trial directory in the shape Harbor 0.24 writes it."""
     trial_directory = job_directory / trial_name
     (trial_directory / "agent").mkdir(parents=True)
-    kwargs = {"jig_binary_path": "/host/jig"} if agent_name == "jig" else {}
+    agent_options = {"jig_binary_path": "/host/jig"} if agent_name == "jig" else {}
     result = {
         "trial_name": trial_name,
         "task_name": "jig/" + trial_name.split("__")[0],
         "agent_info": {"name": agent_name, "version": "1"},
-        "config": {"agent": {"name": None, "model_name": MODEL, "kwargs": kwargs}},
+        "config": {"agent": {"name": None, "model_name": MODEL, "kwargs": agent_options}},
         "agent_result": {"cost_usd": cost_usd},
         "verifier_result": None if reward is None else {"rewards": {"reward": reward}},
         "exception_info": None

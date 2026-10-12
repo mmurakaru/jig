@@ -8,10 +8,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from jig_evals.jig_agent import JIG_RUNS_LOG_NAME
+from jig_evals.jig_agent import JIG_RUNS_LOG_NAME, JigAgent
 from jig_evals.jig_run_summary import JigRunSummary, summarize_jig_run
 
-JIG_AGENT_NAME = "jig"
 
 # Host-specific paths say nothing about the arm, so they stay out of its label.
 ARM_LABEL_IGNORED_OPTIONS = {"jig_binary_path"}
@@ -82,7 +81,7 @@ def load_trial_outcome(trial_directory: Path) -> TrialOutcome:
         reward=rewards.get("reward"),
         exception_type=exception_info.get("exception_type"),
         cost_usd=agent_result.get("cost_usd"),
-        jig_run=summarize_jig_run(jig_runs_directory) if agent_name == JIG_AGENT_NAME else None,
+        jig_run=summarize_jig_run(jig_runs_directory) if agent_name == JigAgent.name() else None,
     )
 
 

@@ -293,6 +293,8 @@ struct
     run : Run.t;
     last_handoff : Handoff.t option;
     guidance : string option;
+    (* Set by a resume and consumed, like guidance, by the next step. *)
+    resumed : bool;
   }
 
   (* How an entry (or the whole run) ended: either the run continues to the
@@ -318,8 +320,7 @@ struct
              Run.last_step_attempt_id progress.run.Run.steps
            else progress.run.Run.paused_on_attempt);
         finished_at =
-          (if finished then Some (Run.iso8601 (Unix.gettimeofday ()))
-           else None);
+          (if finished then Some (Run.record_timestamp_now ()) else None);
       }
     in
     let* path = Store_port.save ~runs_dir:(runs_dir engine) run in
@@ -557,12 +558,18 @@ struct
         };
     }
 
+  (* What every process of an attempt sees: harness, command, probe. *)
+  let attempt_environment ~run_id ~step_key ~attempt_id =
+    [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ]
+    @ Otlp.traceparent_environment ~getenv:Sys.getenv_opt ~run_id
+        ~span_id:(Otlp.attempt_span_id ~attempt_id)
+
   (* Best effort: a failing probe records its failure, never fails the step. *)
-  let run_probe engine =
+  let run_probe ~environment engine =
     match engine.config.Config.probe with
     | [] -> None
     | argv -> (
-        match Subprocess.run ~cwd:engine.workspace ~argv () with
+        match Subprocess.run ~cwd:engine.workspace ~environment ~argv () with
         | Ok { Subprocess.exit_code = 0; stdout; _ } -> Some stdout
         | Ok { Subprocess.exit_code; stdout; stderr } ->
             Some
@@ -630,16 +637,16 @@ struct
     engine.on_event
       (Step_started
          { skill = label; position = progress.run.Run.position; item_key; tier });
-    let started_at = Run.iso8601 (Unix.gettimeofday ()) in
+    let started_at = Run.record_timestamp_now () in
     let step_key =
       Run.step_key_of_position ~run_id:progress.run.Run.id
         ~position:progress.run.Run.position
     in
     let attempt_id = Run.next_attempt_id progress.run ~step_key in
     let environment =
-      [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ]
+      attempt_environment ~run_id:progress.run.Run.id ~step_key ~attempt_id
     in
-    let probe_before = run_probe engine in
+    let probe_before = run_probe ~environment engine in
     let interrupted = Run.unresolved_interrupted_attempt progress.run ~step_key in
     (* The workspace now is the state the cut-off attempt left behind. *)
     let progress =
@@ -895,7 +902,7 @@ struct
     let finished_attempt =
       {
         !spawned_attempt with
-        Run.probe_after = run_probe engine;
+        Run.probe_after = run_probe ~environment engine;
         stdout_path = None;
       }
     in
@@ -969,8 +976,9 @@ struct
         item_index;
         item_key;
         attempt = Some finished_attempt;
+        resumed = progress.resumed;
         started_at;
-        finished_at = Run.iso8601 (Unix.gettimeofday ());
+        finished_at = Run.record_timestamp_now ();
       }
     in
     let progress =
@@ -982,6 +990,7 @@ struct
           };
         last_handoff = handoff_after_step progress step_record;
         guidance = None;
+        resumed = false;
       }
     in
     let* progress = save_step_progress engine progress in
@@ -1248,7 +1257,11 @@ struct
     let run_id = progress.run.Run.id in
     let item_count = List.length initial_state.Run.items in
     let guidance = progress.guidance in
-    let master = ref { progress with guidance = None; last_handoff = None } in
+    let run_resumed = progress.resumed in
+    let master =
+      ref
+        { progress with guidance = None; last_handoff = None; resumed = false }
+    in
     let state = ref initial_state in
     let first_error = ref None in
     let stop_status = ref None in
@@ -1331,6 +1344,7 @@ struct
           run = lane;
           last_handoff = (if resumed then Run.last_handoff lane else None);
           guidance = (if resumed then guidance else None);
+          resumed = resumed && run_resumed;
         }
       in
       (* git worktree add races a sibling's half-written worktree, so the driver creates them in turn. *)
@@ -1875,11 +1889,11 @@ struct
         attempts_in_flight = Run.Step_key_map.empty;
         interrupted_attempts = [];
         paused_on_attempt = None;
-        started_at = Run.iso8601 started;
+        started_at = Run.iso8601_milliseconds started;
         finished_at = None;
       }
     in
-    drive engine { run; last_handoff = None; guidance = None }
+    drive engine { run; last_handoff = None; guidance = None; resumed = false }
 
   let retry_gate_skill (retry : Workflow.retry) =
     let gate =
@@ -1973,7 +1987,7 @@ struct
   let human_skip ~entries ~guidance run =
     let* skill = skip_target_skill ~entries ~position:run.Run.position in
     let item_index, item_key = position_item run.Run.position in
-    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let now = Run.record_timestamp_now () in
     let summary =
       match guidance with
       | Some text -> "A human completed this step manually.\n" ^ text
@@ -1995,6 +2009,7 @@ struct
         item_index;
         item_key;
         attempt = None;
+        resumed = true;
         started_at = now;
         finished_at = now;
       }
@@ -2016,10 +2031,14 @@ struct
   let pause_for_interruption engine progress (attempts : Run.attempt list) =
     (* A parallel forEach item's attempt ran in the item's own worktree. *)
     let probe_after (attempt : Run.attempt) =
+      let environment =
+        attempt_environment ~run_id:progress.run.Run.id
+          ~step_key:attempt.Run.step_key ~attempt_id:attempt.Run.attempt_id
+      in
       match Run.item_in_progress_of_attempt progress.run attempt with
       | Some { Run.item_workspace = Some workspace; _ } ->
-          run_probe { engine with workspace }
-      | _ -> run_probe engine
+          run_probe ~environment { engine with workspace }
+      | _ -> run_probe ~environment engine
     in
     let progress =
       List.fold_left
@@ -2126,6 +2145,7 @@ struct
       item_index;
       item_key;
       attempt = Some { attempt with Run.stdout_path = None };
+      resumed = false;
       started_at = attempt.Run.started_at;
       finished_at;
     }
@@ -2287,15 +2307,21 @@ struct
     if attempts_to_escalate <> [] && (not skip) && Option.is_none guidance
     then
       pause_for_interruption engine
-        { run; last_handoff; guidance = None }
+        { run; last_handoff; guidance = None; resumed = false }
         (List.map snd attempts_to_escalate)
     else if skip then
       let* record, run =
         human_skip ~entries:workflow.Workflow.entries ~guidance run
       in
       on_step record;
-      drive engine { run; last_handoff = record.Run.handoff; guidance = None }
-    else drive engine { run; last_handoff; guidance }
+      drive engine
+        {
+          run;
+          last_handoff = record.Run.handoff;
+          guidance = None;
+          resumed = false;
+        }
+    else drive engine { run; last_handoff; guidance; resumed = true }
 
   (* After an interactive attach, the same session is resumed headlessly and
      asked for its handoff; that result completes the paused entry as if the
@@ -2392,7 +2418,7 @@ struct
             recorded_at = Run.iso8601 (Unix.gettimeofday ());
           }
     in
-    let now = Run.iso8601 (Unix.gettimeofday ()) in
+    let now = Run.record_timestamp_now () in
     let item_index, item_key = position_item existing.Run.position in
     let record =
       {
@@ -2409,6 +2435,7 @@ struct
         item_index;
         item_key;
         attempt = None;
+        resumed = true;
         started_at = now;
         finished_at = now;
       }
@@ -2439,10 +2466,11 @@ struct
                 existing.Run.position;
           }
         in
-        drive engine { run; last_handoff = handoff; guidance = None }
+        drive engine
+          { run; last_handoff = handoff; guidance = None; resumed = false }
     | Run.Escalate ->
         finish_with_metering
-          { run; last_handoff = handoff; guidance = None }
+          { run; last_handoff = handoff; guidance = None; resumed = false }
           Run.Paused
     | Run.Fail ->
         (* Inside a forEach the failing unit is the current body entry. *)
@@ -2467,7 +2495,7 @@ struct
           | _ -> Run.Paused
         in
         finish_with_metering
-          { run; last_handoff = handoff; guidance = None }
+          { run; last_handoff = handoff; guidance = None; resumed = false }
           status
     | Run.Invalid_handoff | Run.Timeout ->
         Error "attach: unreachable - rejected above"

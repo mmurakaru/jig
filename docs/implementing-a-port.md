@@ -29,8 +29,9 @@ and the config `wrapper` already live at this layer.
 
 Call `on_spawn` once the harness process runs: the runner saves its pid in
 the attempt record, and the live view tails the capture files. Pass every
-`environment` pair to the harness process; it carries `JIG_STEP_KEY` and
-`JIG_ATTEMPT_ID`.
+`environment` pair to the harness process; it carries `JIG_STEP_KEY`,
+`JIG_ATTEMPT_ID` and, unless `OTEL_SDK_DISABLED=true`, the `TRACEPARENT` of
+the attempt's span.
 
 `time_limit` carries the attempt's absolute `deadline`, a `grace_seconds`,
 and an `on_deadline` callback. At the deadline, call `on_deadline` first (the

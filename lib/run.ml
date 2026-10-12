@@ -465,12 +465,12 @@ let of_json json =
   let position_json = Yojson.Safe.Util.member "position" json in
   let* entry_index = member_int position_json "entry_index" in
   let* iterations_used = member_int position_json "iterations_used" in
-  (* Absent in records saved before the step inside a group was kept. *)
+  (* Absent outside a retry group, and in older records. *)
   let* step_index =
     match Yojson.Safe.Util.member "step_index" position_json with
     | `Null -> Ok 0
-    | `Int value -> Ok value
-    | _ -> Error "run: position step_index must be an integer"
+    | `Int value when value >= 0 -> Ok value
+    | _ -> Error "run: position step_index must be a non-negative integer"
   in
   let* for_each =
     match Yojson.Safe.Util.member "for_each" position_json with

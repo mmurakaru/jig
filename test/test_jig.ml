@@ -2012,7 +2012,8 @@ let test_last_handoff_picks_latest () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+      position =
+        { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = None;
       steps =
         [ step "a" (handoff "first"); step "b" None; step "c" (handoff "last") ];
@@ -2151,7 +2152,8 @@ let test_resume_honors_recorded_workspace_location () =
       task = "iso";
       status = Run.Paused;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+      position =
+        { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = Some old_workspace;
       steps = [];
       attempts_in_flight = Run.Step_key_map.empty;
@@ -2278,7 +2280,8 @@ let sample_stored_run ~id ~task =
     task;
     status = Run.Paused;
     error = None;
-    position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+    position =
+      { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
     workspace = None;
     steps = [];
     attempts_in_flight = Run.Step_key_map.empty;
@@ -4033,7 +4036,8 @@ let test_cost_by_tier_groups_in_first_seen_order () =
       task = "t";
       status = Run.Completed;
       error = None;
-      position = { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
+      position =
+        { Run.entry_index = 0; iterations_used = 0; step_index = 0; for_each = None };
       workspace = None;
       steps =
         [
@@ -4482,6 +4486,50 @@ let test_resume_continues_a_retry_group_in_a_for_each_item () =
               Alcotest.fail
                 (Printf.sprintf "expected 1 prompt, got %d"
                    (List.length prompts))))
+
+let test_resume_refuses_a_step_past_a_shrunken_retry_group () =
+  let root = make_temp_root () in
+  setup_retry_project root ~max_iterations:2 ~on_exhausted:"escalate";
+  Scripted_executor.reset
+    ~outputs:[ handoff_block (); handoff_block ~status:"escalate" () ];
+  match
+    Scripted_runner.execute_run ~run_id:"shrunk" ~root ~workflow_name:"fixloop"
+      ~task:"fix it" ~isolated:false ()
+  with
+  | Error message -> Alcotest.fail message
+  | Ok _ -> (
+      write_file
+        (Filename.concat root ".jig/workflows/fixloop.yaml")
+        "name: fixloop\n\
+         steps:\n\
+        \  - retry:\n\
+        \      max_iterations: 2\n\
+        \      on_exhausted: escalate\n\
+        \      steps:\n\
+        \        - skill: implement-fix\n";
+      Scripted_executor.reset ~outputs:[];
+      match
+        Scripted_runner.resume_run ~root ~run_id:"shrunk" ~guidance:None ()
+      with
+      | Ok _ -> Alcotest.fail "expected the resume to refuse the position"
+      | Error message ->
+          Alcotest.(check bool) "names the retry group" true
+            (contains ~affix:"past the retry group's steps" message);
+          Alcotest.(check int) "no step ran" 0
+            (List.length (Scripted_executor.prompts ())))
+
+let test_run_json_rejects_a_negative_step_index () =
+  let json =
+    Yojson.Safe.from_string
+      {|{"id": "bad", "workflow": "hello", "task": "t", "status": "paused",
+         "position": {"entry_index": 0, "iterations_used": 0, "step_index": -1},
+         "steps": [], "started_at": ""}|}
+  in
+  match Run.of_json json with
+  | Ok _ -> Alcotest.fail "expected a negative step_index to be rejected"
+  | Error message ->
+      Alcotest.(check bool) "names the field" true
+        (contains ~affix:"step_index" message)
 
 (* Appends each step key it sees to [log]; kills jig at [kill_at]. *)
 let step_logging_harness ~log ~kill_at =
@@ -5301,6 +5349,11 @@ let () =
             `Quick test_resume_continues_a_retry_group_at_the_paused_step;
           Alcotest.test_case "resume continues a retry group in a forEach item"
             `Quick test_resume_continues_a_retry_group_in_a_for_each_item;
+          Alcotest.test_case
+            "resume refuses a step past a shrunken retry group" `Quick
+            test_resume_refuses_a_step_past_a_shrunken_retry_group;
+          Alcotest.test_case "run json rejects a negative step index" `Quick
+            test_run_json_rejects_a_negative_step_index;
           Alcotest.test_case "a crash in a retry group resumes at the killed step"
             `Quick test_crash_in_a_retry_group_resumes_at_the_killed_step;
           Alcotest.test_case

@@ -595,18 +595,13 @@ struct
     | Iteration_failed of progress
     | Interrupted of Run.status * progress
 
-  let set_step_index progress step_index =
-    {
-      progress with
-      run =
-        {
-          progress.run with
-          Run.position = { progress.run.Run.position with Run.step_index };
-        };
-    }
+  let set_position progress position =
+    { progress with run = { progress.run with Run.position } }
 
-  (* Starts at the saved step index, so a resume skips the steps this
-     iteration already passed. *)
+  let set_step_index progress step_index =
+    set_position progress { progress.run.Run.position with Run.step_index }
+
+  (* A resume skips the steps this iteration already passed. *)
   let execute_iteration engine progress ~item (retry : Workflow.retry) =
     let rec loop progress step_index =
       match List.nth_opt retry.Workflow.retry_steps step_index with
@@ -622,25 +617,17 @@ struct
           | Run.Fail | Run.Invalid_handoff ->
               Ok (Iteration_failed progress))
     in
-    loop progress progress.run.Run.position.Run.step_index
+    let start_index = progress.run.Run.position.Run.step_index in
+    if start_index >= List.length retry.Workflow.retry_steps then
+      Error "run: position is past the retry group's steps; nothing to resume"
+    else loop progress start_index
 
   let execute_retry_entry engine progress ~item (retry : Workflow.retry) =
     (* A record update, so entry_index and any forEach cursor survive - a
        pause inside a retry inside a forEach must keep them all. *)
     let start_next_iteration progress iterations_used =
-      {
-        progress with
-        run =
-          {
-            progress.run with
-            Run.position =
-              {
-                progress.run.Run.position with
-                Run.iterations_used;
-                step_index = 0;
-              };
-          };
-      }
+      set_position progress
+        { progress.run.Run.position with Run.iterations_used; step_index = 0 }
     in
     let rec attempt progress iterations_used =
       if iterations_used >= retry.Workflow.max_iterations then
@@ -658,9 +645,6 @@ struct
               (iterations_used + 1)
     in
     attempt progress progress.run.Run.position.Run.iterations_used
-
-  let set_position progress position =
-    { progress with run = { progress.run with Run.position } }
 
   let set_entry_index progress entry_index =
     set_position progress
@@ -707,7 +691,7 @@ struct
           Run.for_each = Some { Run.item_index; body_index; items };
         }
     in
-    let reset_retry_cursor progress =
+    let restart_retry_position progress =
       set_position progress
         { progress.run.Run.position with Run.iterations_used = 0; step_index = 0 }
     in
@@ -738,7 +722,7 @@ struct
         in
         match verdict with
         | Proceed progress ->
-            loop (reset_retry_cursor progress) item_index (body_index + 1)
+            loop (restart_retry_position progress) item_index (body_index + 1)
         | Stop (status, progress) -> Ok (Stop (status, progress))
     in
     loop progress state.Run.item_index state.Run.body_index

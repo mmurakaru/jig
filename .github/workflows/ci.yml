@@ -28,3 +28,12 @@ jobs:
           # The embedded set must match the template tree exactly.
           mkdir /tmp/tree-check && cp -R "$GITHUB_WORKSPACE"/template/* /tmp/tree-check/
           diff -r /tmp/tree-check /tmp/init-check/.jig
+
+  evals-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Eval adapter and report tests (no Docker, no model)
+        working-directory: evals
+        run: uv run pytest --quiet

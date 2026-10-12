@@ -1,0 +1,268 @@
+{
+  "id": "2026-10-12-bugfix-152713-29846-1",
+  "workflow": "bugfix",
+  "task": "Listing 25 items at 10 per page shows only 2 pages.",
+  "status": "paused",
+  "position": { "entry_index": 2, "iterations_used": 3 },
+  "steps": [
+    {
+      "skill": "reproduce-issue",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "reproduce-issue call 1"
+      },
+      "session_id": "stub-reproduce-issue-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e0/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e0/r0/s0#1",
+        "skill": "reproduce-issue",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:13.292Z",
+        "child_pid": 29847,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.292Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: reproduce-issue call 1\\n```\\n\", \"session_id\": \"stub-reproduce-issue-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.292Z",
+      "finished_at": "2026-10-12T15:27:13.399Z"
+    },
+    {
+      "skill": "write-failing-test",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "write-failing-test call 1"
+      },
+      "session_id": "stub-write-failing-test-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e1/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e1/r0/s0#1",
+        "skill": "write-failing-test",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:13.400Z",
+        "child_pid": 29849,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.400Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: write-failing-test call 1\\n```\\n\", \"session_id\": \"stub-write-failing-test-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.400Z",
+      "finished_at": "2026-10-12T15:27:13.509Z"
+    },
+    {
+      "skill": "implement-fix",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "implement-fix call 1"
+      },
+      "session_id": "stub-implement-fix-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e2/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e2/r0/s0#1",
+        "skill": "implement-fix",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:13.511Z",
+        "child_pid": 29851,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.511Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: implement-fix call 1\\n```\\n\", \"session_id\": \"stub-implement-fix-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.511Z",
+      "finished_at": "2026-10-12T15:27:13.620Z"
+    },
+    {
+      "skill": "run-tests",
+      "outcome": "fail",
+      "exit_code": 0,
+      "cost_usd": 0.0125,
+      "tier": "mechanical",
+      "handoff": {
+        "status": "fail",
+        "artifacts": [],
+        "summary": "run-tests call 1"
+      },
+      "session_id": "stub-run-tests-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e2/r0/s1",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e2/r0/s1#1",
+        "skill": "run-tests",
+        "tier": "mechanical",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py",
+          "--mechanical"
+        ],
+        "started_at": "2026-10-12T15:27:13.621Z",
+        "child_pid": 29853,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.621Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: fail\\nsummary: run-tests call 1\\n```\\n\", \"session_id\": \"stub-run-tests-1\", \"total_cost_usd\": 0.0125, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.621Z",
+      "finished_at": "2026-10-12T15:27:13.730Z"
+    },
+    {
+      "skill": "implement-fix",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "implement-fix call 2"
+      },
+      "session_id": "stub-implement-fix-2",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e2/r1/s0",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e2/r1/s0#1",
+        "skill": "implement-fix",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:13.731Z",
+        "child_pid": 29855,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.731Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: implement-fix call 2\\n```\\n\", \"session_id\": \"stub-implement-fix-2\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.731Z",
+      "finished_at": "2026-10-12T15:27:13.840Z"
+    },
+    {
+      "skill": "run-tests",
+      "outcome": "fail",
+      "exit_code": 0,
+      "cost_usd": 0.0125,
+      "tier": "mechanical",
+      "handoff": {
+        "status": "fail",
+        "artifacts": [],
+        "summary": "run-tests call 2"
+      },
+      "session_id": "stub-run-tests-2",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e2/r1/s1",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e2/r1/s1#1",
+        "skill": "run-tests",
+        "tier": "mechanical",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py",
+          "--mechanical"
+        ],
+        "started_at": "2026-10-12T15:27:13.841Z",
+        "child_pid": 29857,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.841Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: fail\\nsummary: run-tests call 2\\n```\\n\", \"session_id\": \"stub-run-tests-2\", \"total_cost_usd\": 0.0125, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.841Z",
+      "finished_at": "2026-10-12T15:27:13.950Z"
+    },
+    {
+      "skill": "implement-fix",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "implement-fix call 3"
+      },
+      "session_id": "stub-implement-fix-3",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e2/r2/s0",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e2/r2/s0#1",
+        "skill": "implement-fix",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:13.951Z",
+        "child_pid": 29859,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:13 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:16.951Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: implement-fix call 3\\n```\\n\", \"session_id\": \"stub-implement-fix-3\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:13.951Z",
+      "finished_at": "2026-10-12T15:27:14.058Z"
+    },
+    {
+      "skill": "run-tests",
+      "outcome": "fail",
+      "exit_code": 0,
+      "cost_usd": 0.0125,
+      "tier": "mechanical",
+      "handoff": {
+        "status": "fail",
+        "artifacts": [],
+        "summary": "run-tests call 3"
+      },
+      "session_id": "stub-run-tests-3",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152713-29846-1/e2/r2/s1",
+        "attempt_id": "2026-10-12-bugfix-152713-29846-1/e2/r2/s1#1",
+        "skill": "run-tests",
+        "tier": "mechanical",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py",
+          "--mechanical"
+        ],
+        "started_at": "2026-10-12T15:27:14.059Z",
+        "child_pid": 29861,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:14 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:17.059Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: fail\\nsummary: run-tests call 3\\n```\\n\", \"session_id\": \"stub-run-tests-3\", \"total_cost_usd\": 0.0125, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:14.059Z",
+      "finished_at": "2026-10-12T15:27:14.168Z"
+    }
+  ],
+  "paused_on_attempt": "2026-10-12-bugfix-152713-29846-1/e2/r2/s1#1",
+  "started_at": "2026-10-12T15:27:13.291Z"
+}

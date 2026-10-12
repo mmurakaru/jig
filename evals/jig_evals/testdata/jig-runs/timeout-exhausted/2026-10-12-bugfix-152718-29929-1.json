@@ -1,0 +1,166 @@
+{
+  "id": "2026-10-12-bugfix-152718-29929-1",
+  "workflow": "bugfix",
+  "task": "Listing 25 items at 10 per page shows only 2 pages.",
+  "status": "paused",
+  "position": { "entry_index": 2, "iterations_used": 3 },
+  "steps": [
+    {
+      "skill": "reproduce-issue",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "reproduce-issue call 1"
+      },
+      "session_id": "stub-reproduce-issue-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152718-29929-1/e0/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-152718-29929-1/e0/r0/s0#1",
+        "skill": "reproduce-issue",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:18.112Z",
+        "child_pid": 29930,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:18 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:21.112Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: reproduce-issue call 1\\n```\\n\", \"session_id\": \"stub-reproduce-issue-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:18.112Z",
+      "finished_at": "2026-10-12T15:27:18.223Z"
+    },
+    {
+      "skill": "write-failing-test",
+      "outcome": "pass",
+      "exit_code": 0,
+      "cost_usd": 0.25,
+      "handoff": {
+        "status": "pass",
+        "artifacts": [],
+        "summary": "write-failing-test call 1"
+      },
+      "session_id": "stub-write-failing-test-1",
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152718-29929-1/e1/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-152718-29929-1/e1/r0/s0#1",
+        "skill": "write-failing-test",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:18.223Z",
+        "child_pid": 29932,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:18 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:21.223Z"
+      },
+      "stdout": "{\"type\": \"result\", \"result\": \"Done.\\n\\n```handoff\\nstatus: pass\\nsummary: write-failing-test call 1\\n```\\n\", \"session_id\": \"stub-write-failing-test-1\", \"total_cost_usd\": 0.25, \"usage\": {\"input_tokens\": 1000, \"cache_creation_input_tokens\": 200, \"cache_read_input_tokens\": 3000, \"output_tokens\": 400}}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:18.223Z",
+      "finished_at": "2026-10-12T15:27:18.331Z"
+    },
+    {
+      "skill": "implement-fix",
+      "outcome": "timeout",
+      "exit_code": 143,
+      "cost_usd": "unknown",
+      "handoff": {
+        "status": "fail",
+        "artifacts": [],
+        "summary": "The previous attempt timed out after 3s and jig stopped it. Its final output:\n"
+      },
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152718-29929-1/e2/r0/s0",
+        "attempt_id": "2026-10-12-bugfix-152718-29929-1/e2/r0/s0#1",
+        "skill": "implement-fix",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:18.332Z",
+        "child_pid": 29934,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:18 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:21.332Z",
+        "timeout_requested_at": "2026-10-12T15:27:21.412Z"
+      },
+      "stdout": "",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:18.332Z",
+      "finished_at": "2026-10-12T15:27:21.518Z"
+    },
+    {
+      "skill": "implement-fix",
+      "outcome": "timeout",
+      "exit_code": 143,
+      "cost_usd": "unknown",
+      "handoff": {
+        "status": "fail",
+        "artifacts": [],
+        "summary": "The previous attempt timed out after 3s and jig stopped it. Its final output:\n"
+      },
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152718-29929-1/e2/r1/s0",
+        "attempt_id": "2026-10-12-bugfix-152718-29929-1/e2/r1/s0#1",
+        "skill": "implement-fix",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:21.519Z",
+        "child_pid": 30002,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:21 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:24.519Z",
+        "timeout_requested_at": "2026-10-12T15:27:24.605Z"
+      },
+      "stdout": "",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:21.519Z",
+      "finished_at": "2026-10-12T15:27:24.711Z"
+    },
+    {
+      "skill": "implement-fix",
+      "outcome": "timeout",
+      "exit_code": 143,
+      "cost_usd": "unknown",
+      "handoff": {
+        "status": "fail",
+        "artifacts": [],
+        "summary": "The previous attempt timed out after 3s and jig stopped it. Its final output:\n"
+      },
+      "attempt": {
+        "step_key": "2026-10-12-bugfix-152718-29929-1/e2/r2/s0",
+        "attempt_id": "2026-10-12-bugfix-152718-29929-1/e2/r2/s0#1",
+        "skill": "implement-fix",
+        "command": [
+          "python3", "/tmp/jig-record.NaI3XF/scripted_harness.py"
+        ],
+        "started_at": "2026-10-12T15:27:24.713Z",
+        "child_pid": 30070,
+        "child_host": "MacBook-Pro.local",
+        "child_start_time": "Mon Oct 12 15:27:24 2026",
+        "on_interrupt": "recover",
+        "time_limit_seconds": 3,
+        "deadline_at": "2026-10-12T15:27:27.713Z",
+        "timeout_requested_at": "2026-10-12T15:27:27.797Z"
+      },
+      "stdout": "",
+      "stderr": "",
+      "started_at": "2026-10-12T15:27:24.713Z",
+      "finished_at": "2026-10-12T15:27:27.902Z"
+    }
+  ],
+  "paused_on_attempt": "2026-10-12-bugfix-152718-29929-1/e2/r2/s0#1",
+  "started_at": "2026-10-12T15:27:18.110Z"
+}

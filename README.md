@@ -235,6 +235,15 @@ mkdir -p <repo>/.claude/skills && cp -R skills/jig <repo>/.claude/skills/   # on
 The skill turns a ticket into a supervised run: condense the ticket into a task, validate, launch with `--detach`, poll `jig status --json`, triage pauses (answer derivable questions itself, surface the rest verbatim), and report the outcome with cost and artifacts.
 It never executes a workflow's YAML by hand - the run record, metering, and resume semantics exist only through the binary.
 
+## Evals
+
+[`evals/`](evals/README.md) measures whether a workflow solves real tasks: it runs `jig run bugfix` and a plain Claude Code baseline on small seeded-bug repositories under [Harbor](https://github.com/harbor-framework/harbor), in Docker, and reports solve rate, unattended solve rate, cost per trial and per tier, retry iterations, escalations, and invalid handoffs.
+It lives outside the binary and spends model tokens, so it runs only on demand:
+
+```sh
+uv run --project evals jig-evals --model anthropic/claude-sonnet-4-6
+```
+
 ## Docs
 
 - [Writing a skill](docs/writing-a-skill.md)

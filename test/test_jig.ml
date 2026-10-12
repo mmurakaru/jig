@@ -4539,6 +4539,45 @@ let test_run_json_round_trips_attempts () =
       Alcotest.(check bool) "the rest of the record survives" true
         (without_map loaded = without_map run)
 
+(* Lets one event through, then refuses like a budget gate at its cap. *)
+let budget_events_left = ref 0
+
+module Budget_gate_metering : Metering.S = struct
+  let record ~runs_dir:_ ~event:_ =
+    if !budget_events_left > 0 then (
+      decr budget_events_left;
+      Ok ())
+    else Error "budget: spend cap reached"
+end
+
+module Budget_gate_runner =
+  Runner.Make (Scripted_executor) (Model_provider.Default) (Budget_gate_metering)
+    (Store.Filesystem)
+
+let test_infrastructure_error_keeps_the_saved_steps () =
+  let root = make_temp_root () in
+  setup_three_step_project root;
+  Scripted_executor.reset ~outputs:[];
+  budget_events_left := 1;
+  (match
+     Budget_gate_runner.execute_run ~run_id:"capped" ~root
+       ~workflow_name:"pipeline" ~task:"build" ~isolated:false ()
+   with
+  | Ok _ -> Alcotest.fail "expected the budget gate to stop the run"
+  | Error message ->
+      Alcotest.(check string) "the gate's message" "budget: spend cap reached"
+        message);
+  match Store.Filesystem.load ~runs_dir:(Project.runs_dir ~root) ~id:"capped" with
+  | Error message -> Alcotest.fail message
+  | Ok run ->
+      Alcotest.(check string) "failed" "failed"
+        (Run.string_of_status run.Run.status);
+      Alcotest.(check (list string)) "both executed steps stay recorded"
+        [ "one"; "two" ]
+        (List.map (fun step -> step.Run.skill) run.Run.steps);
+      Alcotest.(check (option string)) "the error is recorded"
+        (Some "budget: spend cap reached") run.Run.error
+
 let () =
   Random.self_init ();
   Alcotest.run "jig"
@@ -5018,6 +5057,8 @@ let () =
             `Quick test_step_keys_follow_items_iterations_and_retry_steps;
           Alcotest.test_case "run json round-trips attempts" `Quick
             test_run_json_round_trips_attempts;
+          Alcotest.test_case "an infrastructure error keeps saved steps"
+            `Quick test_infrastructure_error_keeps_the_saved_steps;
         ] );
       ( "telemetry",
         [

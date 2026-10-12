@@ -773,10 +773,18 @@ struct
     match execute_entries engine progress with
     | Ok (status, progress) -> finish engine progress status
     | Error message ->
+        (* The last save holds every step this drive executed. *)
+        let last_saved_run =
+          match
+            Store_port.load ~runs_dir:(runs_dir engine) ~id:progress.run.Run.id
+          with
+          | Ok run -> run
+          | Error _ -> progress.run
+        in
         let progress =
           {
             progress with
-            run = { progress.run with Run.error = Some message };
+            run = { last_saved_run with Run.error = Some message };
           }
         in
         (match finish engine progress Run.Failed with

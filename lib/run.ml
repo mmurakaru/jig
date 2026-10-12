@@ -2,6 +2,22 @@ open Result_syntax
 
 type outcome = Pass | Fail | Escalate | Invalid_handoff
 
+(* One execution of a step, saved before its process starts so a crash
+   leaves a record of it. *)
+type attempt = {
+  (* Names the logical step; the same across resumes and re-runs. *)
+  step_key : string;
+  attempt_id : string;
+  skill : string;
+  tier : string option;
+  command : string list;
+  started_at : string;
+  (* Set once the step's process is running. *)
+  child_pid : int option;
+}
+
+module Step_key_map = Map.Make (String)
+
 type step_record = {
   skill : string;
   outcome : outcome;
@@ -17,6 +33,9 @@ type step_record = {
   session_id : string option;
   item_index : int option;
   item_key : string option;
+  (* None for a step no process ran: a human skip, an attach hand-back, or
+     a record from an earlier jig version. *)
+  attempt : attempt option;
   started_at : string;
   finished_at : string;
 }
@@ -50,6 +69,12 @@ type t = {
   position : position;
   workspace : string option;
   steps : step_record list;
+  (* Attempts saved before their process started and not finished yet;
+     non-empty on disk only while steps execute or after a crash. *)
+  attempts_in_flight : attempt Step_key_map.t;
+  (* Attempts that a resume found in flight: their process ended with no
+     recorded outcome. *)
+  interrupted_attempts : attempt list;
   started_at : string;
   finished_at : string option;
 }
@@ -97,6 +122,45 @@ let make_id ~workflow ~time ~pid =
     (utc.Unix.tm_year + 1900) (utc.Unix.tm_mon + 1) utc.Unix.tm_mday workflow
     utc.Unix.tm_hour utc.Unix.tm_min utc.Unix.tm_sec pid !sequence
 
+(* Stable across resumes: the run, the entry, the forEach item and body
+   entry, the retry iteration, and the step inside the retry group. *)
+let step_key_of_position ~run_id ~(position : position) ~step_index =
+  let for_each_part =
+    match position.for_each with
+    | Some state -> Printf.sprintf "/i%d/b%d" state.item_index state.body_index
+    | None -> ""
+  in
+  Printf.sprintf "%s/e%d%s/r%d/s%d" run_id position.entry_index for_each_part
+    position.iterations_used step_index
+
+(* Counts every earlier attempt of the key, finished or interrupted. *)
+let next_attempt_id run ~step_key =
+  let earlier =
+    List.length
+      (List.filter
+         (fun step ->
+           match step.attempt with
+           | Some attempt -> attempt.step_key = step_key
+           | None -> false)
+         run.steps)
+    + List.length
+        (List.filter
+           (fun attempt -> attempt.step_key = step_key)
+           run.interrupted_attempts)
+  in
+  Printf.sprintf "%s#%d" step_key (earlier + 1)
+
+(* Moves the attempts found in flight to the interrupted list: no process
+   of this jig runs them any more. *)
+let mark_attempts_interrupted run =
+  {
+    run with
+    interrupted_attempts =
+      run.interrupted_attempts
+      @ List.map snd (Step_key_map.bindings run.attempts_in_flight);
+    attempts_in_flight = Step_key_map.empty;
+  }
+
 let string_of_outcome = function
   | Pass -> "pass"
   | Fail -> "fail"
@@ -124,6 +188,25 @@ let status_of_string = function
   | "failed" -> Ok Failed
   | "aborted" -> Ok Aborted
   | other -> Error (Printf.sprintf "run: unknown status %S" other)
+
+let attempt_to_json attempt =
+  `Assoc
+    ([
+       ("step_key", `String attempt.step_key);
+       ("attempt_id", `String attempt.attempt_id);
+       ("skill", `String attempt.skill);
+     ]
+    @ (match attempt.tier with
+      | Some tier -> [ ("tier", `String tier) ]
+      | None -> [])
+    @ [
+        ("command", `List (List.map (fun part -> `String part) attempt.command));
+        ("started_at", `String attempt.started_at);
+      ]
+    @
+    match attempt.child_pid with
+    | Some pid -> [ ("child_pid", `Int pid) ]
+    | None -> [])
 
 let step_to_json step =
   let handoff_field =
@@ -164,6 +247,9 @@ let step_to_json step =
      ]
     @ tier_field @ handoff_field @ handoff_error_field @ session_field
     @ item_fields
+    @ (match step.attempt with
+      | Some attempt -> [ ("attempt", attempt_to_json attempt) ]
+      | None -> [])
     @ [
         ("stdout", `String step.stdout);
         ("stderr", `String step.stderr);
@@ -227,8 +313,22 @@ let to_json run =
                       ] );
                 ]) );
         ("steps", `List (List.map step_to_json run.steps));
-        ("started_at", `String run.started_at);
       ]
+    @ (if Step_key_map.is_empty run.attempts_in_flight then []
+       else
+         [
+           ( "attempts_in_flight",
+             `Assoc
+               (List.map
+                  (fun (step_key, attempt) ->
+                    (step_key, attempt_to_json attempt))
+                  (Step_key_map.bindings run.attempts_in_flight)) );
+         ])
+    @ (match run.interrupted_attempts with
+      | [] -> []
+      | attempts ->
+          [ ("interrupted_attempts", `List (List.map attempt_to_json attempts)) ])
+    @ [ ("started_at", `String run.started_at) ]
     @ finished_field)
 
 (* Total of the known step costs, plus how many steps reported nothing -
@@ -287,6 +387,41 @@ let optional_int json key =
   | `Int value -> Some value
   | _ -> None
 
+let attempt_of_json json =
+  let* step_key = member_string json "step_key" in
+  let* attempt_id = member_string json "attempt_id" in
+  let* skill = member_string json "skill" in
+  let* command =
+    match Yojson.Safe.Util.member "command" json with
+    | `List parts ->
+        List.fold_right
+          (fun part accumulator ->
+            let* parts = accumulator in
+            match part with
+            | `String text -> Ok (text :: parts)
+            | _ -> Error "run: attempt command parts must be strings")
+          parts (Ok [])
+    | _ -> Error "run: attempt command must be a list"
+  in
+  let* started_at = member_string json "started_at" in
+  Ok
+    {
+      step_key;
+      attempt_id;
+      skill;
+      tier = optional_string json "tier";
+      command;
+      started_at;
+      child_pid = optional_int json "child_pid";
+    }
+
+let optional_attempt json =
+  match Yojson.Safe.Util.member "attempt" json with
+  | `Null -> Ok None
+  | attempt_json ->
+      let* attempt = attempt_of_json attempt_json in
+      Ok (Some attempt)
+
 let step_of_json json =
   let* skill = member_string json "skill" in
   let* outcome_string = member_string json "outcome" in
@@ -304,6 +439,7 @@ let step_of_json json =
         let* handoff = Handoff.of_json handoff_json in
         Ok (Some handoff)
   in
+  let* attempt = optional_attempt json in
   Ok
     {
       skill;
@@ -318,6 +454,7 @@ let step_of_json json =
       session_id = optional_string json "session_id";
       item_index = optional_int json "item_index";
       item_key = optional_string json "item_key";
+      attempt;
       started_at;
       finished_at;
     }
@@ -377,6 +514,30 @@ let of_json json =
           entries (Ok [])
     | _ -> Error "run: steps must be a list"
   in
+  let* attempts_in_flight =
+    match Yojson.Safe.Util.member "attempts_in_flight" json with
+    | `Null -> Ok Step_key_map.empty
+    | `Assoc pairs ->
+        List.fold_left
+          (fun accumulator (step_key, attempt_json) ->
+            let* attempts = accumulator in
+            let* attempt = attempt_of_json attempt_json in
+            Ok (Step_key_map.add step_key attempt attempts))
+          (Ok Step_key_map.empty) pairs
+    | _ -> Error "run: attempts_in_flight must be an object"
+  in
+  let* interrupted_attempts =
+    match Yojson.Safe.Util.member "interrupted_attempts" json with
+    | `Null -> Ok []
+    | `List entries ->
+        List.fold_right
+          (fun entry accumulator ->
+            let* attempts = accumulator in
+            let* attempt = attempt_of_json entry in
+            Ok (attempt :: attempts))
+          entries (Ok [])
+    | _ -> Error "run: interrupted_attempts must be a list"
+  in
   let* started_at = member_string json "started_at" in
   Ok
     {
@@ -388,6 +549,8 @@ let of_json json =
       position = { entry_index; iterations_used; for_each };
       workspace = optional_string json "workspace";
       steps;
+      attempts_in_flight;
+      interrupted_attempts;
       started_at;
       finished_at = optional_string json "finished_at";
     }

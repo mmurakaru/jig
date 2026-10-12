@@ -6,7 +6,7 @@ type exec_result = {
 
 module type S = sig
   val execute :
-    ?on_spawn:(stdout_path:string -> stderr_path:string -> unit) ->
+    ?on_spawn:(child_pid:int -> stdout_path:string -> stderr_path:string -> unit) ->
     ?environment:(string * string) list ->
     command:string list ->
     cwd:string ->

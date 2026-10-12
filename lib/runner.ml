@@ -229,9 +229,87 @@ struct
          message:\n" ^ text;
     }
 
+  (* Keyed by attempt id, so recording it again on a resume is a no-op. *)
+  let metering_event ~run_id (step_record : Run.step_record)
+      (attempt : Run.attempt) =
+    {
+      Metering.run_id;
+      skill = attempt.Run.skill;
+      command = attempt.Run.command;
+      tier = attempt.Run.tier;
+      cost = step_record.Run.cost;
+      usage = snd (Metering.parse_cost step_record.Run.stdout);
+      step_key = Some attempt.Run.step_key;
+      attempt_id = Some attempt.Run.attempt_id;
+      interrupted = false;
+      recorded_at = Run.iso8601 (Unix.gettimeofday ());
+    }
+
+  (* The spend of an interrupted attempt is unknown, never zero. *)
+  let interrupted_metering_event ~run_id (attempt : Run.attempt) =
+    {
+      Metering.run_id;
+      skill = attempt.Run.skill;
+      command = attempt.Run.command;
+      tier = attempt.Run.tier;
+      cost = Metering.Unknown_cost;
+      usage = None;
+      step_key = Some attempt.Run.step_key;
+      attempt_id = Some attempt.Run.attempt_id;
+      interrupted = true;
+      recorded_at = Run.iso8601 (Unix.gettimeofday ());
+    }
+
+  (* Metering follows the step save, so a crash between the two leaves an
+     attempt without its event; this records each missing one. *)
+  let record_missing_metering engine (run : Run.t) =
+    let record event =
+      Metering_port.record ~runs_dir:(runs_dir engine) ~event
+    in
+    let* () =
+      List.fold_left
+        (fun previous (step_record : Run.step_record) ->
+          let* () = previous in
+          match step_record.Run.attempt with
+          | Some attempt ->
+              record (metering_event ~run_id:run.Run.id step_record attempt)
+          | None -> Ok ())
+        (Ok ()) run.Run.steps
+    in
+    List.fold_left
+      (fun previous attempt ->
+        let* () = previous in
+        record (interrupted_metering_event ~run_id:run.Run.id attempt))
+      (Ok ()) run.Run.interrupted_attempts
+
+  let with_attempt_in_flight progress (attempt : Run.attempt) =
+    {
+      progress with
+      run =
+        {
+          progress.run with
+          Run.attempts_in_flight =
+            Run.Step_key_map.add attempt.Run.step_key attempt
+              progress.run.Run.attempts_in_flight;
+        };
+    }
+
+  let without_attempt_in_flight progress (attempt : Run.attempt) =
+    {
+      progress with
+      run =
+        {
+          progress.run with
+          Run.attempts_in_flight =
+            Run.Step_key_map.remove attempt.Run.step_key
+              progress.run.Run.attempts_in_flight;
+        };
+    }
+
   (* Guidance rides on exactly one step - the first one executed after a
-     resume - then is consumed. *)
-  let execute_step engine progress ~item (step : Workflow.step) =
+     resume - then is consumed. [step_index] is the step's place inside its
+     retry group (0 outside one); it is part of the step key. *)
+  let execute_step engine progress ~item ~step_index (step : Workflow.step) =
     let label = Workflow.step_label step in
     let item_key = Option.map (fun context -> Items.key context.bindings) item in
     let interpolate value =
@@ -264,16 +342,15 @@ struct
       (Step_started
          { skill = label; position = progress.run.Run.position; item_key; tier });
     let started_at = Run.iso8601 (Unix.gettimeofday ()) in
-    let announce_output ~stdout_path ~stderr_path =
-      Current.write ~runs_dir:(runs_dir engine)
-        ~run_id:progress.run.Run.id
-        { Current.skill = label; item_key; tier; stdout_path; stderr_path;
-          started_at };
-      engine.on_event (Step_output { stdout_path; stderr_path })
+    let step_key =
+      Run.step_key_of_position ~run_id:progress.run.Run.id
+        ~position:progress.run.Run.position ~step_index
     in
-    let* outcome, handoff, handoff_error, cost, stdout, stderr, exit_code,
-         session_id, tier
-        =
+    let attempt_id = Run.next_attempt_id progress.run ~step_key in
+    let environment =
+      [ ("JIG_STEP_KEY", step_key); ("JIG_ATTEMPT_ID", attempt_id) ]
+    in
+    let* command, start_process =
       match (step.Workflow.action, loaded_skill) with
       | Workflow.Skill_step name, Some skill ->
           let* command =
@@ -283,79 +360,102 @@ struct
             List.map (fun (key, value) -> (key, interpolate value))
               step.Workflow.inputs
           in
-          let* exec_result =
-            Executor_port.execute ~on_spawn:announce_output ~command
-              ~cwd:engine.workspace
-              ~prompt:
-                (build_prompt ~context:engine.context
-                   ~field_guide:(Field_guide.load ~workspace:engine.workspace)
-                   ~task:engine.task
-                   ~position:
-                     (position_line ~workflow_name:progress.run.Run.workflow
-                        ~entries:engine.entries
-                        ~entry_index:progress.run.Run.position.Run.entry_index
-                        ~skill:label ~item)
-                   ~inputs ~skill_body:skill.Skill.body
-                   ~previous_handoff:progress.last_handoff
-                   ~guidance:progress.guidance)
-              ()
+          let prompt =
+            build_prompt ~context:engine.context
+              ~field_guide:(Field_guide.load ~workspace:engine.workspace)
+              ~task:engine.task
+              ~position:
+                (position_line ~workflow_name:progress.run.Run.workflow
+                   ~entries:engine.entries
+                   ~entry_index:progress.run.Run.position.Run.entry_index
+                   ~skill:label ~item)
+              ~inputs ~skill_body:skill.Skill.body
+              ~previous_handoff:progress.last_handoff
+              ~guidance:progress.guidance
           in
-          let cost, usage = Metering.parse_cost exec_result.Executor.stdout in
-          let* () =
-            Metering_port.record ~runs_dir:(runs_dir engine)
-              ~event:
-                {
-                  Metering.run_id = progress.run.Run.id;
-                  skill = name;
-                  command;
-                  tier;
-                  cost;
-                  usage;
-                  recorded_at = Run.iso8601 (Unix.gettimeofday ());
-                }
-          in
-          let outcome, handoff, handoff_error = outcome_of_exec exec_result in
           Ok
-            ( outcome,
-              handoff,
-              handoff_error,
-              cost,
-              exec_result.Executor.stdout,
-              exec_result.Executor.stderr,
-              exec_result.Executor.exit_code,
-              Metering.parse_session_id exec_result.Executor.stdout,
-              tier )
+            ( command,
+              fun ~on_spawn ->
+                Executor_port.execute ~on_spawn ~environment ~command
+                  ~cwd:engine.workspace ~prompt () )
       | Workflow.Skill_step name, None ->
           Error
             (Printf.sprintf "run: skill %s failed to load - unreachable" name)
-      | Workflow.Command_step command, _ ->
+      | Workflow.Command_step command_template, _ ->
           (* A command step is deterministic mechanical work: run the shell
              command, let its exit status be the outcome (0 = pass), record
              it at $0 (no model). *)
-          let command = interpolate command in
-          let* result =
-            Result.map_error
-              (fun message -> "command step: " ^ message)
-              (Subprocess.run ~cwd:engine.workspace ~on_spawn:announce_output
-                 ~argv:[ "sh"; "-c"; command ] ())
-          in
-          let exit_code = result.Subprocess.exit_code in
-          let stdout = result.Subprocess.stdout in
-          let stderr = result.Subprocess.stderr in
-          let cost = Metering.Cost_usd 0.0 in
-          let* () =
-            Metering_port.record ~runs_dir:(runs_dir engine)
-              ~event:
-                {
-                  Metering.run_id = progress.run.Run.id;
-                  skill = label;
-                  command = [ "sh"; "-c"; command ];
-                  tier = None;
-                  cost;
-                  usage = None;
-                  recorded_at = Run.iso8601 (Unix.gettimeofday ());
-                }
-          in
+          let argv = [ "sh"; "-c"; interpolate command_template ] in
+          Ok
+            ( argv,
+              fun ~on_spawn ->
+                Result.map
+                  (fun result ->
+                    {
+                      Executor.exit_code = result.Subprocess.exit_code;
+                      stdout = result.Subprocess.stdout;
+                      stderr = result.Subprocess.stderr;
+                    })
+                  (Result.map_error
+                     (fun message -> "command step: " ^ message)
+                     (Subprocess.run ~cwd:engine.workspace ~on_spawn
+                        ~environment ~argv ())) )
+    in
+    let attempt =
+      {
+        Run.step_key;
+        attempt_id;
+        skill = label;
+        tier;
+        command;
+        started_at;
+        child_pid = None;
+      }
+    in
+    (* The intent save: a crash from here on leaves the attempt on disk. *)
+    let* progress, _ =
+      persist engine
+        (with_attempt_in_flight progress attempt)
+        ~status:Run.Running ~finished:false
+    in
+    let spawned_attempt = ref attempt in
+    let on_spawn ~child_pid ~stdout_path ~stderr_path =
+      spawned_attempt := { attempt with Run.child_pid = Some child_pid };
+      (* Best effort: the outcome save that follows reports a failing store. *)
+      ignore
+        (persist engine
+           (with_attempt_in_flight progress !spawned_attempt)
+           ~status:Run.Running ~finished:false);
+      Current.write ~runs_dir:(runs_dir engine)
+        ~run_id:progress.run.Run.id
+        { Current.skill = label; item_key; tier; stdout_path; stderr_path;
+          started_at };
+      engine.on_event (Step_output { stdout_path; stderr_path })
+    in
+    let process_result = start_process ~on_spawn in
+    Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
+    let progress = without_attempt_in_flight progress attempt in
+    let* exec_result =
+      match process_result with
+      | Ok exec_result -> Ok exec_result
+      | Error message ->
+          (* The process never started, so the attempt leaves no trace. *)
+          ignore (persist engine progress ~status:Run.Running ~finished:false);
+          Error message
+    in
+    let stdout = exec_result.Executor.stdout in
+    let stderr = exec_result.Executor.stderr in
+    let exit_code = exec_result.Executor.exit_code in
+    let outcome, handoff, handoff_error, cost, session_id =
+      match step.Workflow.action with
+      | Workflow.Skill_step _ ->
+          let outcome, handoff, handoff_error = outcome_of_exec exec_result in
+          ( outcome,
+            handoff,
+            handoff_error,
+            fst (Metering.parse_cost stdout),
+            Metering.parse_session_id stdout )
+      | Workflow.Command_step command_template ->
           let outcome = if exit_code = 0 then Run.Pass else Run.Fail in
           (* On failure, thread the command's output onward so a retry (or
              a following skill) can act on what went wrong. *)
@@ -377,13 +477,12 @@ struct
                   artifacts = [];
                   summary =
                     Printf.sprintf "Command failed (exit %d): %s\n%s" exit_code
-                      command tail;
+                      (interpolate command_template) tail;
                 }
             else None
           in
-          Ok (outcome, handoff, None, cost, stdout, stderr, exit_code, None, None)
+          (outcome, handoff, None, Metering.Cost_usd 0.0, None)
     in
-    Current.remove ~runs_dir:(runs_dir engine) ~run_id:progress.run.Run.id;
     let step_record =
       {
         Run.skill = label;
@@ -398,6 +497,7 @@ struct
         session_id;
         item_index = Option.map (fun context -> context.item_index) item;
         item_key;
+        attempt = Some !spawned_attempt;
         started_at;
         finished_at = Run.iso8601 (Unix.gettimeofday ());
       }
@@ -418,6 +518,12 @@ struct
       }
     in
     let* progress, _ = persist engine progress ~status:Run.Running ~finished:false in
+    let* () =
+      Metering_port.record ~runs_dir:(runs_dir engine)
+        ~event:
+          (metering_event ~run_id:progress.run.Run.id step_record
+             !spawned_attempt)
+    in
     engine.on_step step_record;
     engine.on_event (Step_finished step_record);
     Ok (step_record, progress)
@@ -429,7 +535,9 @@ struct
     | None -> Stop (Run.Failed, progress)
 
   let execute_plain_entry engine progress ~item step =
-    let* step_record, progress = execute_step engine progress ~item step in
+    let* step_record, progress =
+      execute_step engine progress ~item ~step_index:0 step
+    in
     match step_record.Run.outcome with
     | Run.Pass -> Ok (Proceed progress)
     | Run.Escalate -> Ok (Stop (Run.Paused, progress))
@@ -446,22 +554,22 @@ struct
     | Interrupted of Run.status * progress
 
   let execute_iteration engine progress ~item (retry : Workflow.retry) =
-    let rec loop progress remaining =
+    let rec loop progress step_index remaining =
       match remaining with
       | [] -> Ok (Group_done progress)
       | (step : Workflow.step) :: rest -> (
           let* step_record, progress =
-            execute_step engine progress ~item step
+            execute_step engine progress ~item ~step_index step
           in
           match step_record.Run.outcome with
           | Run.Pass ->
               if step.Workflow.until_pass then Ok (Group_done progress)
-              else loop progress rest
+              else loop progress (step_index + 1) rest
           | Run.Escalate -> Ok (Interrupted (Run.Paused, progress))
           | Run.Fail | Run.Invalid_handoff ->
               Ok (Iteration_failed progress))
     in
-    loop progress retry.Workflow.retry_steps
+    loop progress 0 retry.Workflow.retry_steps
 
   let execute_retry_entry engine progress ~item (retry : Workflow.retry) =
     (* A record update, so entry_index and any forEach cursor survive - a
@@ -661,6 +769,7 @@ struct
     let* progress, _ =
       persist engine progress ~status:Run.Running ~finished:false
     in
+    let* () = record_missing_metering engine progress.run in
     match execute_entries engine progress with
     | Ok (status, progress) -> finish engine progress status
     | Error message ->
@@ -719,6 +828,8 @@ struct
         position = { Run.entry_index = 0; iterations_used = 0; for_each = None };
         workspace;
         steps = [];
+        attempts_in_flight = Run.Step_key_map.empty;
+        interrupted_attempts = [];
         started_at = Run.iso8601 started;
         finished_at = None;
       }
@@ -835,6 +946,7 @@ struct
         session_id = None;
         item_index;
         item_key;
+        attempt = None;
         started_at = now;
         finished_at = now;
       }
@@ -891,7 +1003,12 @@ struct
       }
     in
     let last_handoff = Run.last_handoff existing in
-    let run = { existing with Run.status = Run.Running; finished_at = None } in
+    (* The lock proves no other jig drives the run, so an attempt still in
+       flight lost its driver; its step runs again at the cursor. *)
+    let run =
+      Run.mark_attempts_interrupted
+        { existing with Run.status = Run.Running; finished_at = None }
+    in
     if skip then
       let* record, run =
         human_skip ~entries:workflow.Workflow.entries ~guidance run
@@ -976,6 +1093,9 @@ struct
             tier = None;
             cost;
             usage;
+            step_key = None;
+            attempt_id = None;
+            interrupted = false;
             recorded_at = Run.iso8601 (Unix.gettimeofday ());
           }
     in
@@ -995,17 +1115,25 @@ struct
         session_id = Metering.parse_session_id exec_result.Executor.stdout;
         item_index;
         item_key;
+        attempt = None;
         started_at = now;
         finished_at = now;
       }
     in
     let run =
-      {
-        existing with
-        Run.status = Run.Running;
-        finished_at = None;
-        steps = existing.Run.steps @ [ record ];
-      }
+      Run.mark_attempts_interrupted
+        {
+          existing with
+          Run.status = Run.Running;
+          finished_at = None;
+          steps = existing.Run.steps @ [ record ];
+        }
+    in
+    (* [drive] records missing metering itself; a stop here must too. *)
+    let finish_with_metering progress status =
+      let* finished = finish engine progress status in
+      let* () = record_missing_metering engine progress.run in
+      Ok finished
     in
     on_step record;
     match outcome with
@@ -1020,7 +1148,9 @@ struct
         in
         drive engine { run; last_handoff = handoff; guidance = None }
     | Run.Escalate ->
-        finish engine { run; last_handoff = handoff; guidance = None } Run.Paused
+        finish_with_metering
+          { run; last_handoff = handoff; guidance = None }
+          Run.Paused
     | Run.Fail ->
         (* Inside a forEach the failing unit is the current body entry. *)
         let failing_entry =
@@ -1043,7 +1173,9 @@ struct
              still needs the human, so the run stays theirs. *)
           | _ -> Run.Paused
         in
-        finish engine { run; last_handoff = handoff; guidance = None } status
+        finish_with_metering
+          { run; last_handoff = handoff; guidance = None }
+          status
     | Run.Invalid_handoff -> Error "attach: unreachable - rejected above"
 end
 

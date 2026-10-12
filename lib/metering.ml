@@ -8,6 +8,11 @@ type event = {
   tier : string option;
   cost : cost;
   usage : Yojson.Safe.t option;
+  (* The attempt the event meters; None for an attach hand-back. *)
+  step_key : string option;
+  attempt_id : string option;
+  (* The attempt's process ended with no recorded outcome. *)
+  interrupted : bool;
   recorded_at : string;
 }
 
@@ -65,9 +70,18 @@ let event_to_json event =
     @ (match event.usage with
       | Some usage -> [ ("usage", usage) ]
       | None -> [])
+    @ (match event.step_key with
+      | Some step_key -> [ ("step_key", `String step_key) ]
+      | None -> [])
+    @ (match event.attempt_id with
+      | Some attempt_id -> [ ("attempt_id", `String attempt_id) ]
+      | None -> [])
+    @ (if event.interrupted then [ ("interrupted", `Bool true) ] else [])
     @ [ ("recorded_at", `String event.recorded_at) ])
 
 module type S = sig
+  (* Idempotent per attempt: an event whose attempt_id is already recorded
+     is skipped, so a resume can re-record without double counting. *)
   val record : runs_dir:string -> event:event -> (unit, string) result
 end
 
@@ -77,18 +91,54 @@ module Jsonl : S = struct
     try Unix.mkdir path 0o755
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
 
+  (* A torn or foreign line names no attempt, so it never blocks an append. *)
+  let line_attempt_id line =
+    match Yojson.Safe.from_string line with
+    | exception Yojson.Json_error _ -> None
+    | json -> (
+        match Yojson.Safe.Util.member "attempt_id" json with
+        | `String attempt_id -> Some attempt_id
+        | _ -> None
+        | exception Yojson.Safe.Util.Type_error _ -> None)
+
+  let already_recorded ~path ~attempt_id =
+    Sys.file_exists path
+    && In_channel.with_open_text path (fun channel ->
+           let rec scan () =
+             match In_channel.input_line channel with
+             | None -> false
+             | Some line -> line_attempt_id line = Some attempt_id || scan ()
+           in
+           scan ())
+
+  (* A line torn by a crash gets its own line ending, so the next event
+     stays parseable. *)
+  let ends_mid_line path =
+    In_channel.with_open_bin path (fun channel ->
+        let length = In_channel.length channel in
+        length > 0L
+        &&
+        (In_channel.seek channel (Int64.pred length);
+         In_channel.input_char channel <> Some '\n'))
+
+  let append ~path line =
+    let separator =
+      if Sys.file_exists path && ends_mid_line path then "\n" else ""
+    in
+    let channel =
+      open_out_gen [ Open_append; Open_creat; Open_text ] 0o644 path
+    in
+    Fun.protect
+      ~finally:(fun () -> close_out channel)
+      (fun () -> output_string channel (separator ^ line ^ "\n"))
+
   let record ~runs_dir ~event =
     try
       ensure_directory runs_dir;
       let path = Filename.concat runs_dir "metering.jsonl" in
-      let channel =
-        open_out_gen [ Open_append; Open_creat; Open_text ] 0o644 path
-      in
-      Fun.protect
-        ~finally:(fun () -> close_out channel)
-        (fun () ->
-          output_string channel
-            (Yojson.Safe.to_string (event_to_json event) ^ "\n"));
+      (match event.attempt_id with
+      | Some attempt_id when already_recorded ~path ~attempt_id -> ()
+      | _ -> append ~path (Yojson.Safe.to_string (event_to_json event)));
       Ok ()
     with
     | Sys_error message -> Error (Printf.sprintf "metering: %s" message)

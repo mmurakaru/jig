@@ -3792,7 +3792,9 @@ let test_current_written_during_step_removed_after () =
     ~yaml:
       "name: cmd\n\
        steps:\n\
-      \  - command: \"ls .jig/runs | grep -c 'current$' > seen-current\"\n";
+      \  - command: \"for attempt in $(seq 100); do ls .jig/runs | grep -q \
+       'current$' && break; sleep 0.05; done; ls .jig/runs | grep -c \
+       'current$' > seen-current\"\n";
   match run_cmd root with
   | Error m -> Alcotest.fail m
   | Ok (run, _) ->

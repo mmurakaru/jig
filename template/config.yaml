@@ -40,7 +40,8 @@ harness:
 # SIGTERM to the step's process group, waits the grace period, then sends
 # SIGKILL, and records the outcome timeout (routed like fail). Values need
 # a unit (s, m, h) or off. A skill step takes its tier's limit, else
-# default; a command step takes command. These are the defaults:
+# default; a command step takes command. The first three values are the
+# defaults; tiers has none.
 # timeout:
 #   default: 60m
 #   command: 30m

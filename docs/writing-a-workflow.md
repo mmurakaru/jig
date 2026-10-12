@@ -178,7 +178,7 @@ timeout:
 - A `wrapper:` must forward SIGTERM to its child or take it down when it dies, or a timeout can leave processes behind.
 
 Recorded decision: the limit is host configuration, like `wrapper:` and `concurrency:`, so the same workflow runs on a laptop, in CI, or in a sandbox pool with limits that fit each.
-The schema does not change; `timeout:` in a workflow is rejected.
+A workflow has no `timeout:` key, at the top level or on a step; validation rejects one.
 The model is a start-to-close limit per attempt, as in [Temporal's activity timeouts](https://docs.temporal.io/encyclopedia/detecting-activity-failures), with the abort order of pi-durable ([earendil-works/pi](https://github.com/earendil-works/pi)): the decision is on disk before any signal.
 The default harness writes its output only when it ends, so there is no idle (no-output) limit.
 
